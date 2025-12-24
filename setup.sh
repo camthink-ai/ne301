@@ -7,14 +7,7 @@
 
 set -e  # Exit on error
 
-# Use parameter expansion instead of dirname to avoid command not found errors
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" 
-# Fallback method for dirname if needed
-if [ ! -d "$SCRIPT_DIR" ]; then
-    # Get script directory using alternative method
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-fi
-
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_NAME="ne301"
 
 # Colors for output
@@ -78,7 +71,7 @@ check_dependencies() {
         missing_deps+=("make")
     fi
     
-    # Check python (for model packaging) - check both python and python3
+    # Check python (for model packaging)
     if ! command -v python &> /dev/null && ! command -v python3 &> /dev/null; then
         missing_deps+=("python")
     fi
@@ -116,16 +109,7 @@ check_dependencies() {
         fi
         return 0
     else
-        # Check if python3 is available when python is missing
-        if printf '%s\n' "${missing_deps[@]}" | grep -q "python"; then
-            if command -v python3 &> /dev/null; then
-                echo -e "${YELLOW}✗ Missing essential dependencies: ${missing_deps[*]/python/python3 available, but python command not found}${NC}"
-            else
-                echo -e "${YELLOW}✗ Missing essential dependencies: ${missing_deps[*]}${NC}"
-            fi
-        else
-            echo -e "${YELLOW}✗ Missing essential dependencies: ${missing_deps[*]}${NC}"
-        fi
+        echo -e "${YELLOW}✗ Missing essential dependencies: ${missing_deps[*]}${NC}"
         return 1
     fi
 }

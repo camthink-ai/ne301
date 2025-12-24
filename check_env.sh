@@ -24,22 +24,6 @@ check_tool() {
     fi
 }
 
-# Function to check python specifically (with python3 fallback)
-check_python() {
-    if command -v python &> /dev/null; then
-        echo "[OK] Python 3"
-        python --version 2>&1 | head -n 1
-        return 0
-    elif command -v python3 &> /dev/null; then
-        echo "[OK] Python 3"
-        python3 --version 2>&1 | head -n 1
-        return 0
-    else
-        echo "[!!] Python 3 - NOT FOUND"
-        return 1
-    fi
-}
-
 # Check essential tools
 echo "Essential Tools:"
 echo "----------------"
@@ -50,7 +34,7 @@ check_tool "make" "GNU Make"
 echo ""
 echo "Build Tools:"
 echo "------------"
-check_python
+check_tool "python" "Python 3"
 check_tool "node" "Node.js"
 check_tool "pnpm" "pnpm"
 

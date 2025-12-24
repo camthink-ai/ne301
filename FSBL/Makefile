@@ -195,12 +195,12 @@ $(BUILD_DIR)/%.o: ../%.s Makefile
 # Object list file
 $(BUILD_DIR)/$(TARGET).list: $(OBJECTS)
 	@echo "Generating object list..."
-	@echo "$(OBJECTS)" | tr ' ' '\n' > $@
+	@$(file > $@,$(OBJECTS))
 
 # Link ELF file
-$(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile | $(BUILD_DIR)/$(TARGET).list
+$(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile $(BUILD_DIR)/$(TARGET).list
 	@echo "LD $@"
-	@$(CC) $(OBJECTS) $(LDFLAGS) -o $@
+	@$(CC) @$(BUILD_DIR)/$(TARGET).list $(LDFLAGS) -o $@
 	@$(SZ) $@
 
 # Generate BIN file
