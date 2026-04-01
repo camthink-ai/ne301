@@ -344,6 +344,7 @@
       "cellular_operator_cucc": "China Unicom",
       "cellular_operator_ctcc": "China Telecom",
       "cellular_operator_verizon": "American Verizon",
+      "cellular_enable_roaming": "Roaming",
       "at_commands": "AT Commands",
       "app_version": "App Version",
       "web_version": "Web Version",

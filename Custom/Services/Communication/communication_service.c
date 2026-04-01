@@ -821,6 +821,7 @@ aicam_result_t communication_service_init(void *config)
         strncpy(g_communication_service.cellular_settings.pin_code, net_cfg.cellular.pin_code,
                 sizeof(g_communication_service.cellular_settings.pin_code) - 1);
         g_communication_service.cellular_settings.authentication = net_cfg.cellular.authentication;
+        g_communication_service.cellular_settings.enable_roaming = net_cfg.cellular.enable_roaming;
         g_communication_service.cellular_settings.operator = net_cfg.cellular.operator;
         
         LOG_SVC_INFO("Loaded communication config from NVS: preferred_type=%d, auto_priority=%d",

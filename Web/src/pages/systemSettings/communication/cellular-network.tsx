@@ -9,6 +9,7 @@ import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/tooltip';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import systemSettings, { type SetCellularReq } from '@/services/api/systemSettings';
 import { toast } from 'sonner';
 import SvgIcon from "@/components/svg-icon";
@@ -414,6 +415,15 @@ export default function CellularNetworkPage() {
                                         <SelectItem value="4">{i18n._('sys.system_management.cellular_operator_verizon') ?? 'American Verizon'}</SelectItem>
                                     </SelectContent>
                                 </Select>
+                            </div>
+                            <Separator />
+                            <div className="flex justify-between items-center gap-2">
+                                <Label className="text-sm text-text-primary shrink-0" htmlFor="cellular-enable-roaming">{i18n._('sys.system_management.cellular_enable_roaming')}</Label>
+                                <Switch
+                                    id="cellular-enable-roaming"
+                                    checked={!!saveCellularData.enable_roaming}
+                                    onCheckedChange={(checked) => setSaveCellularData((prev) => ({ ...prev, enable_roaming: checked }))}
+                                />
                             </div>
                         </div>
                     </div>

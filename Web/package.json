@@ -1,7 +1,7 @@
 {
   "name": "preact-app",
   "private": true,
-  "version": "1.3.4.5",
+  "version": "1.3.4.6",
   "type": "module",
   "scripts": {
     "dev": "vite",

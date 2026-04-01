@@ -398,6 +398,7 @@ aicam_result_t ai_color_convert(const uint8_t *src_data,
                                 uint32_t src_height,
                                 uint32_t src_format,
                                 uint32_t rb_swap,
+                                uint32_t chroma_subsampling,
                                 uint8_t **dst_data,
                                 uint32_t* dst_size,
                                 uint32_t dst_format);

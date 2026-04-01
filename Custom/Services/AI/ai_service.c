@@ -1399,6 +1399,7 @@ aicam_result_t ai_color_convert(const uint8_t *src_data,
                                 uint32_t src_height,
                                 uint32_t src_format,
                                 uint32_t rb_swap,
+                                uint32_t chroma_subsampling,
                                 uint8_t **dst_data,
                                 uint32_t *dst_size,
                                 uint32_t dst_format)
@@ -1453,7 +1454,7 @@ aicam_result_t ai_color_convert(const uint8_t *src_data,
     color_convert_param.p_src = (uint8_t *)src_data;
     color_convert_param.p_dst = converted_data;
     color_convert_param.rb_swap = rb_swap; // JPEG decoded images need RB swap
-    color_convert_param.ChromaSubSampling = CSS_jpeg_to_dma2d(JPEG_420_SUBSAMPLING);
+    color_convert_param.ChromaSubSampling = CSS_jpeg_to_dma2d(chroma_subsampling);
 
 
     // printf("color_convert_param.p_src:%p\r\n", color_convert_param.p_src);
@@ -1544,7 +1545,7 @@ aicam_result_t ai_single_image_inference(const model_validation_config_t *model_
 
     // Step 2: Color convert for AI
     ret = ai_color_convert(ai_raw_data, ai_decode_config.width, ai_decode_config.height,
-                           DMA2D_INPUT_YCBCR, 1, &ai_rgb_data, &ai_raw_size, DMA2D_OUTPUT_RGB888);
+                           DMA2D_INPUT_YCBCR, 1, ai_decode_config.chroma_subsampling, &ai_rgb_data, &ai_raw_size, DMA2D_OUTPUT_RGB888);
     if (ret != AICAM_OK)
     {
         LOG_SVC_ERROR("Failed to convert color for AI: %d", ret);
@@ -1598,7 +1599,7 @@ aicam_result_t ai_single_image_inference(const model_validation_config_t *model_
 
     // Step 5: Color convert for drawing
     ret = ai_color_convert(draw_raw_data, draw_decode_config.width, draw_decode_config.height,
-                           DMA2D_INPUT_YCBCR, 0, &draw_rgb_data, &draw_raw_size, DMA2D_OUTPUT_RGB565);
+                           DMA2D_INPUT_YCBCR, 0, draw_decode_config.chroma_subsampling, &draw_rgb_data, &draw_raw_size, DMA2D_OUTPUT_RGB565);
     if (ret != AICAM_OK)
     {
         LOG_SVC_ERROR("Failed to convert color for drawing: %d", ret);

@@ -1470,6 +1470,7 @@ aicam_result_t network_cellular_settings_handler(http_handler_context_t *ctx) {
         
         cJSON_AddStringToObject(response_json, "message", "Cellular settings updated");
         cJSON_AddStringToObject(response_json, "apn", settings.apn);
+        cJSON_AddBoolToObject(response_json, "enable_roaming", settings.enable_roaming);
     } else {
         cJSON_Delete(response_json);
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only GET or POST method is allowed");
