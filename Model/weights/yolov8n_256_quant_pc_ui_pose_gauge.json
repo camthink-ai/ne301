@@ -1,0 +1,86 @@
+{
+  "version": "1.0.0",
+  "model_info": {
+    "name": "YOLOv8 Nano Pose Estimation - Analog Gauge (Kpts Decode Norm, Int8 Output)",
+    "version": "4.0.0",
+    "description": "YOLOv8n Pose 4-keypoint gauge model. ST commit 68669b2 kpts_decode normalization applied: bbox + keypoint coords normalized to 0~1 at export, eliminating per-tensor int8 quantization collapse caused by scale mixing with sigmoid confidences.",
+    "type": "POSE_ESTIMATION",
+    "framework": "TFLITE",
+    "author": "CamThink"
+  },
+  "input_spec": {
+    "width": 256,
+    "height": 256,
+    "channels": 3,
+    "data_type": "uint8",
+    "color_format": "RGB888_YUV444_1",
+    "normalization": {
+      "enabled": true,
+      "mean": [0.0, 0.0, 0.0],
+      "std": [255.0, 255.0, 255.0]
+    }
+  },
+  "output_spec": {
+    "num_outputs": 1,
+    "outputs": [
+      {
+        "name": "output0",
+        "batch": 1,
+        "height": 1,
+        "width": 1344,
+        "channels": 17,
+        "data_type": "int8",
+        "scale": 0.00613071,
+        "zero_point": -116
+      }
+    ]
+  },
+  "memory": {
+    "exec_memory_pool": 874512384,
+    "exec_memory_size": 1835008,
+    "ext_memory_pool": 2415919104,
+    "ext_memory_size": 301056,
+    "alignment_requirement": 32
+  },
+  "postprocess_type": "pp_mpe_yolo_v8_ui",
+  "postprocess_params": {
+    "num_classes": 1,
+    "class_names": ["gauge"],
+    "confidence_threshold": 0.25,
+    "iou_threshold": 0.5,
+    "max_detections": 10,
+    "num_keypoints": 4,
+    "total_boxes": 1344,
+    "raw_output_scale": 0.00613071,
+    "raw_output_zero_point": -116,
+    "kpts_conf_thresh": 0.15,
+    "keypoint_names": [
+      "center",
+      "max",
+      "min",
+      "tip"
+    ],
+    "keypoint_connections": [
+      [0, 1],
+      [0, 2],
+      [0, 3]
+    ]
+  },
+  "runtime": {
+    "execution": {
+      "mode": "SYNC",
+      "priority": 5,
+      "timeout_ms": 5000
+    },
+    "memory_management": {
+      "cache_policy": "WRITE_BACK",
+      "memory_pool_size": 2097152,
+      "garbage_collection": false
+    },
+    "debugging": {
+      "log_level": "INFO",
+      "performance_monitoring": true,
+      "memory_profiling": false
+    }
+  }
+}

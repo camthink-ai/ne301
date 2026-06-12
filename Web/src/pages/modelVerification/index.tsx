@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'preact/compat';
+import { useState, useEffect, useMemo } from 'preact/compat';
 import { useLingui } from '@lingui/react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -17,6 +17,28 @@ import {
   convertToJpeg,
 } from '@/utils/renderCanvasImg';
 import SvgIcon from '@/components/svg-icon';
+
+type GaugeReading = {
+  index: number;
+  value: number;
+};
+
+function extractReadings(aiResult: unknown): GaugeReading[] {
+  if (!aiResult || typeof aiResult !== 'object') return [];
+  const r = aiResult as {
+    poses?: Array<{
+      index?: number;
+      reading?: { value: number };
+    }>;
+  };
+  if (!Array.isArray(r.poses)) return [];
+  return r.poses
+    .filter((p) => p.reading && typeof p.reading.value === 'number')
+    .map((p, i) => ({
+      index: p.index ?? i,
+      value: p.reading!.value,
+    }));
+}
 
 export default function ModelVerification() {
   const { i18n } = useLingui();
@@ -59,6 +81,7 @@ export default function ModelVerification() {
   };
   const fileSize = 1024 * 10 * 1024;
   const [jsonValue, setJsonValue] = useState<any>(null);
+  const readings = useMemo(() => extractReadings(jsonValue), [jsonValue]);
 
   const onFileChange = async (file: File) => {
     try {
@@ -207,7 +230,7 @@ export default function ModelVerification() {
                 {aiStatus === 'loaded' && (
                   <>
                     {inferenceImage && (
-                      <div className="w-full max-h-[300px] flex items-center justify-center">
+                      <div className="relative w-full max-h-[300px] flex items-center justify-center">
                         <Image
                           src={
                             showInferenceImage
@@ -217,6 +240,18 @@ export default function ModelVerification() {
                           alt="inferenceImage"
                           className=" h-full  p-2 object-contain"
                         />
+                        {showInferenceImage && readings.length > 0 && (
+                          <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-2 pointer-events-none">
+                            {readings.map((r) => (
+                              <span
+                                key={r.index}
+                                className="px-2 py-0.5 rounded bg-black/60 text-white text-sm font-semibold tabular-nums"
+                              >
+                                {r.value.toFixed(2)}%
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                     {!inferenceImage && (

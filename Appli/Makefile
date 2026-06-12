@@ -47,6 +47,7 @@ C_SOURCES += ../Custom/Core/core_init.c
 
 # Custom - Core/Data
 C_SOURCES += ../Custom/Core/Data/buffer_mgr.c
+C_SOURCES += ../Custom/Core/Data/gauge_reading.c
 
 # Custom - Core/Example
 C_SOURCES += ../Custom/Core/Example/core_example.c

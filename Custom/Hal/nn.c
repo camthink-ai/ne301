@@ -9,11 +9,13 @@
 #include "debug.h"
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "ll_aton_runtime.h"
 #include "ll_aton_reloc_network.h"
 #include "pp.h"
 #include "nn.h"
 #include "cJSON.h"
+#include "gauge_reading.h"
 #include "mpool.h"
 #include "camera.h"
 #include "mem_map.h"
@@ -877,6 +879,29 @@ static cJSON* create_keypoint_json(const keypoint_t* keypoint, int index) {
 }
 
 /**
+ * @brief Find a keypoint by name and copy its geometry into out.
+ * @retval 1 found, out filled.
+ * @retval 0 not found (or no name table).
+ */
+static int find_keypoint_by_name(const mpe_detect_t* detection, const char* name, gauge_point_t* out)
+{
+    uint32_t i;
+
+    if ((detection == NULL) || (name == NULL) || (out == NULL) || (detection->keypoint_names == NULL)) {
+        return 0;
+    }
+    for (i = 0; i < detection->nb_keypoints; i++) {
+        if ((detection->keypoint_names[i] != NULL) && (strcmp(detection->keypoint_names[i], name) == 0)) {
+            out->x    = detection->keypoints[i].x;
+            out->y    = detection->keypoints[i].y;
+            out->conf = detection->keypoints[i].conf;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/**
  * @brief Create MPE detection result JSON
  */
 static cJSON* create_mpe_detection_json(const mpe_detect_t* detection, int index) {
@@ -907,6 +932,31 @@ static cJSON* create_mpe_detection_json(const mpe_detect_t* detection, int index
         cJSON_AddItemToObject(detection_json, "keypoints", keypoints_array);
     }
     cJSON_AddNumberToObject(detection_json, "keypoint_count", detection->nb_keypoints);
+
+    {
+        gauge_point_t g_center;
+        gauge_point_t g_min;
+        gauge_point_t g_max;
+        gauge_point_t g_tip;
+        gauge_reading_t gr;
+
+        if (find_keypoint_by_name(detection, "center", &g_center) &&
+            find_keypoint_by_name(detection, "min", &g_min) &&
+            find_keypoint_by_name(detection, "max", &g_max) &&
+            find_keypoint_by_name(detection, "tip", &g_tip) &&
+            (gauge_reading_compute(&g_center, &g_min, &g_max, &g_tip,
+                                   0.0f, 100.0f, 0.0f, &gr) == 0)) {
+            cJSON* reading_json = cJSON_CreateObject();
+            if (reading_json != NULL) {
+                cJSON_AddNumberToObject(reading_json, "value",
+                    (double)(roundf(gr.value * 100.0f) / 100.0f));
+                cJSON_AddNumberToObject(reading_json, "ratio",
+                    (double)(roundf(gr.ratio * 10000.0f) / 10000.0f));
+                cJSON_AddStringToObject(reading_json, "direction", gr.direction);
+                cJSON_AddItemToObject(detection_json, "reading", reading_json);
+            }
+        }
+    }
     
     // Add connections array if available
     if (detection->keypoint_connections && detection->num_connections > 0) {
