@@ -34,7 +34,7 @@
 
 ## 🏗️ Project Structure
 Low Power, Performance, and Edge AI
-![img](https://wiki.camthink.ai/img/ne301/overview/U0.png)
+![img](https://resources.camthink.ai/wiki/img/neoeyes-ne301-series/overview/U0.png)
 NE301 is an AI vision camera system based on STM32N6570, featuring a multi-core architecture:
 
 - **STM32N6 (Main MCU)**: Cortex-M55, handles video processing, AI inference, and network communication
