@@ -151,8 +151,8 @@ static bool _ioWriteAllowed = true;
 
 #if defined(UX_INCLUDE_USER_DEFINE_FILE) && defined(UX_STANDALONE)
 
-#include "ux_device_class_cdc_acm.h"
 #include "ux_api.h"
+#include "ux_device_class_cdc_acm.h" 
 extern UX_SLAVE_CLASS_CDC_ACM *cdc_acm;
 
 #else

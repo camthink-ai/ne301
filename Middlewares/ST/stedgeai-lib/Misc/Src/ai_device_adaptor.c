@@ -162,6 +162,26 @@ void port_hal_set_extra_conf(uint32_t *extra)
 }
 #endif // H7P5 H7p
 
+#if defined(SR6X)
+#if defined(HAS_EXTRA_CONF) && HAS_EXTRA_CONF >= 4
+void port_hal_set_extra_conf(uint32_t *extra)
+{
+  uint32_t npu_freq_mhz = port_hal_get_npu_freq();  /* == NPU freq */
+  uint32_t npur_freq_mhz = port_hal_get_cpu_freq(); /* == NIC, RAMs freq */
+
+  /* Add specific infos in relation to the ATONss
+   * Note: NOC freq is returned by port_hal_get_sys_freq()
+   */
+  extra[0] = 0;                  /* extra config
+                                        b7..0  : type/format    00h : N6/ATONss
+                                        b8..31 : TBD
+                                  */
+  extra[1] = npu_freq_mhz;     /* NPU freq. */
+  extra[2] = npur_freq_mhz;    /* NIC, RAMs freq */
+  extra[3] = 0;
+}
+#endif
+#endif
 
 #if !defined(NO_PORT_DWT_INIT_IMP)
 

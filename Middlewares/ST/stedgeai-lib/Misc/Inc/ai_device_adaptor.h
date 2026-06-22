@@ -26,6 +26,7 @@
  *  - v1.0: initial version
  *  - v1.1: rework/clean port functions
  *  - v1.2: New Stellar SDKs support
+ *  - v1.3: New Stellar SDKs NPU support
  *
  *
  * ** Core functions/macros
@@ -528,15 +529,45 @@ extern AGTDriver AgtHandle;
 #define port_get_reload_value()           (osal_get_alarm()*1000UL)
 #define port_get_time_value()             agt_get_time_value(&AgtHandle)
 
+#if !defined(SR6X_WITH_NPU)
 #define USE_RETARGET_IO_FROM_TOOL         1
 #define USE_PRINTF_FROM_TOOL              1
 #define HAS_DEDICATED_PRINT_PORT          1
+#else
+#include "stdarg.h"
+#define USE_RETARGET_IO_FROM_TOOL         1
+#define USE_PRINTF_FROM_TOOL              1
+#endif
 
 #define HAS_DWT_CTRL                      0
 #define HAS_PMU_CTRL                      0
 #define HAS_SYS_TICK                      1
 
 #define NO_PORT_DWT_INIT_IMP              1  /* specific function is used, provided by the OSAL */
+
+#define HAS_EXTRA_CONF                    4
+#define port_hal_get_npu_freq()           0
+
+#if defined(SR6X_WITH_NPU)
+/* Undef wfe to use properly the Performance Monitor Unit */
+#ifdef __WFE
+#undef __WFE
+#if defined(__GNUC__) && !defined(__ICCARM__)
+#define __WFE()                           __asm volatile ("nop")
+#else
+#define __WFE()                           __asm("nop")
+#endif
+#endif
+#undef port_hal_get_npu_freq
+#define port_hal_get_npu_freq()           SR6X_GetNpuClockFreq()
+#include "perf_config.h"
+#undef port_hal_get_frequency
+#define port_hal_get_frequency()          port_hal_get_cpu_freq()
+/* Performance Monitor Unit usage for NPU inference time */
+#define port_dwt_init()                   Perf_counterInit()
+#define port_dwt_reset()                  Perf_counterReset()
+#define port_dwt_get_cycles()             Perf_counterGet()
+#endif
 
 #undef port_io_init
 #define port_io_init()                    SR6X_UART_Init()
@@ -660,8 +691,6 @@ __STATIC_INLINE bool port_io_read(uint8_t *buff, int count)
 
 void port_dwt_init_imp(void);
 void port_hal_set_extra_conf(uint32_t *extra);
-void port_dwt_reset_imp();
-uint32_t port_dwt_get_ticks_imp();
 
 /* -----------------------------------------------------------------------------
  * Set LC_PRINT(.) definition

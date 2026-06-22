@@ -52,20 +52,35 @@ PACKAGE_HEADER_SIZE = struct.calcsize(HEADER_FMT)
 HEADER_CHECKSUM_OFFSET = (NUM_HEADER_FIELDS - CHECKSUM_FIELD_COUNT) * 4  # byte offset of header_checksum
 PACKAGE_CHECKSUM_OFFSET = (NUM_HEADER_FIELDS - 1) * 4                    # byte offset of package_checksum
 
+def get_stedgeai_executable() -> str:
+    """Prefer stedgeai under STEDGEAI_CORE_DIR over PATH."""
+    core_dir = os.environ.get('STEDGEAI_CORE_DIR')
+    if core_dir:
+        candidates = [
+            os.path.join(core_dir, 'Utilities', 'windows', 'stedgeai.exe'),
+            os.path.join(core_dir, 'Utilities', 'windows', 'stedgeai'),
+            os.path.join(core_dir, 'Utilities', 'linux', 'stedgeai'),
+        ]
+        for candidate in candidates:
+            if os.path.isfile(candidate):
+                return candidate
+    return 'stedgeai'
+
+
 def get_stedgeai_version() -> Optional[str]:
-    """Get ST Edge AI Core version string (e.g. v3.0.0-20426 123672867) from stedgeai --version."""
+    """Get ST Edge AI Core version string (e.g. v4.0.0-xxx) from stedgeai --version."""
+    stedgeai_bin = get_stedgeai_executable()
     try:
         result = subprocess.run(
-            ['stedgeai', '--version'],
+            [stedgeai_bin, '--version'],
             capture_output=True,
             text=True,
             timeout=5,
         )
         if result.returncode != 0 or not result.stdout:
             return None
-        # First line: "ST Edge AI Core v3.0.0-20426 123672867"
         first_line = result.stdout.strip().split('\n')[0]
-        m = re.search(r'(v[\d\.\-]+\s*\d+)', first_line)
+        m = re.search(r'(v[\d]+\.[\d]+\.[\d]+(?:-[\w]+)?(?:\s+\d+)?)', first_line)
         if m:
             return m.group(1).strip()
         return None
@@ -260,6 +275,7 @@ class ModelPackager:
             print(f"  Model checksum: 0x{model_checksum:08X}")
             print(f"  Config checksum: 0x{config_checksum:08X}")
             print(f"  Package checksum: 0x{package_checksum:08X}")
+            print(f"  STEdgeAI: {metadata['stedgeai_version']}")
             
             return True
             

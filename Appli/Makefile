@@ -344,6 +344,7 @@ C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_util.c
 C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_dbgtrc.c
 C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_debug.c
 C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_lib.c
+C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_stai_internal.c
 C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_lib_sw_operators.c
 C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_osal_freertos.c
 C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_osal_threadx.c
@@ -935,7 +936,7 @@ endif
 
 # Libraries (in correct order for linking)
 LIBS = -lc -lm -lnosys
-LIBS += -l:NetworkRuntime1100_CM55_GCC.a
+LIBS += -l:NetworkRuntime1200_CM55_GCC.a
 
 LIBDIR =
 LIBDIR += -L../Middlewares/ST/stedgeai-lib/Lib/GCC/ARMCortexM55

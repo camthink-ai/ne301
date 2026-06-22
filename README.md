@@ -92,9 +92,9 @@ Go to [WIKI](https://wiki.camthink.ai/docs/neoeyes-ne301-series/quick-start)
 
 ```bash
 # 1. Build (Or pull)Docker image
-docker build -t ne301-dev:latest .
+docker build -t ne301-dev:stedgeai-v4.0.1 .
 # or pull (faster)
-docker pull camthink/ne301-dev:latest
+docker pull camthink/ne301-dev:stedgeai-v4.0.1
 # 2. Run container
 docker run -it --rm --privileged \
   -v $(pwd):/workspace \
@@ -114,7 +114,7 @@ make                        # Build all
 - pnpm 9+
 - STM32CubeProgrammer(v2.19.0)
 - STM32_SigningTool_CLI(v2.19.0)
-- stedgeai(v3.0,stedgeai0300.stneuralart)
+- stedgeai(v4.0.1, stedgeai0400.stm32mcu)
 
 ```bash
 # 1. Check environment
@@ -217,4 +217,4 @@ Please see the full terms in [LICENSE](./LICENSE)
 
 **Development Team:** CamThink AI Camera Team  
 **Contact:** zbing@camthink.ai  
-**Last Updated:** 2026-03-30
+**Last Updated:** 2026-06-22

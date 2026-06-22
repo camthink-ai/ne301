@@ -65,8 +65,8 @@ RUN set -e && \
 FROM install-cubeprog AS install-stedgeai
 # Install ST Edge AI using online installer
 ENV QT_QPA_PLATFORM=minimal
-ARG STEDGEAI_PACKAGE=stedgeai0300.stneuralart
-ARG STEDGEAI_URL=https://resources.camthink.ai/tools/stedgeai-lin-v3.0.0.zip
+ARG STEDGEAI_PACKAGE=stedgeai0400.stm32mcu
+ARG STEDGEAI_URL=https://resources.camthink.ai/tools/stedgeai-lin-v4.0.1.zip
 RUN set -e && \
     URL="${STEDGEAI_URL}" && \
     echo "Downloading ST Edge AI from: $URL" && \

@@ -23,6 +23,12 @@
 
 /* ==================== internal data structure ==================== */
 
+static bool nn_stedgeai_version_supported(const char *version)
+{
+    return version != NULL && version[0] != '\0' &&
+           strstr(version, MODEL_STEDGEAI_VERSION_SUPPORTED) != NULL;
+}
+
 // global mutex to serialize NPU access across instances
 static osMutexId_t g_npu_mutex = NULL;
 
@@ -211,8 +217,9 @@ static int load_info(const uintptr_t file_ptr, nn_model_info_t *info)
 
     cJSON_Delete(root);
 
-    if (strstr(info->stedgeai_version, MODEL_STEDGEAI_VERSION_SUPPORTED) == NULL) {
-        LOG_DRV_ERROR("ST Edge AI version not supported, supported: %s, current: %s\r\r\n", MODEL_STEDGEAI_VERSION_SUPPORTED, info->stedgeai_version);
+    if (!nn_stedgeai_version_supported(info->stedgeai_version)) {
+        LOG_DRV_ERROR("ST Edge AI version not supported, need %s, current: %s\r\r\n",
+                      MODEL_STEDGEAI_VERSION_SUPPORTED, info->stedgeai_version);
         storage_unlock();
         return -1;
     }
