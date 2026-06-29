@@ -131,6 +131,15 @@ aicam_result_t video_hub_inject_sps_pps(const uint8_t *sps, uint32_t sps_size,
  */
 aicam_result_t video_hub_get_sps_pps(video_hub_sps_pps_t *sps_pps);
 
+/**
+ * @brief Invalidate cached SPS/PPS and reset per-subscriber send flags
+ * @details Call when the encoder session is torn down (e.g. pipeline stop /
+ *          model reload) so the next keyframe re-extracts fresh SPS/PPS and
+ *          re-delivers them to subscribers. Stale SPS/PPS causes the MSE
+ *          decoder to reject the new stream (black preview).
+ */
+aicam_result_t video_hub_invalidate_sps_pps(void);
+
 /* ==================== Status API ==================== */
 
 aicam_bool_t video_hub_is_initialized(void);
