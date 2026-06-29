@@ -1051,8 +1051,9 @@ aicam_result_t ai_reload_model(void)
     result = video_ai_node_reload_model(g_ai_service.ai_node);
     if (result != AICAM_OK) {
         LOG_SVC_ERROR("Failed to reload AI model: %d", result);
-        device_service_camera_start();
-        ai_reload_model_restart_pipeline();
+        if (device_service_camera_start() == AICAM_OK) {
+            ai_reload_model_restart_pipeline();
+        }
         return result;
     }
 
