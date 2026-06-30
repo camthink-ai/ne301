@@ -19,6 +19,7 @@
 #include "json_config_mgr.h"
 #include "video_camera_node.h"
 #include "device_service.h"
+#include "Services/Video/video_stream_hub.h"
 
 /* ==================== AI Service Context ==================== */
 
@@ -71,6 +72,8 @@ static aicam_result_t ai_create_camera_pipeline_nodes(const ai_service_config_t 
 static aicam_result_t ai_create_ai_pipeline_nodes(const ai_service_config_t *config);
 static aicam_result_t ai_connect_camera_pipeline_nodes(void);
 static aicam_result_t ai_connect_ai_pipeline_nodes(void);
+
+static aicam_result_t ai_reload_model_restart_pipeline(void);
 
 static aicam_result_t ai_service_draw_callback(uint8_t *frame_buffer, 
                                              uint32_t width, 
@@ -385,7 +388,15 @@ aicam_result_t ai_pipeline_stop(void)
     }
     
     LOG_SVC_INFO("AI pipelines stopped successfully");
-    
+
+    /* Encoder session is torn down with the camera pipeline; drop the stale
+     * SPS/PPS cache so the next pipeline start re-extracts fresh params.
+     * Otherwise the MSE player is fed stale SPS/PPS and the preview stays
+     * black after a model reload / pipeline restart. */
+    if (video_hub_is_initialized()) {
+        video_hub_invalidate_sps_pps();
+    }
+
     return result;
 }
 
@@ -1040,7 +1051,9 @@ aicam_result_t ai_reload_model(void)
     result = video_ai_node_reload_model(g_ai_service.ai_node);
     if (result != AICAM_OK) {
         LOG_SVC_ERROR("Failed to reload AI model: %d", result);
-        device_service_camera_start();
+        if (device_service_camera_start() == AICAM_OK) {
+            ai_reload_model_restart_pipeline();
+        }
         return result;
     }
 
@@ -1051,6 +1064,17 @@ aicam_result_t ai_reload_model(void)
         return result;
     }
 
+    //Restart pipelines when a preview subscriber is already attached (e.g. a
+    //direct /model/reload call with preview active) so frame production
+    //resumes and the still-connected subscriber receives the encoder's fresh
+    //IDR + SPS/PPS immediately. When preview was stopped first (the web
+    //feature-debug upload flow leaves no subscribers here), leave the pipeline
+    //stopped: the subsequent /preview/start re-subscribes and the Hub
+    //auto-starts the pipeline, which captures the encoder's first IDR instead
+    //of dropping it (an unconditional start here would discard that IDR while
+    //there are zero subscribers, delaying preview recovery by one GOP).
+    ai_reload_model_restart_pipeline();
+
     //deint draw service
     // result = ai_draw_service_deinit();
     // if (result != AICAM_OK) {
@@ -1059,6 +1083,21 @@ aicam_result_t ai_reload_model(void)
     // }
 
     return AICAM_OK;
+}
+
+/* Restart the AI pipelines after a model reload, but only when the Video Hub
+ * currently has subscribers. See ai_reload_model() for the rationale. */
+static aicam_result_t ai_reload_model_restart_pipeline(void)
+{
+    if (!video_hub_is_initialized() || !video_hub_has_subscribers()) {
+        return AICAM_OK;
+    }
+
+    aicam_result_t result = ai_pipeline_start();
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to restart AI pipelines after model reload: %d", result);
+    }
+    return result;
 }
 
 /* ==================== AI Statistics Functions ==================== */

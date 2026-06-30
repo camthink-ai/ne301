@@ -364,14 +364,60 @@ aicam_result_t video_hub_inject_sps_pps(const uint8_t *sps, uint32_t sps_size,
 
 aicam_result_t video_hub_get_sps_pps(video_hub_sps_pps_t *sps_pps)
 {
-    if (!sps_pps || !g_hub.sps_pps_valid) {
+    if (!sps_pps) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    if (!g_hub.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+
+    /* The cache can be freed at runtime by video_hub_invalidate_sps_pps()
+     * (called from ai_pipeline_stop on model reload). Take the mutex so the
+     * valid-flag check and the pointer/size reads happen atomically against
+     * a concurrent invalidation, avoiding a use-after-free of sps_data/pps_data. */
+    osMutexAcquire(g_hub.mutex, osWaitForever);
+
+    if (!g_hub.sps_pps_valid) {
+        osMutexRelease(g_hub.mutex);
         return AICAM_ERROR_UNAVAILABLE;
     }
-    
+
     sps_pps->sps_data = g_hub.sps_data;
     sps_pps->sps_size = g_hub.sps_size;
     sps_pps->pps_data = g_hub.pps_data;
     sps_pps->pps_size = g_hub.pps_size;
+
+    osMutexRelease(g_hub.mutex);
+    return AICAM_OK;
+}
+
+aicam_result_t video_hub_invalidate_sps_pps(void)
+{
+    if (!g_hub.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+
+    osMutexAcquire(g_hub.mutex, osWaitForever);
+
+    /* Drop the cached SPS/PPS so the next injected keyframe re-extracts the
+     * encoder's current SPS/PPS (the encoder session may have been rebuilt
+     * after a model reload / pipeline restart). */
+    if (g_hub.sps_data) { hal_mem_free(g_hub.sps_data); g_hub.sps_data = NULL; }
+    if (g_hub.pps_data) { hal_mem_free(g_hub.pps_data); g_hub.pps_data = NULL; }
+    g_hub.sps_size = 0;
+    g_hub.pps_size = 0;
+    g_hub.sps_pps_valid = AICAM_FALSE;
+
+    /* Allow the freshly extracted SPS/PPS to be re-delivered to subscribers
+     * that already received the now-stale copy. */
+    for (uint32_t i = 0; i < VIDEO_HUB_MAX_SUBSCRIBERS; i++) {
+        g_hub.subscribers[i].sps_pps_sent = AICAM_FALSE;
+    }
+
+    osMutexRelease(g_hub.mutex);
+
+    LOG_SVC_INFO("Hub: SPS/PPS cache invalidated (encoder session reset)");
     return AICAM_OK;
 }
 
