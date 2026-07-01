@@ -26,7 +26,7 @@ interface JMuxer {
 // Message type definitions
 interface VideoWorkerMessage {
     cmd: 'stop' | 'video';
-    data?: ArrayBuffer;
+    data?: ArrayBuffer | Uint8Array;
     videoTime?: number;
     iChannelId?: number;
     userData?: any;
@@ -37,37 +37,30 @@ declare const JMuxer: {
     new(config?: JMuxerConfig): JMuxer;
 };
 
-// import JMuxer from 'jmuxer';
 // @ts-expect-error: importScripts is only available in worker context and jmuxer is UMD
 importScripts('/libs/jmuxer.min.js');
 
-const jmuxer: JMuxer = new JMuxer();
+const jmuxer: JMuxer = new JMuxer({ fps: 30 });
 let animationFrameId: number | null = null;
 let jmuxerCmd: MessageEvent<VideoWorkerMessage>[] = [];
 
 function receiveMessage(event: MessageEvent<VideoWorkerMessage>): void {
     if (animationFrameId === null) {
         animationFrameId = requestAnimationFrame(dealJmuxerCmd);
-        // eslint-disable-next-line no-console
-        // console.log(`[VideoWorker] Create animation frame: ${animationFrameId}`);
     }
     jmuxerCmd.push(event);
 }
 
 function dealJmuxerCmd(): void {
-    const len = jmuxerCmd.length;
-
-    for (let i = 0; i < len; i += 1) {
-        const [event] = jmuxerCmd.splice(0, 1);
+    while (jmuxerCmd.length > 0) {
+        const event = jmuxerCmd.shift();
         if (event === undefined) {
             break;
         }
         const msg = event.data;
-        // eslint-disable-next-line no-console
-        // console.log('[VideoWorker] Process message:', msg);
 
         switch (msg.cmd) {
-            case 'stop': // Terminates the worker.
+            case 'stop':
                 jmuxer.destroy();
                 if (animationFrameId !== null) {
                     cancelAnimationFrame(animationFrameId);
@@ -76,15 +69,20 @@ function dealJmuxerCmd(): void {
                 jmuxerCmd = [];
                 // eslint-disable-next-line no-restricted-globals
                 self.close();
-                break;
+                return;
             case 'video':
                 if (msg.data) {
-                    const videoBytes: Uint8Array = msg.data instanceof Uint8Array ? msg.data : new Uint8Array(msg.data);
+                    const videoBytes: Uint8Array = msg.data instanceof Uint8Array
+                        ? msg.data
+                        : new Uint8Array(msg.data);
                     if (videoBytes.byteLength === 0) break;
 
-                    // JMuxer requires ArrayBuffer, ensure correct format is passed
-                    // const videoBuffer = videoBytes.buffer.slice(videoBytes.byteOffset, videoBytes.byteOffset + videoBytes.byteLength);
-                    jmuxer.feed({ video: videoBytes, time: msg.videoTime, iChannelId: msg.iChannelId, userData: msg.userData });
+                    jmuxer.feed({
+                        video: videoBytes,
+                        time: msg.videoTime,
+                        iChannelId: msg.iChannelId,
+                        userData: msg.userData,
+                    });
                 }
                 break;
             default:
@@ -92,12 +90,7 @@ function dealJmuxerCmd(): void {
         }
     }
 
-    // If there are still pending messages, continue next frame
-    if (jmuxerCmd.length > 0) {
-        animationFrameId = requestAnimationFrame(dealJmuxerCmd);
-    } else {
-        animationFrameId = null;
-    }
+    animationFrameId = null;
 }
 
 onmessage = receiveMessage;

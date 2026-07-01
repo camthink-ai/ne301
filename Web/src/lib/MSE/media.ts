@@ -43,12 +43,25 @@ class MsMediaSource {
 
     private currentSegmentIndex: number = 0;
 
-    private skipDistance: number = MsMediaSource.skipCount;
-
     private isPlayback: boolean = false; // false: preview, true: playback
 
+    // Live preview latency tuning
+    private readonly LIVE_TARGET_LATENCY = 0.2;
+
+    private readonly LIVE_SYNC_COOLDOWN_MS = 150;
+
+    private lastLiveSyncMs = 0;
+
+    private lastPlaybackTime = 0;
+
+    private lastPlaybackCheckMs = 0;
+
+    private initSegmentAppended: boolean = false;
+
+    private boundOnVideoStall: (() => void) | null = null;
+
     // Buffer management optimization
-    private readonly MAX_FRAME_BUFFER_SIZE: number = 300; // Limit frame buffer size
+    private readonly MAX_FRAME_BUFFER_SIZE: number = 60;
 
     private readonly BUFFER_WINDOW_SIZE: number = 15; // Keep 15 seconds of buffer (Frigate strategy)
 
@@ -67,6 +80,71 @@ class MsMediaSource {
     static get statusDestroy(): number { return 4; }
 
     static get skipCount(): number { return 5; } // Frame skip catch-up count
+
+    private getLiveEdge(): number {
+        if (!this.sourceBuffer || this.sourceBuffer.buffered.length === 0) return 0;
+        const { buffered } = this.sourceBuffer;
+        return buffered.end(buffered.length - 1);
+    }
+
+    private syncLivePreview(liveEdge: number, bufferTime: number): void {
+        if (!this.videoElement || this.isPlayback) return;
+        if (!Number.isFinite(bufferTime) || bufferTime < 0 || liveEdge <= 0) return;
+
+        const now = Date.now();
+
+        // Hard catch-up when lag exceeds 1s (prevents multi-minute drift)
+        if (bufferTime > 1) {
+            if (now - this.lastLiveSyncMs >= this.LIVE_SYNC_COOLDOWN_MS) {
+                this.videoElement.currentTime = Math.max(0, liveEdge - this.LIVE_TARGET_LATENCY);
+                this.lastLiveSyncMs = now;
+                if (this.videoElement.paused) {
+                    void this.videoElement.play();
+                }
+            }
+            if (this.videoElement.playbackRate !== 1) {
+                this.videoElement.playbackRate = 1;
+            }
+            return;
+        }
+
+        if (bufferTime > 0.45) {
+            const rate = Math.min(1.15, 1 + (bufferTime - 0.45) * 0.15);
+            if (Math.abs(this.videoElement.playbackRate - rate) > 0.01) {
+                this.videoElement.playbackRate = rate;
+            }
+        } else if (this.videoElement.playbackRate !== 1) {
+            this.videoElement.playbackRate = 1;
+        }
+    }
+
+    /** Recover when video stalls but stream data is still arriving */
+    recoverIfNeeded(): void {
+        if (!this.videoElement || !this.sourceBuffer || this.isPlayback) return;
+
+        const liveEdge = this.getLiveEdge();
+        if (liveEdge <= 0) return;
+
+        const bufferTime = liveEdge - this.videoElement.currentTime;
+        const now = Date.now();
+        const timeSinceAdvance = now - this.lastPlaybackCheckMs;
+        const playbackStuck = timeSinceAdvance > 2000
+            && Math.abs(this.videoElement.currentTime - this.lastPlaybackTime) < 0.05;
+
+        if (bufferTime > 1 || playbackStuck || this.videoElement.paused) {
+            this.videoElement.currentTime = Math.max(0, liveEdge - this.LIVE_TARGET_LATENCY);
+            this.lastLiveSyncMs = now;
+            void this.videoElement.play();
+        }
+    }
+
+    private trackPlaybackAdvance(): void {
+        const t = this.videoElement?.currentTime ?? 0;
+        if (t !== this.lastPlaybackTime) {
+            this.lastPlaybackTime = t;
+            this.lastPlaybackCheckMs = Date.now();
+        }
+    }
 
     initMse(codec: string): boolean {
         // Unified selection of available MediaSource constructor (prefer ManagedMediaSource)
@@ -97,9 +175,9 @@ class MsMediaSource {
 
             // mse event
             this.mediaSource.addEventListener("sourceopen", () => {
-                console.log("ms mse open.");
                 this.uninitSourceBuffer();
                 this.initSourceBuffer();
+                this.updateSourceBuffer();
             });
 
             this.mediaSource.addEventListener("sourceclose", () => {
@@ -208,56 +286,36 @@ class MsMediaSource {
         if (curMode === 'segments') {
             this.sourceBuffer.mode = 'sequence';
         }
-        this.skipDistance = MsMediaSource.skipCount;
         
         this.sourceBuffer.addEventListener("updateend", () => {
             try {
                 if (this.sourceBuffer !== null && this.mediaSource?.readyState === 'open' && this.videoElement) {
                     const { buffered } = this.sourceBuffer;
-                    // Guard: no ranges available
                     if (buffered.length === 0) {
                         this.updateend = 1;
+                        this.updateSourceBuffer();
                         return;
                     }
-                    // Clamp currentSegmentIndex
-                    if (this.currentSegmentIndex >= buffered.length) {
-                        this.currentSegmentIndex = buffered.length - 1;
-                    }
-                    this.handleTimeUpdate();
-                    const end = this.sourceBuffer.buffered.end(this.currentSegmentIndex);
+
+                    const liveEdge = buffered.end(buffered.length - 1);
                     const { currentTime } = this.videoElement;
+                    this.trackPlaybackAdvance();
 
-                    // Adaptive skip strategy for live preview
                     if (!this.isPlayback) {
-                        const bufferTime = end - currentTime;
-
-                        // Reset skip distance when buffer is large
-                        if (bufferTime >= 1 && this.skipDistance === 0) {
-                            this.skipDistance = MsMediaSource.skipCount;
-                        }
-
-                        // Adaptive jump based on buffer size
-                        if (bufferTime >= 0.5 && this.skipDistance) {
-                            // Jump closer to live edge as buffer grows
-                            const jumpOffset = Math.min(0.4, bufferTime * 0.8);
-                            this.videoElement.currentTime = end - jumpOffset;
-                            this.skipDistance--;
-                        }
+                        this.syncLivePreview(liveEdge, liveEdge - currentTime);
                     }
 
-                    // Optimized buffer cleanup: use 15-second rolling window (Frigate strategy)
-                    if (!this.sourceBuffer.updating && buffered.length > 0) {
+                    // Preview: do not remove buffered ranges (removal can create gaps and freeze playback)
+                    if (this.isPlayback && !this.sourceBuffer.updating) {
                         const bufferEnd = buffered.end(buffered.length - 1);
                         const bufferStart = buffered.start(0);
                         const removeEnd = bufferEnd - this.BUFFER_WINDOW_SIZE;
 
-                        // Remove old data if we have more than 15 seconds buffered
                         if (removeEnd > bufferStart && currentTime > bufferStart) {
                             const safeRemoveEnd = Math.min(removeEnd, currentTime - 1);
                             if (safeRemoveEnd > bufferStart) {
                                 this.sourceBuffer.remove(bufferStart, safeRemoveEnd);
 
-                                // Set live seekable range for better latency calculation
                                 if (this.mediaSource && 'setLiveSeekableRange' in this.mediaSource) {
                                     try {
                                         (this.mediaSource as any).setLiveSeekableRange(safeRemoveEnd, bufferEnd);
@@ -270,9 +328,10 @@ class MsMediaSource {
                     }
                 }
             } catch (error) {
-                console.log(error);
+                console.error(error);
             }
             this.updateend = 1;
+            this.updateSourceBuffer();
         });
 
         return 0;
@@ -289,21 +348,15 @@ class MsMediaSource {
             this.currentSegmentIndex = buffered.length - 1;
             return;
         }
-        const { currentTime } = this.videoElement;
         const nextSegmentIndex = this.currentSegmentIndex + 1;
-        const currentStart = buffered.start(this.currentSegmentIndex);
         const currentEnd = buffered.end(this.currentSegmentIndex);
         const nextStart = buffered.start(nextSegmentIndex);
-        // const nextEnd = buffered.end(nextSegmentIndex);
-        
-        console.log(`currentTime=${currentTime}, currentStart=${currentStart}, currentEnd=${currentEnd}, nextStart=${nextStart}`);
-        
-        // If current time has exceeded next segment start time, delete current cache
+
+        // Playback mode only: advance across buffered segments
         this.currentSegmentIndex += 1;
         this.videoElement.currentTime = nextStart;
         this.sourceBuffer.remove(0, currentEnd);
         this.videoElement.play();
-        this.skipDistance = MsMediaSource.skipCount;
     }
 
     uninitSourceBuffer(): void {
@@ -327,29 +380,30 @@ class MsMediaSource {
             return;
         }
 
-        // Optimized: calculate total size first, then allocate once
+        // Live preview: one fMP4 fragment per append to keep MSE timeline in sync
+        const batchSize = this.isPlayback ? len : 1;
+        const batch = this.frameBuffer.splice(0, batchSize);
+
         let totalSize = 0;
-        for (let i = 0; i < len; i++) {
-            totalSize += this.frameBuffer[i].data.byteLength;
+        for (let i = 0; i < batch.length; i += 1) {
+            totalSize += batch[i].data.byteLength;
         }
 
-        // Allocate buffer once instead of repeatedly
         const segmentBuffer = new Uint8Array(totalSize);
         let offset = 0;
 
-        // Copy all frames in one pass
-        for (let i = 0; i < len; i++) {
-            const frameData = new Uint8Array(this.frameBuffer[i].data);
+        for (let i = 0; i < batch.length; i += 1) {
+            const frameData = new Uint8Array(batch[i].data);
             segmentBuffer.set(frameData, offset);
             offset += frameData.byteLength;
         }
 
-        // Clear buffer after copying (more efficient than repeated shift())
-        this.frameBuffer = [];
-
         try {
             this.sourceBuffer.appendBuffer(segmentBuffer);
             this.updateend = 0;
+            if (!this.isPlayback) {
+                this.initSegmentAppended = true;
+            }
             if (this.videoElement?.paused) {
                 this.videoElement.style.display = "";
                 this.videoElement.play();
@@ -358,7 +412,7 @@ class MsMediaSource {
                 });
             }
         } catch (e) {
-            console.error(`appending error: [update=${this.sourceBuffer.updating}, updateend=${this.updateend}, length=${len}, buffered.length=${this.sourceBuffer.buffered.length}]==>${e}`);
+            console.error(`appending error: [update=${this.sourceBuffer.updating}, updateend=${this.updateend}, length=${batch.length}, buffered.length=${this.sourceBuffer.buffered.length}]==>${e}`);
             this.initFlag = MsMediaSource.statusDestroy;
             this.cb({
                 t: 'mseError',
@@ -379,18 +433,25 @@ class MsMediaSource {
             }
         }
 
-        if (document.hidden) {
-            this.skipDistance = MsMediaSource.skipCount;
-        }
-
-        // Buffer size limit: prevent memory overflow
-        if (this.frameBuffer.length >= this.MAX_FRAME_BUFFER_SIZE) {
-            // Drop oldest frames if buffer is full (backpressure)
+        if (!this.isPlayback) {
+            this.frameBuffer.push(objData);
+            // Only drop stale moofs after init segment is in MSE
+            if (
+                this.initSegmentAppended
+                && this.sourceBuffer !== null
+                && this.updateend === 1
+                && this.frameBuffer.length > 12
+            ) {
+                this.frameBuffer.splice(0, this.frameBuffer.length - 6);
+            }
+        } else if (this.frameBuffer.length >= this.MAX_FRAME_BUFFER_SIZE) {
             console.warn(`Frame buffer full (${this.frameBuffer.length}), dropping oldest frames`);
-            this.frameBuffer.splice(0, Math.floor(this.MAX_FRAME_BUFFER_SIZE * 0.3)); // Drop 30%
+            this.frameBuffer.splice(0, Math.floor(this.MAX_FRAME_BUFFER_SIZE * 0.3));
+            this.frameBuffer.push(objData);
+        } else {
+            this.frameBuffer.push(objData);
         }
 
-        this.frameBuffer.push(objData);
         if (snapshotFlag === 0) {
             this.updateSourceBuffer();
         }
@@ -420,7 +481,14 @@ class MsMediaSource {
     }
 
     setVideoElement(video: HTMLVideoElement): void {
+        if (this.videoElement && this.boundOnVideoStall) {
+            this.videoElement.removeEventListener('waiting', this.boundOnVideoStall);
+            this.videoElement.removeEventListener('stalled', this.boundOnVideoStall);
+        }
         this.videoElement = video;
+        this.boundOnVideoStall = () => this.recoverIfNeeded();
+        video.addEventListener('waiting', this.boundOnVideoStall);
+        video.addEventListener('stalled', this.boundOnVideoStall);
     }
 
     setPlayMode(playback: boolean): void {
@@ -428,9 +496,10 @@ class MsMediaSource {
     }
 
     clearBuffer(): void {
-        // Clear frame buffer to stop processing new frames
         this.frameBuffer = [];
-        // Clear source buffer if it exists and is not updating
+        this.lastLiveSyncMs = 0;
+        this.lastPlaybackTime = 0;
+        this.lastPlaybackCheckMs = 0;
         if (this.sourceBuffer && !this.sourceBuffer.updating && this.mediaSource && this.mediaSource.readyState === 'open') {
             try {
                 const { buffered } = this.sourceBuffer;
@@ -445,8 +514,23 @@ class MsMediaSource {
         this.currentSegmentIndex = 0;
     }
 
+    resetLivePreview(video: HTMLVideoElement): void {
+        this.initSegmentAppended = false;
+        this.clearBuffer();
+        if (this.mediaSource || this.initFlag !== MsMediaSource.statusIdel) {
+            this.uninitMse();
+        }
+        this.setVideoElement(video);
+        this.initFlag = MsMediaSource.statusIdel;
+    }
+
     uninitMse(): void {
         if (this.videoElement !== null) {
+            if (this.boundOnVideoStall) {
+                this.videoElement.removeEventListener('waiting', this.boundOnVideoStall);
+                this.videoElement.removeEventListener('stalled', this.boundOnVideoStall);
+                this.boundOnVideoStall = null;
+            }
             this.videoElement.removeEventListener("error", this.videoErrorCallback);
             window.URL.revokeObjectURL(this.videoElement.src);
             this.videoElement.src = "";

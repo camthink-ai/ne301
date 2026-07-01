@@ -1,10 +1,10 @@
 import {
     playerStateIdle,
     specialDuration,
-    maxDuration
+    previewFrameMs,
+    maxFrameMs,
 } from './constant'
 import browser from './utils/myBrowser.js';
-import { getValueFromArrayBuffer } from './utils/binary.js'
 import MsMediaSource from './media'
 import { sleep } from '@/utils/index.js';
 
@@ -252,14 +252,13 @@ export default class H264Player {
                         this.lastPacketSec = nowSec;
                         this.packetCount = 0;
                     }
-                    this.packetCount++;
 
                     if (msg.payload instanceof ArrayBuffer) {
-                        // Track total bytes for bandwidth calculation
                         this.totalBytesLoaded += msg.payload.byteLength;
 
                         const frameData = this.dealVideoData(msg.payload);
                         if (frameData) {
+                            this.packetCount++;
                             this.decoderWorker?.postMessage(frameData);
                         }
                     }
@@ -406,43 +405,64 @@ export default class H264Player {
     }
     
     /**
+     * Restart video stream after model upload / device pipeline reset
+     */
+    async hardRestart(): Promise<void> {
+        if (!this.wsUrl || !this.videoElement) return;
+
+        this.firstFrame = 0;
+        this.frameIndex = 0;
+        this.lastVideoTime = 0;
+        this.lastSec = 0;
+        this.videoFrameCnt = 0;
+        this.packetCount = 0;
+        this.packetsPerSecond = 0;
+        this.lastPacketSec = 0;
+        this.wsRetryCount = 3;
+
+        if (this.webSocketWorker) {
+            this.wsDisconnect();
+            await sleep(300);
+            try {
+                this.webSocketWorker.terminate();
+            } catch {
+                // ignore
+            }
+            this.webSocketWorker = null;
+        }
+
+        if (this.decoderWorker) {
+            try {
+                this.decoderWorker.postMessage({ cmd: 'stop' });
+            } catch {
+                // ignore
+            }
+            await sleep(100);
+            try {
+                this.decoderWorker.terminate();
+            } catch {
+                // ignore
+            }
+            this.decoderWorker = null;
+        }
+
+        const video = this.videoElement;
+        if (this.videoPlayer) {
+            this.videoPlayer.resetLivePreview(video);
+        }
+
+        this.isConnected = false;
+        this.isStarted = false;
+        await this.start(this.wsUrl);
+    }
+
+    /**
      * Restart video stream
      * - init websocket connection
      * - close mse buffer and feed stream to mse
      */
     async reStart(): Promise<void> {
-        if (!this.wsUrl || !this.videoElement) return;
-
-        // Disconnect if already connected
-        if (this.isConnected && this.webSocketWorker) {
-            this.wsDisconnect();
-            await sleep(500);
-        }
-
-        // Initialize workers (idempotent - will create missing ones and setup handlers)
-        this.initWorkers();
-
-        // Ensure videoPlayer exists and is initialized
-        if (!this.videoPlayer) {
-            this.creatVideoPlayer();
-        }
-        
-        if (this.videoPlayer && this.videoElement) {
-            this.videoPlayer.setVideoElement(this.videoElement);
-        }
-
-        // Clear MSE buffer before restarting
-        this.videoPlayer?.clearBuffer();
-
-        // Reconnect websocket - this will start feeding data to the stream
-        this.wsConnect(this.wsUrl);
-        
-        // Reinitialize decoder worker to prepare for new stream
-        this.decoderWorker?.postMessage({ type: 'init' });
-        
-        // Reset state
-        this.isStarted = true;
-        this.isConnected = true;
+        await this.hardRestart();
     }
 
     videoMsgCallback(event: MessageEvent): void {
@@ -467,116 +487,72 @@ export default class H264Player {
     }
 
     dealVideoData(frameData: ArrayBuffer): FrameData | false {
-        const header = frameData.slice(0, 64);
-        // Timestamp is at bytes 8-15 in header (8 bytes data)
+        const headSize = 64;
+        if (frameData.byteLength <= headSize) {
+            return false;
+        }
+
+        // Timestamp at bytes 12-15 in WS frame header (big-endian seconds)
         let timestamp = 0;
         try {
-            // Read 8 bytes from bytes 8-15
-            const timestampBytes = header.slice(8, 16);
-            const view = new DataView(timestampBytes);
-            const timestamp32 = view.getUint32(4, false); // Read last 4 bytes, big-endian
-
-            // Use last 4 bytes timestamp (usually second-level timestamp)
-            timestamp = timestamp32;
+            timestamp = new DataView(frameData).getUint32(12, false);
             this.currentTime = timestamp;
         } catch (e) {
             console.error('Error getting timestamp from offset 8:', e);
         }
 
-        // If no valid timestamp found, use current time
         if (timestamp === 0) {
             timestamp = Math.floor(Date.now() / 1000);
+            this.currentTime = timestamp;
         }
 
-        this.currentTime = timestamp;
-        const bytes = new Uint8Array(frameData);
-        const frameHeader = new ArrayBuffer(88); // frameHeaderSize = 88
-        const streamData = new ArrayBuffer(frameHeader.byteLength + bytes.byteLength);
-        const fullView = new Uint8Array(streamData);
+        const h264Data = new Uint8Array(frameData, headSize);
+        if (!H264Player.checkFrameData(h264Data)) {
+            return false;
+        }
 
-        // Set some basic frame header information
-        const headerView = new DataView(frameHeader);
-        headerView.setUint32(56, 1, true); // streamCodec = H264 (codecType.H264 = 1)
-        headerView.setUint32(60, 1, true); // iframe = 1 (assume I-frame)
-
-        // Set timestamp (current time in microseconds)
-        const now = Date.now() * 1000; // Convert to microseconds
-        headerView.setUint32(80, now & 0xFFFFFFFF, true);
-        headerView.setUint32(84, (now / 0x100000000) >>> 0, true);
-
-        // Copy frame header and video data
-        fullView.set(new Uint8Array(frameHeader), 0);
-        fullView.set(bytes, frameHeader.byteLength);
-
-        let duration = 0; // us
-
-        // 1. Parse frame header information
+        let duration = 0;
         const timeUsec = Date.now() * 1000;
-        // const dataLength = streamData.byteLength - frameHeaderSize;
-        const iframe = getValueFromArrayBuffer('int', streamData, 60, 1);
-        const nowSec = parseInt((timeUsec / 1000).toString(), 10);
+        const nowSec = (timeUsec / 1000) | 0;
         if (this.lastSec !== nowSec) {
             this.lastSec = nowSec;
             this.videoFrameCnt = 0;
         }
         this.videoFrameCnt++;
-        // Set single frame playback duration
+
         if (this.firstFrame === 0) {
-            if (iframe !== 0) {
-                // return;
-            }
             this.firstFrame = 1;
-            // 25fps: 1 second / 25 frames = 40 milliseconds = 40000 microseconds
-            duration = 40000;
+            duration = previewFrameMs;
         } else if (!this.isPlayback) {
-            // Preview page - keep microsecond unit
-            duration = parseInt(((timeUsec - this.lastVideoTime) / 1000).toString(), 10);
-            if (duration < 0 || duration > maxDuration * 1000000) {  // Changed to microseconds
-                duration = specialDuration * 1000000;  // Changed to microseconds
-            }
+            // Fixed frame interval keeps MSE timeline stable under network jitter
+            duration = previewFrameMs;
         } else if (this.direction === 0) {
             if (this.playSpeed >= 4 || this.playSpeed <= 0.125) {
-                // speed >= 4 or <= 1/8, fixed duration 1s, MSE set currentTime. @initSourceBuffer
-                duration = specialDuration * 1000000;
+                duration = specialDuration * 1000;
             } else {
-                duration = parseInt((timeUsec - this.lastVideoTime).toString(), 10);
-                duration = parseInt((duration / this.playSpeed).toString(), 10);
-                if (duration < 0 || duration > maxDuration * 1000000) {
-                    duration = maxDuration * 1000000;
+                duration = Math.round((timeUsec - this.lastVideoTime) / 1000);
+                duration = Math.round(duration / this.playSpeed);
+                if (duration <= 0 || duration > maxFrameMs) {
+                    duration = maxFrameMs;
                 }
             }
         } else {
-            // rewind, only I frame, fixed duration 1s, MSE set currentTime. @initSourceBuffer
-            duration = specialDuration * 1000000;
+            duration = specialDuration * 1000;
         }
 
         this.frameIndex++;
         this.lastVideoTime = timeUsec;
-        // Return a hexadecimal (using bytes to avoid uninitialized variable)
-        // const hexData = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-        // console.log('hexData', hexData);
-        // Construct data format expected by Worker
-        // JMuxer requires H.264 NAL unit data with start code
-        const headSize = 64
-        const h264Data = new Uint8Array(frameData, headSize);
 
-        if (!H264Player.checkFrameData(frameData)) {
-            return false;
-        }
-
-        // If capture is active, extract AnnexB raw stream and accumulate
         if (this.captureActive) {
             this.appendH264Capture(frameData);
         }
 
-        const objData = {
+        return {
             cmd: 'video',
             data: h264Data,
             videoTime: duration,
             iChannelId: this.iChannelId,
-
         };
-        return objData;
     }
 
     // Start capturing H264 raw stream (Annex B), default 20 seconds
@@ -655,20 +631,20 @@ export default class H264Player {
         this.captureTotalBytes = 0;
     }
 
-    static checkFrameData(frameData: ArrayBuffer): boolean {
-        const len = frameData.byteLength;
-        if (len === 0) return false;
+    static checkFrameData(h264Data: Uint8Array): boolean {
+        const len = h264Data.byteLength;
+        if (len < 4) return false;
 
-        // First scan in 4-byte blocks
-        const u32 = new Uint32Array(frameData, 0, (len / 4) | 0);
-        for (let i = 0; i < u32.length; i += 1) {
-            if (u32[i] !== 0) return true;
+        // Annex-B: 00 00 01 or 00 00 00 01
+        if (h264Data[0] === 0 && h264Data[1] === 0) {
+            if (h264Data[2] === 1) return true;
+            if (len >= 4 && h264Data[2] === 0 && h264Data[3] === 1) return true;
         }
 
-        // Handle remaining tail bytes
-        const bytes = new Uint8Array(frameData, (u32.length << 2));
-        for (let i = 0; i < bytes.length; i += 1) {
-            if (bytes[i] !== 0) return true;
+        // Fallback: non-empty payload
+        const scanLen = Math.min(len, 64);
+        for (let i = 0; i < scanLen; i += 1) {
+            if (h264Data[i] !== 0) return true;
         }
         return false;
     }
@@ -876,10 +852,13 @@ export default class H264Player {
             this.onProgress();
         });
 
-        // Also update stats periodically
+        // Also update stats and recover from playback stall
         setInterval(() => {
             this.calculateBandwidth();
             this.latency = this.calculateLatency();
+            if (!this.isPlayback) {
+                this.videoPlayer?.recoverIfNeeded();
+            }
         }, 1000);
     }
 
@@ -888,6 +867,12 @@ export default class H264Player {
      */
     private onProgress(): void {
         if (!this.videoElement) return;
+
+        // Live preview: media.ts handles latency via buffer jump; avoid competing playbackRate changes
+        if (!this.isPlayback) {
+            this.latency = this.calculateLatency();
+            return;
+        }
 
         const bufferTime = this.getBufferedTime();
 

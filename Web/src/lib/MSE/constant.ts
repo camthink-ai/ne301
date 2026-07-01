@@ -31,6 +31,10 @@ export const frameHeaderSize = 88
 export const specialDuration = 1 // 1 second
 export const maxDuration = 10 // 10 seconds
 
+// JMuxer feed `time` is in milliseconds (internally multiplied by 1000 for microseconds)
+export const previewFrameMs = 33; // ~30fps
+export const maxFrameMs = maxDuration * 1000;
+
 // Debug switches
 export const playDebug = false
 export const displaySelf = false
