@@ -16,18 +16,79 @@ on:
         required: false
         type: string
         default: ''
+      stedgeai_variant:
+        description: 'ST Edge AI / NPU runtime variant (all = build every variant)'
+        required: false
+        type: choice
+        options:
+          - '4.0'
+          - '3.0'
+          - '2.2'
+          - all
+        default: '4.0'
 
 env:
   ARTIFACT_NAME: ne301-firmware
 
 jobs:
-  build:
-    name: Build Firmware
+  setup:
+    name: Configure build matrix
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Set STEdgeAI variant matrix
+        id: set-matrix
+        run: |
+          set -e
+          EVENT="${{ github.event_name }}"
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            SELECTED="${{ github.event.inputs.stedgeai_variant }}"
+          else
+            # push / PR / tag: default production variant only
+            SELECTED="4.0"
+          fi
+
+          ALL='[
+            {"stedgeai_variant":"3.0","docker_image":"camthink/ne301-dev:v3.0"},
+            {"stedgeai_variant":"4.0","docker_image":"camthink/ne301-dev:v4.0"},
+            {"stedgeai_variant":"2.2","docker_image":"camthink/ne301-dev:v2.2"}
+          ]'
+
+          case "$SELECTED" in
+            all)
+              MATRIX="$ALL"
+              ;;
+            3.0)
+              MATRIX='[{"stedgeai_variant":"3.0","docker_image":"camthink/ne301-dev:v3.0"}]'
+              ;;
+            4.0)
+              MATRIX='[{"stedgeai_variant":"4.0","docker_image":"camthink/ne301-dev:v4.0"}]'
+              ;;
+            2.2)
+              MATRIX='[{"stedgeai_variant":"2.2","docker_image":"camthink/ne301-dev:v2.2"}]'
+              ;;
+            *)
+              echo "::error::Unsupported STEdgeAI variant: $SELECTED"
+              exit 1
+              ;;
+          esac
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Build matrix: $MATRIX"
+
+  build:
+    name: Build Firmware (STEdgeAI ${{ matrix.stedgeai_variant }})
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.setup.outputs.matrix) }}
+
     container:
-      image: camthink/ne301-dev:v1.1
+      image: ${{ matrix.docker_image }}
       volumes:
         - ${{ github.workspace }}:/workspace
     defaults:
@@ -53,33 +114,39 @@ jobs:
           REF="${{ github.ref }}"
           EVENT="${{ github.event_name }}"
           MANUAL_VERSION="${{ inputs.version }}"
-          
-          # Determine version and build context
+          VARIANT="${{ matrix.stedgeai_variant }}"
+
           if [ "$EVENT" = "workflow_dispatch" ] && [ -n "$MANUAL_VERSION" ]; then
-            # Manual trigger with version input
             IS_TAG=false
             VERSION="$MANUAL_VERSION"
             echo "Using manually specified version: $VERSION"
           elif echo "$REF" | grep -q "^refs/tags/"; then
-            # Tag push - will create release
             IS_TAG=true
             VERSION="${REF#refs/tags/}"
             echo "Detected tag: $VERSION"
           else
-            # Regular push or PR - use commit SHA
             IS_TAG=false
             VERSION="${GITHUB_SHA:0:7}"
             echo "Using commit SHA: $VERSION"
           fi
-          
-          ARTIFACT_NAME="${{ env.ARTIFACT_NAME }}-${VERSION}"
-          
-          echo "is_tag=$IS_TAG" >> $GITHUB_OUTPUT
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
-          
+
+          ARTIFACT_NAME="${{ env.ARTIFACT_NAME }}-${VERSION}-stedgeai-${VARIANT}"
+
+          # Release job consumes the default (4.0) production artifact only
+          if [ "$VARIANT" = "4.0" ]; then
+            echo "is_tag=$IS_TAG" >> $GITHUB_OUTPUT
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          else
+            echo "is_tag=false" >> $GITHUB_OUTPUT
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          fi
+
           echo "::notice::Build context determined"
           echo "  Event: $EVENT"
+          echo "  STEdgeAI: $VARIANT"
+          echo "  Docker: ${{ matrix.docker_image }}"
           echo "  Is Tag: $IS_TAG"
           echo "  Version: $VERSION"
           echo "  Artifact: $ARTIFACT_NAME"
@@ -91,6 +158,8 @@ jobs:
           echo "Ref: ${{ github.ref }}"
           echo "Version: ${{ steps.context.outputs.version }}"
           echo "Artifact: ${{ steps.context.outputs.artifact_name }}"
+          echo "STEdgeAI variant: ${{ matrix.stedgeai_variant }}"
+          echo "Docker image: ${{ matrix.docker_image }}"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.version }}" ]; then
             echo "Manual Version: ${{ inputs.version }}"
           fi
@@ -98,25 +167,27 @@ jobs:
           echo "Actor: ${{ github.actor }}"
           echo "::endgroup::"
           uname -a
+          source /etc/profile.d/stedgeai.sh
+          stedgeai --version 2>/dev/null | head -1 || echo "stedgeai version check skipped"
 
       - name: Build firmware
         run: |
           set -e
           echo "::group::🔨 Building firmware"
           source /etc/profile.d/stedgeai.sh
-          
+
           echo "Cleaning previous build..."
-          make clean
-          
-          echo "Building firmware..."
-          make all
-          
+          make clean STEDGEAI_VARIANT=${{ matrix.stedgeai_variant }}
+
+          echo "Building firmware (STEDGEAI_VARIANT=${{ matrix.stedgeai_variant }})..."
+          make all STEDGEAI_VARIANT=${{ matrix.stedgeai_variant }}
+
           echo "Creating package..."
-          make pkg
+          make pkg STEDGEAI_VARIANT=${{ matrix.stedgeai_variant }}
 
           echo "Packing HEX..."
-          make pack-hex
-          
+          make pack-hex STEDGEAI_VARIANT=${{ matrix.stedgeai_variant }}
+
           echo "::notice::Build completed successfully"
           echo "::endgroup::"
 
@@ -128,13 +199,13 @@ jobs:
             echo "::error::Build directory not found"
             exit 1
           fi
-          
+
           BIN_COUNT=$(find build -name "*.bin" -type f 2>/dev/null | wc -l)
           if [ "$BIN_COUNT" -eq 0 ]; then
             echo "::error::No .bin files found in build directory"
             exit 1
           fi
-          
+
           echo "Found $BIN_COUNT binary file(s):"
           ls -lh build/*.bin
 
@@ -174,28 +245,27 @@ jobs:
         run: |
           set -e
           echo "::group::✅ Verify release artifacts"
-          
+
           if [ ! -d "./build" ]; then
             echo "::error::Build directory not found"
             exit 1
           fi
-          
-          # Check for required binary types
+
           FSBL_COUNT=$(find ./build -name "*FSBL_signed.bin" -type f 2>/dev/null | wc -l)
           PKG_COUNT=$(find ./build -name "*_pkg.bin" -type f 2>/dev/null | wc -l)
           WAKECORE_COUNT=$(find ./build -name "*_wakecore.bin" -type f 2>/dev/null | wc -l)
-          
+
           echo "Found artifacts:"
           echo "  FSBL: $FSBL_COUNT file(s)"
           echo "  Package: $PKG_COUNT file(s)"
           echo "  WakeCore: $WAKECORE_COUNT file(s)"
-          
+
           TOTAL=$(find ./build -name "*.bin" -type f 2>/dev/null | wc -l)
           if [ "$TOTAL" -eq 0 ]; then
             echo "::error::No build artifacts found for release"
             exit 1
           fi
-          
+
           echo "Total: $TOTAL binary file(s)"
           ls -lh ./build/*.bin
           echo "::endgroup::"
@@ -210,6 +280,7 @@ jobs:
 
             ### 📦 Build Information
             - **Version**: `${{ needs.build.outputs.version }}`
+            - **STEdgeAI variant**: `4.0` (production default)
             - **Commit**: `${{ github.sha }}`
             - **Build Date**: ${{ github.event.head_commit.timestamp || github.run_started_at }}
 
@@ -219,6 +290,8 @@ jobs:
             - **`*_pkg.bin`** - Files for OTA
             - **`*_WakeCore.bin`** - Files for flashing the WakeCore
             - **`*.hex`** - Combined HEX file for STM32CubeProgrammer one-click flash
+
+            Other STEdgeAI variants (`3.0`, `2.2`) can be built via **Actions → workflow_dispatch**.
 
             ---
             *Automatically generated by GitHub Actions*

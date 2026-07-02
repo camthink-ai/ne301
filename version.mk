@@ -74,7 +74,8 @@ endif
 FSBL_VERSION_OVERRIDE    := 1.0.1.0
 APP_VERSION_OVERRIDE     := $(VERSION)
 WEB_VERSION_OVERRIDE     := 1.3.4.8
-MODEL_VERSION_OVERRIDE   := 2.0.0.0
+# Model OTA: $(STEDGEAI_BIT).$(MODEL_VERSION_OVERRIDE) — BIT auto in stedgeai.mk (2.2->2, 3.0->3, 4.0->4)
+MODEL_VERSION_OVERRIDE   := 0.0.0
 WAKECORE_VERSION_OVERRIDE := 0.2.7.5
 
 # Set component-specific version suffixes
@@ -91,8 +92,8 @@ WAKECORE_SUFFIX := NONE
 FSBL_VERSION     := $(if $(FSBL_VERSION_OVERRIDE),$(FSBL_VERSION_OVERRIDE),$(VERSION))
 APP_VERSION      := $(if $(APP_VERSION_OVERRIDE),$(APP_VERSION_OVERRIDE),$(VERSION))
 WEB_VERSION      := $(if $(WEB_VERSION_OVERRIDE),$(WEB_VERSION_OVERRIDE),$(VERSION))
-MODEL_VERSION    := $(if $(MODEL_VERSION_OVERRIDE),$(MODEL_VERSION_OVERRIDE),$(VERSION))
 WAKECORE_VERSION := $(if $(WAKECORE_VERSION_OVERRIDE),$(WAKECORE_VERSION_OVERRIDE),$(VERSION))
+# MODEL_VERSION: $(STEDGEAI_BIT).$(MODEL_VERSION_OVERRIDE) in stedgeai.mk
 
 # Determine effective suffix for each component
 # Logic: 
@@ -141,6 +142,7 @@ version:
 	@echo "Git Info:"
 	@echo "  Commit:     $(GIT_COMMIT)$(GIT_DIRTY)"
 	@echo "  Branch:     $(GIT_BRANCH)"
+	@echo "  STEdgeAI:   $(STEDGEAI_VARIANT) ($(MODEL_STEDGEAI_VERSION))"
 	@echo ""
 	@echo "Build Info:"
 	@echo "  Date:       $(BUILD_DATE)"

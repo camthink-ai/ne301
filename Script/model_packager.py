@@ -52,20 +52,42 @@ PACKAGE_HEADER_SIZE = struct.calcsize(HEADER_FMT)
 HEADER_CHECKSUM_OFFSET = (NUM_HEADER_FIELDS - CHECKSUM_FIELD_COUNT) * 4  # byte offset of header_checksum
 PACKAGE_CHECKSUM_OFFSET = (NUM_HEADER_FIELDS - 1) * 4                    # byte offset of package_checksum
 
+def get_stedgeai_executable() -> str:
+    """Prefer stedgeai under STEDGEAI_CORE_DIR over PATH."""
+    core_dir = os.environ.get('STEDGEAI_CORE_DIR')
+    if core_dir:
+        candidates = [
+            os.path.join(core_dir, 'Utilities', 'windows', 'stedgeai.exe'),
+            os.path.join(core_dir, 'Utilities', 'windows', 'stedgeai'),
+            os.path.join(core_dir, 'Utilities', 'linux', 'stedgeai'),
+        ]
+        for candidate in candidates:
+            if os.path.isfile(candidate):
+                return candidate
+    return 'stedgeai'
+
+
+def ensure_stedgeai_toolchain_matches() -> bool:
+    """Exit early if installed stedgeai does not match STEDGEAI_VARIANT."""
+    check_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'check_stedgeai_toolchain.py')
+    result = subprocess.run([sys.executable, check_script], check=False)
+    return result.returncode == 0
+
+
 def get_stedgeai_version() -> Optional[str]:
-    """Get ST Edge AI Core version string (e.g. v3.0.0-20426 123672867) from stedgeai --version."""
+    """Get ST Edge AI Core version string from stedgeai --version."""
+    stedgeai_bin = get_stedgeai_executable()
     try:
         result = subprocess.run(
-            ['stedgeai', '--version'],
+            [stedgeai_bin, '--version'],
             capture_output=True,
             text=True,
             timeout=5,
         )
         if result.returncode != 0 or not result.stdout:
             return None
-        # First line: "ST Edge AI Core v3.0.0-20426 123672867"
         first_line = result.stdout.strip().split('\n')[0]
-        m = re.search(r'(v[\d\.\-]+\s*\d+)', first_line)
+        m = re.search(r'(v[\d]+\.[\d]+\.[\d]+(?:-[\w]+)?(?:\s+\d+)?)', first_line)
         if m:
             return m.group(1).strip()
         return None
@@ -129,6 +151,9 @@ class ModelPackager:
 
     def create_package(self, model_path: str, config_path: str, output_path: str) -> bool:
         """Create model package v2.1 with external configuration"""
+
+        if not ensure_stedgeai_toolchain_matches():
+            return False
         
         # Validate inputs
         if not self.validate_relocatable_model(model_path):

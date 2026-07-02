@@ -91,15 +91,16 @@ Go to [WIKI](https://wiki.camthink.ai/docs/neoeyes-ne301-series/quick-start)
 **Prerequisites:** Docker 20.10+  Disk Space > 10GB+
 
 ```bash
-# 1. Build (Or pull)Docker image
-docker build -t ne301-dev:latest .
+# 1. Build (Or pull) Docker image — default STEdgeAI 4.0
+docker build --build-arg STEDGEAI_VARIANT=4.0 -t camthink/ne301-dev:v4.0 .
+# Other variants: --build-arg STEDGEAI_VARIANT=3.0 -t camthink/ne301-dev:v3.0
 # or pull (faster)
-docker pull camthink/ne301-dev:latest
+docker pull camthink/ne301-dev:v4.0
 # 2. Run container
 docker run -it --rm --privileged \
   -v $(pwd):/workspace \
   -v /dev/bus/usb:/dev/bus/usb \
-  camthink/ne301-dev:latest
+  camthink/ne301-dev:v4.0
 # 3. Inside container
 make                        # Build all
 ```
@@ -114,7 +115,7 @@ make                        # Build all
 - pnpm 9+
 - STM32CubeProgrammer(v2.19.0)
 - STM32_SigningTool_CLI(v2.19.0)
-- stedgeai(v3.0,stedgeai0300.stneuralart)
+- stedgeai (v2.2 / v3.0 / v4.0 — must match `STEDGEAI_VARIANT`, see below)
 
 ```bash
 # 1. Check environment
@@ -162,14 +163,29 @@ The mainboard contains two MCUs： **stm32n6** and **stm32u0**
 
 ### Build
 
+Application code is shared across STEdgeAI toolchains. Select the NPU runtime at build time with `STEDGEAI_VARIANT` (default `4.0`). **Firmware and model packages must use the same variant** — the installed `stedgeai` CLI must match (`STEDGEAI_CORE_DIR`).
+
+| `STEDGEAI_VARIANT` | Docker image | Toolchain | Model OTA version |
+|--------------------|--------------|-----------|-------------------|
+| `2.2` | `camthink/ne301-dev:v2.2` | STEdgeAI 2.2 | `2.x.x.x` |
+| `3.0` | `camthink/ne301-dev:v3.0` | STEdgeAI 3.0 | `3.x.x.x` |
+| `4.0` (default) | `camthink/ne301-dev:v4.0` | STEdgeAI 4.0 | `4.x.x.x` |
+
+Model release version is `$(STEDGEAI_BIT).$(MODEL_VERSION_OVERRIDE)`. Edit `MODEL_VERSION_OVERRIDE` in `version.mk` (e.g. `0.1.0` → `4.0.1.0` when `STEDGEAI_VARIANT=4.0`).
+
 ```bash
-# Build
+# Build (default STEdgeAI 4.0)
 make                        # Build all (FSBL + App + Web + Model)
 make app                    # Build application only
 make web                    # Build web frontend
 make model                  # Build AI model
 make pkg                    # package for flash or OTA
-make info                   # help
+make version                # show versions (incl. STEdgeAI variant)
+make help
+
+# Other STEdgeAI variants
+make all STEDGEAI_VARIANT=3.0
+make model STEDGEAI_VARIANT=3.0   # requires matching stedgeai + STEDGEAI_CORE_DIR
 ```
 
 ### Flash

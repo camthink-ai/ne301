@@ -64,11 +64,27 @@ RUN set -e && \
 
 FROM install-cubeprog AS install-stedgeai
 # Install ST Edge AI using online installer
+# Build with: docker build --build-arg STEDGEAI_VARIANT=4.0 -t camthink/ne301-dev:v4.0 .
 ENV QT_QPA_PLATFORM=minimal
-ARG STEDGEAI_PACKAGE=stedgeai0300.stneuralart
-ARG STEDGEAI_URL=https://resources.camthink.ai/tools/stedgeai-lin-v3.0.0.zip
+ARG STEDGEAI_VARIANT=4.0
+ARG STEDGEAI_PACKAGE=
+ARG STEDGEAI_URL=
 RUN set -e && \
-    URL="${STEDGEAI_URL}" && \
+    case "${STEDGEAI_VARIANT}" in \
+      2.2) \
+        PKG="${STEDGEAI_PACKAGE:-stedgeai0202.stneuralart}"; \
+        URL="${STEDGEAI_URL:-https://resources.camthink.ai/tools/stedgeai-lin-v2-2-0.zip}"; \
+        ;; \
+      4.0) \
+        PKG="${STEDGEAI_PACKAGE:-stedgeai0400.stm32mcu}"; \
+        URL="${STEDGEAI_URL:-https://resources.camthink.ai/tools/stedgeai-lin-v4.0.1.zip}"; \
+        ;; \
+      *) \
+        PKG="${STEDGEAI_PACKAGE:-stedgeai0300.stneuralart}"; \
+        URL="${STEDGEAI_URL:-https://resources.camthink.ai/tools/stedgeai-lin-v3.0.0.zip}"; \
+        ;; \
+    esac && \
+    echo "ST Edge AI variant: ${STEDGEAI_VARIANT} (${PKG})" && \
     echo "Downloading ST Edge AI from: $URL" && \
     curl -fSL --retry 3 --connect-timeout 60 --progress-bar "$URL" -o /tmp/stedgeai.zip && \
     unzip -q /tmp/stedgeai.zip -d /tmp/stedgeai-extract && \
@@ -76,7 +92,7 @@ RUN set -e && \
     [ -n "$INSTALLER" ] && [ -f "$INSTALLER" ] || (echo "Error: stedgeai installer not found!" && exit 1) && \
     echo "Found installer: $INSTALLER" && \
     chmod +x "$INSTALLER" && \
-    "$INSTALLER" --root ${STEDGEAI_ROOT} --accept-licenses --confirm-command --default-answer install ${STEDGEAI_PACKAGE} && \
+    "$INSTALLER" --root ${STEDGEAI_ROOT} --accept-licenses --confirm-command --default-answer install ${PKG} && \
     VERSION_DIR=$(find ${STEDGEAI_ROOT} -maxdepth 1 -type d -name "[0-9]*" | head -1) && \
     [ -n "$VERSION_DIR" ] && [ -d "$VERSION_DIR" ] || (echo "Error: Version directory not found in ${STEDGEAI_ROOT}" && ls -la ${STEDGEAI_ROOT} && exit 1) && \
     echo "Found version directory: $VERSION_DIR" && \
@@ -87,8 +103,10 @@ RUN set -e && \
     echo "ST Edge AI installed successfully"
 
 FROM install-stedgeai AS final
+ARG STEDGEAI_VARIANT=4.0
 # Set PATH
-ENV PATH="${PATH}:${GCC_PATH}:${CUBE_PROG_ROOT}/bin"
+ENV PATH="${PATH}:${GCC_PATH}:${CUBE_PROG_ROOT}/bin" \
+    STEDGEAI_VARIANT=${STEDGEAI_VARIANT}
 
 # Cleanup and set working directory
 RUN rm -rf /tmp/*
@@ -103,5 +121,6 @@ CMD ["/bin/bash"]
 
 LABEL maintainer="CamThink Development Team" \
       description="NE301 STM32N6570 AI Vision Camera Build Environment" \
-      version="1.0"
+      version="1.0" \
+      stedgeai.variant="${STEDGEAI_VARIANT}"
 

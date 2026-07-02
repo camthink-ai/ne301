@@ -3,6 +3,10 @@
 ######################################
 # Inherits common configuration from root Makefile (via export)
 
+ifndef STEDGEAI_LIB_ROOT
+include ../stedgeai.mk
+endif
+
 ######################################
 # Helper Functions
 ######################################
@@ -334,26 +338,8 @@ C_SOURCES += ../Gcc/Src/console.c
 C_SOURCES += ../Gcc/Src/fast_memcpy.c
 C_SOURCES += ../Gcc/Src/threadx_libc.c
 
-# Middlewares - AI Runtime
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/Devices/STM32N6xx/mcu_cache.c
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/Devices/STM32N6xx/npu_cache.c
-# C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ecloader.c
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton.c
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_cipher.c
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_util.c
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_dbgtrc.c
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_debug.c
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_lib.c
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_lib_sw_operators.c
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_osal_freertos.c
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_osal_threadx.c
-# C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_osal_zephyr.c
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_profiler.c
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_reloc_network.c
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_rt_main.c
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_aton_runtime.c
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_sw_float.c
-C_SOURCES += ../Middlewares/ST/stedgeai-lib/Npu/ll_aton/ll_sw_integer.c
+# Middlewares - AI Runtime (variant: STEDGEAI_VARIANT in stedgeai.mk)
+C_SOURCES += $(STEDGEAI_C_SOURCE_PATHS)
 
 # Middlewares - Camera
 C_SOURCES += ../Middlewares/ST/STM32_Camera_Middleware/cmw_camera.c
@@ -637,6 +623,7 @@ C_DEFS += -DENABLE_U0_MODULE=1
 
 # AI Runtime
 C_DEFS += -DAPP_HAS_PARALLEL_NETWORKS=1
+C_DEFS += -DMODEL_STEDGEAI_VERSION_SUPPORTED=\"$(MODEL_STEDGEAI_VERSION)\"
 C_DEFS += -DLL_ATON_DUMP_DEBUG_API
 C_DEFS += -DLL_ATON_PLATFORM=LL_ATON_PLAT_STM32N6
 C_DEFS += -DLL_ATON_OSAL=LL_ATON_OSAL_THREADX
@@ -744,9 +731,9 @@ AS_INCLUDES += -I../Drivers/STM32N6xx_HAL_Driver/Inc/Legacy
 AS_INCLUDES += -I../Middlewares/ST/usbx/common/core/inc
 AS_INCLUDES += -I../Middlewares/ST/usbx/ports/generic/inc
 AS_INCLUDES += -I../Drivers/CMSIS/Include
-AS_INCLUDES += -I../Middlewares/ST/stedgeai-lib/Npu/Devices/STM32N6xx
-AS_INCLUDES += -I../Middlewares/ST/stedgeai-lib/Inc
-AS_INCLUDES += -I../Middlewares/ST/stedgeai-lib/Npu/ll_aton
+AS_INCLUDES += -I$(STEDGEAI_LIB_ROOT)/Npu/Devices/$(STEDGEAI_NPU_DEVICE)
+AS_INCLUDES += -I$(STEDGEAI_LIB_ROOT)/Inc
+AS_INCLUDES += -I$(STEDGEAI_LIB_ROOT)/Npu/ll_aton
 AS_INCLUDES += -I../Middlewares/ST/threadx/common/inc
 AS_INCLUDES += -I../Middlewares/ST/threadx/ports/cortex_M55/gnu/inc
 AS_INCLUDES += -I../Middlewares/ST/threadx/utility/low_power
@@ -859,9 +846,9 @@ C_INCLUDES += -I../BSP/Utilities/Fonts
 C_INCLUDES += -I../BSP/Utilities/JPEG
 
 # Middlewares - ST
-C_INCLUDES += -I../Middlewares/ST/stedgeai-lib/Inc
-C_INCLUDES += -I../Middlewares/ST/stedgeai-lib/Npu/ll_aton
-C_INCLUDES += -I../Middlewares/ST/stedgeai-lib/Npu/Devices/STM32N6xx
+C_INCLUDES += -I$(STEDGEAI_LIB_ROOT)/Inc
+C_INCLUDES += -I$(STEDGEAI_LIB_ROOT)/Npu/ll_aton
+C_INCLUDES += -I$(STEDGEAI_LIB_ROOT)/Npu/Devices/$(STEDGEAI_NPU_DEVICE)
 C_INCLUDES += -I../Middlewares/ST/STM32_Camera_Middleware
 C_INCLUDES += -I../Middlewares/ST/STM32_Camera_Middleware/sensors
 C_INCLUDES += -I../Middlewares/ST/STM32_Camera_Middleware/sensors/imx335
@@ -935,10 +922,10 @@ endif
 
 # Libraries (in correct order for linking)
 LIBS = -lc -lm -lnosys
-LIBS += -l:NetworkRuntime1100_CM55_GCC.a
+LIBS += -l:$(NETWORK_RUNTIME_LIB)
 
 LIBDIR =
-LIBDIR += -L../Middlewares/ST/stedgeai-lib/Lib/GCC/ARMCortexM55
+LIBDIR += -L$(STEDGEAI_LIBDIR)
 
 # Linker flags (inherits COMMON_LDFLAGS from root)
 LDFLAGS = $(COMMON_LDFLAGS) -T$(LDSCRIPT)

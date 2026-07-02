@@ -3,6 +3,10 @@
 ######################################
 # Inherits configuration from root Makefile (via export)
 
+ifndef STEDGEAI_VARIANT
+include ../stedgeai.mk
+endif
+
 # Project configuration
 TARGET = $(PROJECT_NAME)_Model
 BUILD_DIR = build
@@ -16,6 +20,7 @@ RELOC_CONFIG = yolov8_od@neural_art_reloc.json
 SCRIPT_DIR = ../Script
 GEN_RELOC = $(SCRIPT_DIR)/generate-reloc-model.sh
 PACKAGER = $(SCRIPT_DIR)/model_packager.py
+CHECK_STEDGEAI = python $(SCRIPT_DIR)/check_stedgeai_toolchain.py
 
 # Model files (example: YOLOv8)
 MODEL_NAME = yolov8n_256_quant_pc_uf_od_coco-person-st
@@ -39,6 +44,8 @@ $(BUILD_DIR):
 
 # Step 1: Generate relocated model
 $(NETWORK_RELOC): $(MODEL_TFLITE) | $(BUILD_DIR)
+	@echo "Checking ST Edge AI toolchain (STEDGEAI_VARIANT=$(STEDGEAI_VARIANT))..."
+	@$(CHECK_STEDGEAI)
 	@echo "Generating relocated model..."
 	@bash $(GEN_RELOC) \
 		-m $(MODEL_TFLITE) \

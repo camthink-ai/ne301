@@ -17,7 +17,7 @@ This document introduces two methods to complete YOLOv8 model training, quantiza
 - Docker & docker-compose (required)
 - If you need to generate NE301 quantized model packages, pull the image in advance:
   ```sh
-  docker pull camthink/ne301-dev:latest
+  docker pull camthink/ne301-dev:v4.0
   ```
 
 ### 1.2 Deploy AI Tool Stack

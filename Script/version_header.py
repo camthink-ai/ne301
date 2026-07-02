@@ -71,7 +71,7 @@ def parse_version_mk(version_mk_path):
         print(f"Warning: {version_mk_path} not found, using defaults")
         return version
     
-    with open(version_mk_path, 'r') as f:
+    with open(version_mk_path, 'r', encoding='utf-8') as f:
         content = f.read()
     
     # Parse main VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH, VERSION_SUFFIX
@@ -185,7 +185,7 @@ def generate_version_header(output_path, version, build_override=None):
     # Ensure directory exists
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
-    with open(output_path, 'w', newline='\n') as f:
+    with open(output_path, 'w', newline='\n', encoding='utf-8') as f:
         f.write(header_content)
     
     print(f"Version header generated: {version_string}")
@@ -207,10 +207,8 @@ def generate_fsbl_version_header(output_path, version_string):
     # Ensure directory exists
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
-    with open(output_path, 'w', newline='\n') as f:
+    with open(output_path, 'w', newline='\n', encoding='utf-8') as f:
         f.write(header_content)
-    
-    print(f"FSBL version header generated: {version_string}")
     print(f"  Output: {output_path}")
     return 0
 

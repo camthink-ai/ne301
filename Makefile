@@ -9,6 +9,7 @@ PROJECT_NAME = ne301
 # Version Management (from version.mk)
 # ==============================================
 include version.mk
+include stedgeai.mk
 
 # Directories
 BUILD_DIR = build
@@ -436,6 +437,7 @@ help:
 	@echo "========================================="
 	@echo ""
 	@echo "Build:    make [fsbl|app|web|model|all]"
+	@echo "          STEDGEAI_VARIANT=2.2|3.0|4.0  (default: $(STEDGEAI_VARIANT))"
 	@echo "          make wakecore   # Build STM32U0 WakeCore"
 	@echo "Sign:     make sign[-fsbl|-app]"
 	@echo "Flash:    make flash[-fsbl|-app|-web|-model|-wakecore]"

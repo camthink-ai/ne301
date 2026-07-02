@@ -8,6 +8,7 @@ This directory contains essential development tools for the NE301 STM32N6570 pro
 
 - [Quick Start](#quick-start)
 - [Script Overview](#script-overview)
+- [STEdgeAI Variant Switching](#stedgeai-variant-switching)
 - [Complete Workflows](#complete-workflows)
 - [Troubleshooting](#troubleshooting)
 - [Support Resources](#support-resources)
@@ -84,6 +85,34 @@ Convert TensorFlow Lite models to deployable binaries.
 
 Create, validate, and extract AI model packages.
 
+### 6. **stedgeai-use.sh** - STEdgeAI Variant Switcher
+
+Switch `STEDGEAI_VARIANT` (2.2 / 3.0 / 4.0) and `STEDGEAI_CORE_DIR` for local Git Bash / Linux builds.
+
+| Command | Description |
+|---------|-------------|
+| `source Script/stedgeai-use.sh` | Load helper into current shell |
+| `stedgeai-use 4.0` | Select variant and toolchain path |
+| `stedgeai-use show` | Show current selection |
+
+**Full guide:** [STEDGEAI_USE.md](STEDGEAI_USE.md)
+
+---
+
+## STEdgeAI Variant Switching
+
+NE301 shares application code across STEdgeAI toolchains. Select the runtime at build time:
+
+```bash
+source Script/stedgeai-use.sh
+stedgeai-use 4.0
+make clean && make all
+```
+
+Or per command: `make all STEDGEAI_VARIANT=4.0`
+
+See **[STEDGEAI_USE.md](STEDGEAI_USE.md)** for path configuration, troubleshooting, and variant table.
+
 ---
 
 ## Complete Workflows
@@ -149,6 +178,10 @@ python verify_ota_package.py ../Web/firmware_assets/web-assets_v1.5.0.88_ota.bin
 
 ```bash
 cd Script
+
+# Step 0: Select matching STEdgeAI variant (see STEDGEAI_USE.md)
+source stedgeai-use.sh
+stedgeai-use 3.0
 
 # Step 1: Generate Model Binary
 ./generate-reloc-model.sh \
@@ -281,7 +314,8 @@ file model.tflite
 |-------|-------|----------|
 | `STM32_Programmer_CLI not found` | Tool not installed | Install STM32CubeProgrammer |
 | `arm-none-eabi-objcopy not found` | Toolchain missing | Install ARM GCC |
-| `STEDGEAI_CORE_DIR not set` | Env var missing | Export STEDGEAI_CORE_DIR |
+| `STEDGEAI_CORE_DIR not set` | Env var missing | Export STEDGEAI_CORE_DIR or use `stedgeai-use` |
+| `toolchain does not match build variant` | Variant/path mismatch | Run `stedgeai-use <variant>` after configuring `stedgeai-use.local.sh` |
 | `Invalid version format` | Wrong version string | Use format: `1.0.0.1` |
 | `File too small` | Corrupted file | Re-build firmware |
 | `Magic number mismatch` | Wrong file format | Check OTA package |
@@ -291,6 +325,7 @@ file model.tflite
 ## Support Resources
 
 ### Documentation
+- [STEDGEAI_USE.md](STEDGEAI_USE.md) - STEdgeAI variant switching (`stedgeai-use.sh`)
 - [MAKER_USAGE.md](MAKER_USAGE.md) - maker.sh detailed usage 
 - [OTA_PACK.md](OTA_PACK.md) - OTA packaging guide 
 - [MODEL_PACK.md](MODEL_PACK.md) - AI model generation guide

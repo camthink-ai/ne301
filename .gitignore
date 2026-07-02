@@ -41,6 +41,7 @@ Thumbs.db
 
 .vscode/
 .make.env
+Script/stedgeai-use.local.sh
 Web/firmware_assets/
 Model/build/
 Model/st_ai_c/
