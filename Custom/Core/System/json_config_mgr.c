@@ -35,7 +35,8 @@
          .ai_enabled = AICAM_FALSE,
          .ai_1_active = AICAM_FALSE,
          .confidence_threshold = 50,
-         .nms_threshold = 50
+         .nms_threshold = 50,
+         .overlay_results = AICAM_TRUE
      },
      
      .power_mode_config = {
@@ -799,6 +800,20 @@
  uint32_t json_config_get_nms_threshold(void)
  {
      return g_json_config_ctx.current_config.ai_debug.nms_threshold;
+ }
+
+ aicam_result_t json_config_set_overlay_results(aicam_bool_t overlay_results)
+ {
+     g_json_config_ctx.current_config.ai_debug.overlay_results = overlay_results;
+
+     // update to NVS
+     json_config_nvs_write_bool(NVS_KEY_OVERLAY_RESULTS, overlay_results);
+     return AICAM_OK;
+ }
+
+ aicam_bool_t json_config_get_overlay_results(void)
+ {
+     return g_json_config_ctx.current_config.ai_debug.overlay_results;
  }
 
  /*=================== Work Mode Configuration API Implementation ====================*/

@@ -37,6 +37,7 @@ typedef struct {
     uint32_t max_detections;              // Maximum detections per frame
     uint32_t processing_interval;         // AI processing interval (frames)
     aicam_bool_t ai_enabled;              // AI processing enabled
+    aicam_bool_t overlay_results;         // Draw AI results onto encoded frames
     aicam_bool_t enable_stats;            // Enable statistics logging
     aicam_bool_t enable_debug;            // Enable debug logging
     aicam_bool_t enable_drawing;          // Enable AI result drawing
@@ -207,6 +208,19 @@ aicam_result_t ai_set_inference_enabled(aicam_bool_t enabled);
  * @return AI inference enabled status
  */
 aicam_bool_t ai_get_inference_enabled(void);
+
+/**
+ * @brief Enable/disable drawing AI results onto encoded frames
+ * @param overlay_results Overlay enabled flag
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t ai_set_overlay_results(aicam_bool_t overlay_results);
+
+/**
+ * @brief Get AI overlay results status
+ * @return AI overlay results status
+ */
+aicam_bool_t ai_get_overlay_results(void);
 
 /**
  * @brief Set AI NMS threshold

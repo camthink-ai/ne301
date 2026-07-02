@@ -61,6 +61,7 @@
  #define NVS_KEY_AI_PIPE_HEIGHT      "ai_pipe_height"
  #define NVS_KEY_CONFIDENCE          "confidence"
  #define NVS_KEY_NMS_THRESHOLD       "nms_thresh"
+ #define NVS_KEY_OVERLAY_RESULTS     "overlay_results"
  
  // Power mode configuration key names
  #define NVS_KEY_POWER_CURRENT_MODE  "power_cur_mode"

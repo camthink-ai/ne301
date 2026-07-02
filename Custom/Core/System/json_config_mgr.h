@@ -31,6 +31,7 @@
      aicam_bool_t ai_1_active;      // AI_1 active switch
      uint32_t confidence_threshold;             // Confidence threshold 0-100
      uint32_t nms_threshold;                    // NMS threshold 0-100
+     aicam_bool_t overlay_results;  // Draw AI results onto encoded frames
  } ai_debug_config_t;
  
 typedef struct {
@@ -813,8 +814,21 @@ uint32_t json_config_get_confidence_threshold(void);
 /**
  * @brief Get NMS threshold
  * @return NMS threshold
- */ 
+ */
 uint32_t json_config_get_nms_threshold(void);
+
+/**
+ * @brief Set AI overlay results flag
+ * @param overlay_results Draw AI results onto encoded frames
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_set_overlay_results(aicam_bool_t overlay_results);
+
+/**
+ * @brief Get AI overlay results flag
+ * @return AI overlay results flag
+ */
+aicam_bool_t json_config_get_overlay_results(void);
 
 
 /**
@@ -984,6 +998,7 @@ aicam_result_t json_config_delete_webhook_ca_cert(void);
 #define JSON_CONFIG_GET_AI_1_ACTIVE(config)    ((config)->ai_debug.ai_1_active)
 #define JSON_CONFIG_GET_CONFIDENCE(config)     ((config)->ai_debug.confidence_threshold)
 #define JSON_CONFIG_GET_NMS_THRESHOLD(config)  ((config)->ai_debug.nms_threshold)
+#define JSON_CONFIG_GET_OVERLAY_RESULTS(config) ((config)->ai_debug.overlay_results)
 
 // Macros for quick access to power mode configuration
 #define JSON_CONFIG_GET_POWER_MODE(config)     ((config)->power_mode_config.current_mode)

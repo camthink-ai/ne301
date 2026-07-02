@@ -29,6 +29,7 @@ typedef struct {
     uint32_t format;                      // Pixel format
     uint32_t bpp;                         // Bytes per pixel
     uint32_t ai_enabled;                  // AI processing enabled
+    uint32_t overlay_results;             // Draw AI results onto captured frames
 } video_camera_config_t;
 
 /**
