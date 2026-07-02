@@ -11,6 +11,7 @@
 #define COLOR_TRUNK COLOR_MAGENTA
 #define COLOR_LEGS COLOR_YELLOW
 #define MPE_YOLOV8_PP_CONF_THRESHOLD (0.6000000000f)
+#define SPE_MOVENET_PP_CONF_THRESHOLD (0.3000000000f)
 
 __attribute__((unused)) static const int bindings[][3] = {
   {15, 13, COLOR_LEGS},
@@ -606,6 +607,160 @@ int iseg_draw_result(iseg_draw_conf_t *iseg_conf, iseg_detect_t *result, uint32_
     print_param.x_pos = x0 + iseg_conf->line_width;
     print_param.y_pos = y0 + iseg_conf->line_width;
     device_ioctl(draw, DRAW_CMD_PRINTF, (uint8_t *)&print_param, sizeof(draw_printf_param_t));
+
+    return 0;
+}
+
+/* ==================== SPE Drawing ==================== */
+
+int spe_draw_init(spe_draw_conf_t *spe_conf)
+{
+    int ret;
+    if(spe_conf == NULL){
+        LOG_DRV_ERROR("spe_draw_init invalid param\r\n");
+        return -1;
+    }
+
+    device_t *draw = device_find_pattern(DRAW_DEVICE_NAME, DEV_TYPE_VIDEO);
+    if(draw == NULL){
+        return -1;
+    }
+    spe_conf->color = COLOR_YELLOW;
+    spe_conf->line_width = 2;
+    spe_conf->dot_width = 10;
+
+    draw_fontsetup_param_t font_param = {0};
+    /* set 16 font */
+    if(spe_conf->font.data){
+        hal_mem_free(spe_conf->font.data);
+        spe_conf->font.data = NULL;
+    }
+    font_param.p_font_in = &Font16;
+    font_param.p_font = &spe_conf->font;
+    ret = device_ioctl(draw, DRAW_CMD_FONT_SETUP, (uint8_t *)&font_param, sizeof(draw_fontsetup_param_t));
+    if(ret < 0){
+        LOG_DRV_ERROR("spe_draw_init failed\r\n");
+        if(spe_conf->binds){
+            hal_mem_free(spe_conf->binds);
+            spe_conf->binds = NULL;
+        }
+        return -1;
+    }
+    return 0;
+}
+
+int spe_draw_deinit(spe_draw_conf_t *spe_conf)
+{
+    if(spe_conf == NULL){
+        LOG_DRV_ERROR("spe_draw_deinit invalid param\r\n");
+        return -1;
+    }
+    if(spe_conf->binds){
+        hal_mem_free(spe_conf->binds);
+        spe_conf->binds = NULL;
+    }
+
+    if(spe_conf->font.data){
+        hal_mem_free(spe_conf->font.data);
+        spe_conf->font.data = NULL;
+    }
+    return 0;
+}
+
+int spe_draw_result(spe_draw_conf_t *spe_conf, const pp_spe_out_t *result)
+{
+    if(spe_conf == NULL || result == NULL || result->keypoints == NULL || result->nb_keypoints == 0){
+        LOG_DRV_ERROR("spe_draw_result invalid param\r\n");
+        return -1;
+    }
+
+    device_t *draw = device_find_pattern(DRAW_DEVICE_NAME, DEV_TYPE_VIDEO);
+    if(draw == NULL){
+        return -1;
+    }
+
+    if(result->num_connections > 0 && result->keypoint_connections != NULL){
+        if(spe_conf->binds != NULL){
+            hal_mem_free(spe_conf->binds);
+            spe_conf->binds = NULL;
+        }
+        spe_conf->num_binds = result->num_connections;
+        spe_conf->binds = hal_mem_alloc_fast(sizeof(mpe_draw_bind_t) * spe_conf->num_binds);
+        if(spe_conf->binds == NULL){
+            LOG_DRV_ERROR("spe_draw_result failed\r\n");
+            return -1;
+        }
+        for(int i = 0; i < spe_conf->num_binds; i++){
+            spe_conf->binds[i].keypoint1 = result->keypoint_connections[i*2 + 0];
+            spe_conf->binds[i].keypoint2 = result->keypoint_connections[i*2 + 1];
+            spe_conf->binds[i].color = COLOR_GREEN;
+        }
+    } else {
+        /* No connections in this result: drop stale binds from a previous call */
+        if(spe_conf->binds != NULL){
+            hal_mem_free(spe_conf->binds);
+            spe_conf->binds = NULL;
+        }
+        spe_conf->num_binds = 0;
+    }
+
+    /* No bounding box or class label: SPE is detector-free (keypoints + skeleton only) */
+    int nb_keypoints = result->nb_keypoints;
+    int keypoint_x[nb_keypoints], keypoint_y[nb_keypoints];
+    bool keypoint_valid[nb_keypoints];
+    for (int i = 0; i < nb_keypoints; i++) {
+        keypoint_valid[i] = false;
+        float x = result->keypoints[i].x;
+        float y = result->keypoints[i].y;
+        if (result->keypoints[i].conf >= SPE_MOVENET_PP_CONF_THRESHOLD &&
+            x >= 0 && y >= 0 && x <= 1 && y <= 1) {
+            convert_value(spe_conf->image_width, spe_conf->image_height, x, y, &keypoint_x[i], &keypoint_y[i]);
+            keypoint_valid[i] = true;
+        }
+    }
+
+    draw_line_param_t line_param = {0};
+    for (int i = 0; i < spe_conf->num_binds; i++) {
+        int k1 = spe_conf->binds[i].keypoint1;
+        int k2 = spe_conf->binds[i].keypoint2;
+        if (k1 < nb_keypoints && k2 < nb_keypoints && keypoint_valid[k1] && keypoint_valid[k2]) {
+            line_param.p_dst = spe_conf->p_dst;
+            line_param.dst_width = spe_conf->image_width;
+            line_param.dst_height = spe_conf->image_height;
+            line_param.x1 = keypoint_x[k1];
+            line_param.y1 = keypoint_y[k1];
+            line_param.x2 = keypoint_x[k2];
+            line_param.y2 = keypoint_y[k2];
+            line_param.line_width = spe_conf->line_width;
+            line_param.color = spe_conf->binds[i].color;
+            device_ioctl(draw, DRAW_CMD_LINE, (uint8_t *)&line_param, sizeof(draw_line_param_t));
+        }
+    }
+
+    draw_printf_param_t print_param = {0};
+    draw_dot_param_t dot_param = {0};
+    for (int i = 0; i < nb_keypoints; i++) {
+        if (keypoint_valid[i]) {
+
+            snprintf(print_param.str, sizeof(print_param.str), "%d", i);
+            print_param.p_font = &spe_conf->font;
+            print_param.p_dst = spe_conf->p_dst;
+            print_param.dst_width = spe_conf->image_width;
+            print_param.dst_height = spe_conf->image_height;
+            print_param.x_pos = keypoint_x[i] + spe_conf->dot_width;
+            print_param.y_pos = keypoint_y[i];
+            device_ioctl(draw, DRAW_CMD_PRINTF, (uint8_t *)&print_param, sizeof(draw_printf_param_t));
+
+            dot_param.p_dst = spe_conf->p_dst;
+            dot_param.dst_width = spe_conf->image_width;
+            dot_param.dst_height = spe_conf->image_height;
+            dot_param.x_pos = keypoint_x[i];
+            dot_param.y_pos = keypoint_y[i];
+            dot_param.dot_width = spe_conf->dot_width;
+            dot_param.color = spe_conf->color;
+            device_ioctl(draw, DRAW_CMD_DOT, (uint8_t *)&dot_param, sizeof(draw_dot_param_t));
+        }
+    }
 
     return 0;
 }

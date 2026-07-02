@@ -55,4 +55,20 @@ typedef struct {
 int iseg_draw_init(iseg_draw_conf_t *iseg_conf);
 int iseg_draw_deinit(iseg_draw_conf_t *iseg_conf);
 int iseg_draw_result(iseg_draw_conf_t *iseg_conf, iseg_detect_t *result, uint32_t instance_index);
+
+typedef struct {
+    uint8_t *p_dst;
+    uint8_t num_binds;
+    mpe_draw_bind_t* binds;
+    uint32_t color;
+    uint32_t image_width;
+    uint32_t image_height;
+    uint32_t line_width;
+    uint32_t dot_width;
+    DRAW_Font_t font;
+} spe_draw_conf_t;
+
+int spe_draw_init(spe_draw_conf_t *spe_conf);
+int spe_draw_deinit(spe_draw_conf_t *spe_conf);
+int spe_draw_result(spe_draw_conf_t *spe_conf, const pp_spe_out_t *result);
 #endif
