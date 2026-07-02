@@ -232,11 +232,13 @@ static aicam_result_t ai_management_get_thresholds_handler(http_handler_context_
     cJSON* data = cJSON_CreateObject();
     cJSON_AddNumberToObject(data, "nms_threshold", nms_threshold);
     cJSON_AddNumberToObject(data, "confidence_threshold", confidence_threshold);
-    
+    cJSON_AddBoolToObject(data, "overlay_results", ai_get_overlay_results());
+
     // Add threshold descriptions
     cJSON* descriptions = cJSON_CreateObject();
     cJSON_AddStringToObject(descriptions, "nms_threshold", "Non-Maximum Suppression threshold (0-100)");
     cJSON_AddStringToObject(descriptions, "confidence_threshold", "AI confidence threshold (0-100)");
+    cJSON_AddStringToObject(descriptions, "overlay_results", "Draw AI results onto encoded video frames");
     cJSON_AddItemToObject(data, "descriptions", descriptions);
     
     api_response_success(ctx, cJSON_Print(data), "AI threshold configuration retrieved");
@@ -309,10 +311,24 @@ static aicam_result_t ai_management_set_thresholds_handler(http_handler_context_
         }
     }
 
-    
+    // Update overlay results if provided
+    cJSON* overlay_item = cJSON_GetObjectItem(request, "overlay_results");
+    if (overlay_item && cJSON_IsBool(overlay_item)) {
+        aicam_bool_t overlay_value = cJSON_IsTrue(overlay_item) ? AICAM_TRUE : AICAM_FALSE;
+        aicam_result_t overlay_result = ai_set_overlay_results(overlay_value);
+        if (overlay_result == AICAM_OK) {
+            cJSON_AddStringToObject(response_data, "overlay_results", "updated");
+            cJSON_AddItemToArray(updated, cJSON_CreateString("overlay_results"));
+        } else {
+            cJSON_AddStringToObject(response_data, "overlay_results", "failed");
+            cJSON_AddItemToArray(errors, cJSON_CreateString("Failed to set overlay results"));
+        }
+    }
+
     // Add current values to response
     cJSON_AddNumberToObject(response_data, "current_nms_threshold", ai_get_nms_threshold());
     cJSON_AddNumberToObject(response_data, "current_confidence_threshold", ai_get_confidence_threshold());
+    cJSON_AddBoolToObject(response_data, "current_overlay_results", ai_get_overlay_results());
     
     // Add errors and updated arrays
     cJSON_AddItemToObject(response_data, "errors", errors);

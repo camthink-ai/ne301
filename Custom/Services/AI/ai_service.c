@@ -610,6 +610,7 @@ static aicam_result_t ai_create_camera_pipeline_nodes(const ai_service_config_t 
     camera_config.bpp = config->bpp;
     camera_config.format = config->format;
     camera_config.ai_enabled = config->ai_enabled;
+    camera_config.overlay_results = config->overlay_results;
     
     // Create encoder node configuration
     video_encoder_config_t encoder_config;
@@ -674,6 +675,7 @@ static aicam_result_t ai_create_ai_pipeline_nodes(const ai_service_config_t *con
     ai_config.max_detections = config->max_detections;
     ai_config.processing_interval = config->processing_interval;
     ai_config.enabled = config->ai_enabled;
+    ai_config.overlay_results = config->overlay_results;
     ai_config.enable_drawing = config->enable_drawing;
     
     // Create AI node
@@ -794,6 +796,56 @@ aicam_result_t ai_set_inference_enabled(aicam_bool_t enabled)
 aicam_bool_t ai_get_inference_enabled(void)
 {
     return g_ai_service.config.ai_enabled;
+}
+
+aicam_result_t ai_set_overlay_results(aicam_bool_t overlay_results)
+{
+    // Update and persist the configuration first, so the setting also
+    // takes effect (via config) when the pipeline is not running
+    g_ai_service.config.overlay_results = overlay_results;
+    json_config_set_overlay_results(overlay_results);
+
+    if (!g_ai_service.ai_pipeline_initialized || !g_ai_service.ai_node || !g_ai_service.camera_node) {
+        LOG_SVC_INFO("AI overlay results %s (pipeline not active, saved to config)",
+                     overlay_results ? "enabled" : "disabled");
+        return AICAM_OK;
+    }
+
+    // Update AI node configuration
+    video_ai_config_t ai_config;
+    aicam_result_t result = video_ai_node_get_config(g_ai_service.ai_node, &ai_config);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to get AI node config: %d", result);
+        return result;
+    }
+    ai_config.overlay_results = overlay_results;
+    result = video_ai_node_set_config(g_ai_service.ai_node, &ai_config);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to set AI node config: %d", result);
+        return result;
+    }
+
+    // Update camera node config
+    video_camera_config_t camera_config;
+    result = video_camera_node_get_config(g_ai_service.camera_node, &camera_config);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to get camera node config: %d", result);
+        return result;
+    }
+    camera_config.overlay_results = overlay_results;
+    result = video_camera_node_set_config(g_ai_service.camera_node, &camera_config);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to set camera node config: %d", result);
+        return result;
+    }
+
+    LOG_SVC_INFO("AI overlay results %s", overlay_results ? "enabled" : "disabled");
+    return AICAM_OK;
+}
+
+aicam_bool_t ai_get_overlay_results(void)
+{
+    return g_ai_service.config.overlay_results;
 }
 
 aicam_result_t ai_set_nms_threshold(uint32_t threshold)
@@ -1176,6 +1228,7 @@ void ai_get_normal_config(ai_service_config_t *config)
     config->max_detections = 32;
     config->processing_interval = 1;
     config->ai_enabled = AICAM_TRUE;
+    config->overlay_results = json_config_get_overlay_results();
     config->enable_stats = AICAM_TRUE;
     config->enable_drawing = AICAM_FALSE;
     config->enable_debug = AICAM_FALSE;
@@ -1196,6 +1249,7 @@ void ai_get_ai_config(ai_service_config_t *config)
     config->max_detections = 32;
     config->processing_interval = 1;
     config->ai_enabled = AICAM_TRUE;
+    config->overlay_results = json_config_get_overlay_results();
     config->enable_stats = AICAM_TRUE;
     config->enable_debug = AICAM_FALSE;
     config->enable_drawing = AICAM_TRUE;

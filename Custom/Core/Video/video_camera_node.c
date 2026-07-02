@@ -69,6 +69,7 @@ void video_camera_get_default_config(video_camera_config_t *config) {
     config->format = DCMIPP_PIXEL_PACKER_FORMAT_RGB565_1;
     config->bpp = 2;
     config->ai_enabled = AICAM_FALSE;
+    config->overlay_results = AICAM_TRUE;
 }
 
 video_node_t* video_camera_node_create(const char *name, const video_camera_config_t *config) {
@@ -138,9 +139,11 @@ aicam_result_t video_camera_node_set_config(video_node_t *node, const video_came
     data->config.format = config->format;
     data->config.bpp = config->bpp;
     data->config.ai_enabled = config->ai_enabled;
-    LOG_CORE_INFO("Camera node config updated: %dx%d@%dfps, format=%d, bpp=%d, ai_enabled=%d", 
-                  data->config.width, data->config.height, data->config.fps, 
-                  data->config.format, data->config.bpp, data->config.ai_enabled);
+    data->config.overlay_results = config->overlay_results;
+    LOG_CORE_INFO("Camera node config updated: %dx%d@%dfps, format=%d, bpp=%d, ai_enabled=%d, overlay_results=%d",
+                  data->config.width, data->config.height, data->config.fps,
+                  data->config.format, data->config.bpp, data->config.ai_enabled,
+                  data->config.overlay_results);
     
     // Restart camera if it was running
     // if (data->is_running) {
@@ -467,8 +470,9 @@ static aicam_result_t video_camera_capture_frame_zero_copy(video_camera_node_dat
     data->current_buffer = camera_buffer_with_frame_id.buffer;
     data->frame_id = camera_buffer_with_frame_id.frame_id;
 
-    //if ai enabled.draw ai result
-    if (data->config.ai_enabled == AICAM_TRUE && data->ai_draw_callback) {
+    //if ai enabled and overlay allowed, draw ai result onto the frame
+    if (data->config.ai_enabled == AICAM_TRUE && data->config.overlay_results == AICAM_TRUE &&
+        data->ai_draw_callback) {
         result = device_ioctl(data->camera_dev, CAM_CMD_LOCK_PIPE1_BUFFER, 
                             camera_buffer_with_frame_id.buffer, 0);
         if (result == AICAM_OK) {

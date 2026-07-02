@@ -62,6 +62,12 @@ aicam_result_t json_config_save_ai_debug_config_to_nvs(const ai_debug_config_t *
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save nms threshold to NVS");
 
+    aicam_result_t overlay_result = json_config_nvs_write_bool(NVS_KEY_OVERLAY_RESULTS, config->overlay_results);
+    if (overlay_result != AICAM_OK) {
+        LOG_CORE_ERROR("Failed to save overlay results to NVS");
+        result = overlay_result;
+    }
+
     LOG_CORE_INFO("AI debug configuration saved to NVS successfully");
     return result;
 }
@@ -1441,6 +1447,12 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
         config->ai_debug.nms_threshold = temp_uint32;
     else
         json_config_nvs_write_uint32(NVS_KEY_NMS_THRESHOLD, config->ai_debug.nms_threshold);
+
+    result = json_config_nvs_read_bool(NVS_KEY_OVERLAY_RESULTS, &temp_bool);
+    if (result == AICAM_OK)
+        config->ai_debug.overlay_results = temp_bool;
+    else
+        json_config_nvs_write_bool(NVS_KEY_OVERLAY_RESULTS, config->ai_debug.overlay_results);
 
     // Load power mode configuration
     result = json_config_nvs_read_uint32(NVS_KEY_POWER_CURRENT_MODE, &temp_uint32);

@@ -56,7 +56,7 @@ void video_ai_get_default_config(video_ai_config_t *config) {
     config->max_detections = 32;
     config->processing_interval = 1;  // Process every frame
     config->enabled = AICAM_TRUE;
-    config->overlay_results = AICAM_FALSE;
+    config->overlay_results = AICAM_TRUE;  // Overlay on by default (stock behavior)
     config->enable_drawing = AICAM_TRUE;
     
     // Initialize drawing configuration

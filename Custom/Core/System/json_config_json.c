@@ -107,6 +107,7 @@ static void parse_ai_debug(cJSON *json, ai_debug_config_t *cfg)
     json_get_bool(json, "ai_1_active", &cfg->ai_1_active);
     json_get_uint32(json, "confidence_threshold", &cfg->confidence_threshold);
     json_get_uint32(json, "nms_threshold", &cfg->nms_threshold);
+    json_get_bool(json, "overlay_results", &cfg->overlay_results);
 }
 
 static void parse_power_mode(cJSON *json, power_mode_config_t *cfg)
@@ -658,6 +659,7 @@ static cJSON *serialize_ai_debug(const ai_debug_config_t *cfg)
     cJSON_AddBoolToObject(json, "ai_1_active", cfg->ai_1_active);
     cJSON_AddNumberToObject(json, "confidence_threshold", cfg->confidence_threshold);
     cJSON_AddNumberToObject(json, "nms_threshold", cfg->nms_threshold);
+    cJSON_AddBoolToObject(json, "overlay_results", cfg->overlay_results);
     return json;
 }
 
