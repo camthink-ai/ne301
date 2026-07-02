@@ -255,7 +255,8 @@
         .enable_status_report = AICAM_TRUE,
         .status_report_interval_ms = 60000,
         .enable_heartbeat = AICAM_TRUE,
-        .heartbeat_interval_ms = 30000
+        .heartbeat_interval_ms = 30000,
+        .report_content = MQTT_REPORT_CONTENT_FULL
     }
  };
 

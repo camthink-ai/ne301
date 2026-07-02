@@ -91,6 +91,7 @@ typedef struct {
     uint32_t status_report_interval_ms;          // Status report interval (ms)
     aicam_bool_t enable_heartbeat;               // Enable heartbeat
     uint32_t heartbeat_interval_ms;              // Heartbeat interval (ms)
+    uint8_t report_content;                      // Report content mode (mqtt_report_content_t)
 } mqtt_service_extended_config_t;
 
 typedef struct {
@@ -1092,6 +1093,7 @@ static aicam_result_t mqtt_config_persistent_to_runtime(const mqtt_service_confi
     runtime->status_report_interval_ms = persistent->status_report_interval_ms;
     runtime->enable_heartbeat = persistent->enable_heartbeat;
     runtime->heartbeat_interval_ms = persistent->heartbeat_interval_ms;
+    runtime->report_content = persistent->report_content;
 
     return AICAM_OK;
 }
@@ -1130,6 +1132,7 @@ static aicam_result_t mqtt_config_runtime_to_persistent(const mqtt_service_exten
     persistent->status_report_interval_ms = runtime->status_report_interval_ms;
     persistent->enable_heartbeat = runtime->enable_heartbeat;
     persistent->heartbeat_interval_ms = runtime->heartbeat_interval_ms;
+    persistent->report_content = runtime->report_content;
 
     return AICAM_OK;
 }
@@ -2161,6 +2164,7 @@ aicam_result_t mqtt_service_get_topic_config(mqtt_service_topic_config_t *config
     config->status_report_interval_ms = g_mqtt_service.config.status_report_interval_ms;
     config->enable_heartbeat = g_mqtt_service.config.enable_heartbeat;
     config->heartbeat_interval_ms = g_mqtt_service.config.heartbeat_interval_ms;
+    config->report_content = g_mqtt_service.config.report_content;
     
     return AICAM_OK;
 }
@@ -2202,10 +2206,24 @@ aicam_result_t mqtt_service_set_topic_config(const mqtt_service_topic_config_t *
     g_mqtt_service.config.status_report_interval_ms = config->status_report_interval_ms;
     g_mqtt_service.config.enable_heartbeat = config->enable_heartbeat;
     g_mqtt_service.config.heartbeat_interval_ms = config->heartbeat_interval_ms;
+    g_mqtt_service.config.report_content = config->report_content;
     
     LOG_SVC_DEBUG("MQTT service topic configuration updated");
     
     return AICAM_OK;
+}
+
+/**
+ * @brief Get the configured data report content mode
+ */
+mqtt_report_content_t mqtt_service_get_report_content(void)
+{
+    // Treat uninitialized service or an out-of-range stored value as stock behavior
+    if (g_mqtt_service.initialized &&
+        g_mqtt_service.config.report_content == MQTT_REPORT_CONTENT_METADATA_ONLY) {
+        return MQTT_REPORT_CONTENT_METADATA_ONLY;
+    }
+    return MQTT_REPORT_CONTENT_FULL;
 }
 
 /* ==================== Event Management ==================== */
@@ -3338,7 +3356,7 @@ int mqtt_service_publish_ai_result(const char *topic,
                                 const mqtt_ai_result_t *ai_result,
                                 int qos)
 {
-    if (!metadata || !ai_result) {
+    if (!metadata) {
         return MQTT_ERR_INVALID_ARG;
     }
     
@@ -3359,10 +3377,30 @@ int mqtt_service_publish_ai_result(const char *topic,
         cJSON_AddItemToObject(root, "metadata", meta_json);
     }
     
-    // Add AI result
-    cJSON *ai_json = create_ai_result_json(ai_result);
-    if (ai_json) {
-        cJSON_AddItemToObject(root, "ai_result", ai_json);
+    //Add device info
+    device_info_config_t *device_info = (device_info_config_t *)buffer_calloc(1, sizeof(device_info_config_t));
+    if (device_info) {
+        if (device_service_get_info(device_info) == AICAM_OK) {
+            cJSON *device_json = create_device_info_json(device_info);
+            if (device_json) {
+                cJSON_AddItemToObject(root, "device_info", device_json);
+            }
+        } else {
+            LOG_SVC_WARN("Failed to get device information, reporting without it");
+        }
+        buffer_free(device_info);
+    }
+
+    // Add AI result if provided
+    if (ai_result && ai_result->ai_result.is_valid) {
+        cJSON *ai_json = create_ai_result_json(ai_result);
+        if (ai_json) {
+            cJSON_AddItemToObject(root, "ai_result", ai_json);
+        }
+    }
+    else
+    {
+        cJSON_AddItemToObject(root, "ai_result", cJSON_CreateNull());
     }
     
     // Convert to JSON string
@@ -3384,7 +3422,7 @@ int mqtt_service_publish_ai_result(const char *topic,
     
     // Get detection count based on result type
     uint32_t detection_count = 0;
-    if (ai_result->ai_result.is_valid) {
+    if (ai_result && ai_result->ai_result.is_valid) {
         if (ai_result->ai_result.type == PP_TYPE_OD) {
             detection_count = ai_result->ai_result.od.nb_detect;
         } else if (ai_result->ai_result.type == PP_TYPE_MPE) {

@@ -522,6 +522,7 @@ static void parse_mqtt_service(cJSON *json, mqtt_service_config_t *cfg)
     json_get_uint32(json, "status_report_interval_ms", &cfg->status_report_interval_ms);
     json_get_bool(json, "enable_heartbeat", &cfg->enable_heartbeat);
     json_get_uint32(json, "heartbeat_interval_ms", &cfg->heartbeat_interval_ms);
+    json_get_uint8(json, "report_content", &cfg->report_content);
 }
 
 static void parse_work_mode(cJSON *json, work_mode_config_t *cfg)
@@ -1031,6 +1032,7 @@ static cJSON *serialize_mqtt_service(const mqtt_service_config_t *cfg)
     cJSON_AddNumberToObject(json, "status_report_interval_ms", cfg->status_report_interval_ms);
     cJSON_AddBoolToObject(json, "enable_heartbeat", cfg->enable_heartbeat);
     cJSON_AddNumberToObject(json, "heartbeat_interval_ms", cfg->heartbeat_interval_ms);
+    cJSON_AddNumberToObject(json, "report_content", cfg->report_content);
 
     return json;
 }

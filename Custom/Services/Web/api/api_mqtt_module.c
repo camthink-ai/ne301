@@ -66,6 +66,34 @@ static void free_mqtt_config_strings(ms_mqtt_config_t *config)
 }
 
 /**
+ * @brief Map a report content mode to its API string form
+ */
+static const char *report_content_to_str(uint8_t mode)
+{
+    return mode == MQTT_REPORT_CONTENT_METADATA_ONLY ? "metadata_only" : "full";
+}
+
+/**
+ * @brief Parse a report content mode from its API string form
+ * @return AICAM_OK on a recognized value, error otherwise
+ */
+static aicam_result_t parse_report_content(const cJSON *item, uint8_t *mode)
+{
+    if (!cJSON_IsString(item)) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if (strcmp(item->valuestring, "full") == 0) {
+        *mode = MQTT_REPORT_CONTENT_FULL;
+        return AICAM_OK;
+    }
+    if (strcmp(item->valuestring, "metadata_only") == 0) {
+        *mode = MQTT_REPORT_CONTENT_METADATA_ONLY;
+        return AICAM_OK;
+    }
+    return AICAM_ERROR_INVALID_PARAM;
+}
+
+/**
  * @brief Safe string comparison, handle NULL pointers
  */
 static int safe_strcmp(const char* str1, const char* str2) {
@@ -287,6 +315,8 @@ static aicam_result_t mqtt_config_get_handler(http_handler_context_t* ctx)
         // cJSON_AddNumberToObject(qos, "status_qos", topic_config.status_qos);
         // cJSON_AddNumberToObject(qos, "command_qos", topic_config.command_qos);
         cJSON_AddItemToObject(response_json, "qos", qos);
+
+        cJSON_AddStringToObject(response_json, "report_content", report_content_to_str(topic_config.report_content));
         
         //cJSON *auto_subscribe = cJSON_CreateObject();
         //cJSON_AddBoolToObject(auto_subscribe, "auto_subscribe_receive", topic_config.auto_subscribe_receive);
@@ -350,6 +380,14 @@ static aicam_result_t mqtt_config_set_handler(http_handler_context_t* ctx)
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid JSON");
     }
     
+    // Validate report content mode up front (applied with the topic config below)
+    uint8_t report_content_mode = MQTT_REPORT_CONTENT_FULL;
+    cJSON *report_content = cJSON_GetObjectItem(request_json, "report_content");
+    if (report_content && parse_report_content(report_content, &report_content_mode) != AICAM_OK) {
+        cJSON_Delete(request_json);
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "report_content must be 'full' or 'metadata_only'");
+    }
+
     // Get current configuration
     ms_mqtt_config_t config;
     aicam_result_t result = mqtt_service_get_config(&config);
@@ -505,7 +543,7 @@ static aicam_result_t mqtt_config_set_handler(http_handler_context_t* ctx)
     cJSON *topics = cJSON_GetObjectItem(request_json, "topics");
     cJSON *qos = cJSON_GetObjectItem(request_json, "qos");
     
-    if (topics || qos) {
+    if (topics || qos || report_content) {
         mqtt_service_topic_config_t topic_config;
         result = mqtt_service_get_topic_config(&topic_config);
         if (result == AICAM_OK) {
@@ -543,6 +581,11 @@ static aicam_result_t mqtt_config_set_handler(http_handler_context_t* ctx)
             
             // Note: auto_subscribe and message_config are not exposed in GET handler
             
+            // Update report content mode if provided (validated above)
+            if (report_content) {
+                topic_config.report_content = report_content_mode;
+            }
+
             // Apply topic configuration
             result = mqtt_service_set_topic_config(&topic_config);
             if (result != AICAM_OK) {

@@ -1161,6 +1161,10 @@ aicam_result_t json_config_save_mqtt_service_config_to_nvs(const mqtt_service_co
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save MQTT heartbeat interval to NVS");
 
+    result = json_config_nvs_write_uint8(NVS_KEY_MQTT_REPORT_CONTENT, config->report_content);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to save MQTT report content mode to NVS");
+
     LOG_CORE_INFO("MQTT full service configuration saved to NVS successfully");
     return result;
 }
@@ -2237,6 +2241,12 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
         config->mqtt_service.heartbeat_interval_ms = (int)temp_uint32;
     else
         json_config_nvs_write_uint32(NVS_KEY_MQTT_HEARTBEAT_INTERVAL, (uint32_t)config->mqtt_service.heartbeat_interval_ms);
+
+    result = json_config_nvs_read_uint8(NVS_KEY_MQTT_REPORT_CONTENT, &temp_uint8);
+    if (result == AICAM_OK)
+        config->mqtt_service.report_content = temp_uint8;
+    else
+        json_config_nvs_write_uint8(NVS_KEY_MQTT_REPORT_CONTENT, config->mqtt_service.report_content);
 
     // Note: RTMP config is now part of video_stream_mode, loaded below
 

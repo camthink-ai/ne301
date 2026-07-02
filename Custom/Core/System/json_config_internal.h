@@ -282,6 +282,9 @@
 #define NVS_KEY_MQTT_STATUS_INTERVAL    "mqtt_sts_iv"
 #define NVS_KEY_MQTT_ENABLE_HEARTBEAT   "mqtt_en_hb"
 #define NVS_KEY_MQTT_HEARTBEAT_INTERVAL "mqtt_hb_iv"
+
+// Report content
+#define NVS_KEY_MQTT_REPORT_CONTENT     "mqtt_rpt_ct"
  
  // Work mode configuration key names
  #define NVS_KEY_WORK_MODE           "work_mode"

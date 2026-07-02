@@ -310,6 +310,15 @@ typedef struct {
 } mqtt_base_config_t;
 
 /**
+ * @brief Data report content mode
+ * @note Selects what the capture/report flow publishes on the data report topic
+ */
+typedef enum {
+    MQTT_REPORT_CONTENT_FULL = 0,           // Image + metadata + AI result (stock behavior)
+    MQTT_REPORT_CONTENT_METADATA_ONLY = 1,  // Metadata + AI result only, no image
+} mqtt_report_content_t;
+
+/**
  * @brief Extended MQTT service configuration
  * @note Combines base config with application-specific settings
  */
@@ -337,6 +346,7 @@ typedef struct {
     uint32_t status_report_interval_ms;          // Status report interval (ms)
     aicam_bool_t enable_heartbeat;               // Enable heartbeat
     uint32_t heartbeat_interval_ms;              // Heartbeat interval (ms)
+    uint8_t report_content;                      // Report content mode (mqtt_report_content_t)
 } mqtt_service_config_t;
 
 /** Stored in image_config_t.isp_mode — built-in profiles vs NVS-backed custom IQ. */

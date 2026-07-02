@@ -3602,6 +3602,7 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
     aicam_bool_t mqtt_uploaded = AICAM_FALSE;
     aicam_bool_t webhook_succeeded = AICAM_FALSE;
     aicam_bool_t mqtt_available = mqtt_service_is_running();
+    aicam_bool_t metadata_only = (mqtt_service_get_report_content() == MQTT_REPORT_CONTENT_METADATA_ONLY);
 
     step_start_time = rtc_get_uptime_ms();
 
@@ -3632,14 +3633,36 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
     // Step 4: Check MQTT connection and upload
     step_start_time = rtc_get_uptime_ms();
     if (mqtt_available && mqtt_service_is_connected()) {
-        LOG_SVC_INFO("[TIMING] MQTT connected - uploading image");
+        LOG_SVC_INFO("[TIMING] MQTT connected - publishing report");
         
         // Determine upload method based on image size
         const uint32_t size_threshold = 1024 * 1024; // 1MB
         int mqtt_result;
         uint64_t upload_start_time = rtc_get_uptime_ms();
         
-        if (jpeg_size < size_threshold) {
+        if (metadata_only) {
+            // Metadata-only report - metadata + AI result without the image payload
+            LOG_SVC_INFO("[TIMING] Report content is metadata_only - publishing without image");
+            mqtt_result = mqtt_service_publish_ai_result(
+                NULL, // Use default topic
+                &metadata,
+                ai_result_ptr,
+                -1 // Use default QoS
+            );
+            uint64_t upload_end_time = rtc_get_uptime_ms();
+            uint64_t upload_duration = upload_end_time - upload_start_time;
+
+            if (mqtt_result >= 0) {
+                LOG_SVC_INFO("[TIMING] Metadata-only report published successfully (msg_id: %d, upload duration: %lu ms)",
+                            mqtt_result, (unsigned long)upload_duration);
+                upload_result = AICAM_OK;
+                mqtt_uploaded = AICAM_TRUE;
+            } else {
+                LOG_SVC_ERROR("[TIMING] Metadata-only report publish failed: %d (upload duration: %lu ms)",
+                             mqtt_result, (unsigned long)upload_duration);
+                upload_result = AICAM_ERROR;
+            }
+        } else if (jpeg_size < size_threshold) {
             // Small image - single upload
             LOG_SVC_INFO("[TIMING] Using single upload (size: %u bytes)", jpeg_size);
             mqtt_result = mqtt_service_publish_image_with_ai(
@@ -3782,13 +3805,15 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
         step_start_time = rtc_get_uptime_ms();
         LOG_SVC_INFO("[TIMING] Step 6: Waiting for publish confirmation...");
 
-        // Calculate dynamic timeout based on message size
+        // Calculate dynamic timeout based on the size actually published
         // Base timeout: 5s + 2s per 10KB of data
-        uint32_t puback_timeout = 5000 + (jpeg_size / 10240) * 2000;
+        // (metadata-only reports are KB-scale JSON, covered by the base timeout)
+        uint32_t published_size = metadata_only ? 0 : jpeg_size;
+        uint32_t puback_timeout = 5000 + (published_size / 10240) * 2000;
         if (puback_timeout > 60000) {
             puback_timeout = 60000;  // Cap at 60 seconds max
         }
-        LOG_SVC_DEBUG("[TIMING] PUBACK timeout: %u ms (based on %u bytes)", puback_timeout, jpeg_size);
+        LOG_SVC_DEBUG("[TIMING] PUBACK timeout: %u ms (based on %u bytes)", puback_timeout, published_size);
 
         if(mqtt_service_wait_for_event(MQTT_EVENT_PUBLISHED, AICAM_TRUE, puback_timeout) != AICAM_OK){
             LOG_SVC_ERROR("[TIMING] Step 6 FAILED: Wait for published event failed");
