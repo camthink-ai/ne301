@@ -73,6 +73,7 @@ aicam_result_t ai_draw_service_init(const ai_draw_config_t *config)
     result = ai_draw_configure_mpe_drawing();
     if (result != AICAM_OK) {
         LOG_SVC_ERROR("Failed to configure MPE drawing: %d", result);
+        od_draw_deinit(&g_ai_draw_service.od_draw_conf);
         ai_draw_deinit_fonts();
         return result;
     }
@@ -81,6 +82,8 @@ aicam_result_t ai_draw_service_init(const ai_draw_config_t *config)
     result = ai_draw_configure_spe_drawing();
     if (result != AICAM_OK) {
         LOG_SVC_ERROR("Failed to configure SPE drawing: %d", result);
+        mpe_draw_deinit(&g_ai_draw_service.mpe_draw_conf);
+        od_draw_deinit(&g_ai_draw_service.od_draw_conf);
         ai_draw_deinit_fonts();
         return result;
     }
@@ -90,6 +93,8 @@ aicam_result_t ai_draw_service_init(const ai_draw_config_t *config)
     if (result != AICAM_OK) {
         LOG_SVC_ERROR("Failed to configure ISEG drawing: %d", result);
         spe_draw_deinit(&g_ai_draw_service.spe_draw_conf);  // SPE owns its font
+        mpe_draw_deinit(&g_ai_draw_service.mpe_draw_conf);
+        od_draw_deinit(&g_ai_draw_service.od_draw_conf);
         ai_draw_deinit_fonts();
         return result;
     }

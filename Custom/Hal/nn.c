@@ -1065,15 +1065,17 @@ cJSON* nn_create_ai_result_json(const nn_result_t* ai_result) {
     } else if (ai_result->type == PP_TYPE_SPE && ai_result->spe.keypoints != NULL &&
                ai_result->spe.nb_keypoints > 0) {
         // Single-Pose Estimation results (detector-free, one instance, no bounding box)
+        int pose_count = 0;
         cJSON* poses_array = cJSON_CreateArray();
         if (poses_array) {
             cJSON* pose_json = create_spe_pose_json(&ai_result->spe, 0);
             if (pose_json) {
                 cJSON_AddItemToArray(poses_array, pose_json);
+                pose_count = 1;
             }
             cJSON_AddItemToObject(result_json, "poses", poses_array);
         }
-        cJSON_AddNumberToObject(result_json, "pose_count", 1);
+        cJSON_AddNumberToObject(result_json, "pose_count", pose_count);
 
         // Add empty detection results for consistency
         cJSON_AddItemToObject(result_json, "detections", cJSON_CreateArray());
