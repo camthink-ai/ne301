@@ -11,6 +11,10 @@
 #define COLOR_TRUNK COLOR_MAGENTA
 #define COLOR_LEGS COLOR_YELLOW
 #define MPE_YOLOV8_PP_CONF_THRESHOLD (0.6000000000f)
+#define SPE_MOVENET_PP_CONF_THRESHOLD (0.3000000000f)
+/* Upper bound for the per-pose keypoint draw buffers (MPE results are
+ * struct-bounded to 33; SPE counts come from model metadata) */
+#define POSE_DRAW_MAX_KEYPOINTS 64
 
 __attribute__((unused)) static const int bindings[][3] = {
   {15, 13, COLOR_LEGS},
@@ -56,6 +60,111 @@ static int clamp_point(uint32_t width, uint32_t height, int *x, int *y)
     *y = height - 1;
 
   return (xi != *x) || (yi != *y);
+}
+
+/**
+ * @brief Rebuild the skeleton bind table from a result's flattened connection pairs.
+ *
+ * Clears any binds left from a previous result, so a result without
+ * connections does not draw a stale skeleton.
+ *
+ * @return 0 on success, -1 on allocation failure (binds left empty).
+ */
+static int pose_draw_update_binds(mpe_draw_conf_t *conf, const uint8_t *connections, uint8_t num_connections)
+{
+    if(conf->binds != NULL){
+        hal_mem_free(conf->binds);
+        conf->binds = NULL;
+    }
+    conf->num_binds = 0;
+
+    if(connections == NULL || num_connections == 0){
+        return 0;
+    }
+
+    conf->binds = hal_mem_alloc_fast(sizeof(mpe_draw_bind_t) * num_connections);
+    if(conf->binds == NULL){
+        return -1;
+    }
+    conf->num_binds = num_connections;
+    for(int i = 0; i < conf->num_binds; i++){
+        conf->binds[i].keypoint1 = connections[i*2 + 0];
+        conf->binds[i].keypoint2 = connections[i*2 + 1];
+        conf->binds[i].color = COLOR_GREEN;
+    }
+    return 0;
+}
+
+/**
+ * @brief Draw keypoint dots, index labels and skeleton lines for one pose.
+ *
+ * Shared by the MPE and SPE result paths; keypoints below conf_threshold
+ * or outside the normalized [0,1] range are skipped.
+ */
+static void pose_draw_keypoints(mpe_draw_conf_t *conf, device_t *draw,
+                                const keypoint_t *keypoints, uint32_t nb,
+                                float conf_threshold)
+{
+    if(keypoints == NULL || nb == 0 || nb > POSE_DRAW_MAX_KEYPOINTS){
+        return;
+    }
+
+    int nb_keypoints = nb;
+    int keypoint_x[nb_keypoints], keypoint_y[nb_keypoints];
+    bool keypoint_valid[nb_keypoints];
+    for (int i = 0; i < nb_keypoints; i++) {
+        keypoint_valid[i] = false;
+        float x = keypoints[i].x;
+        float y = keypoints[i].y;
+        if (keypoints[i].conf >= conf_threshold &&
+            x >= 0 && y >= 0 && x <= 1 && y <= 1) {
+            convert_value(conf->image_width, conf->image_height, x, y, &keypoint_x[i], &keypoint_y[i]);
+            keypoint_valid[i] = true;
+        }
+    }
+
+    draw_line_param_t line_param = {0};
+    for (int i = 0; i < conf->num_binds; i++) {
+        int k1 = conf->binds[i].keypoint1;
+        int k2 = conf->binds[i].keypoint2;
+        if (k1 < nb_keypoints && k2 < nb_keypoints && keypoint_valid[k1] && keypoint_valid[k2]) {
+            line_param.p_dst = conf->p_dst;
+            line_param.dst_width = conf->image_width;
+            line_param.dst_height = conf->image_height;
+            line_param.x1 = keypoint_x[k1];
+            line_param.y1 = keypoint_y[k1];
+            line_param.x2 = keypoint_x[k2];
+            line_param.y2 = keypoint_y[k2];
+            line_param.line_width = conf->line_width;
+            line_param.color = conf->binds[i].color;
+            device_ioctl(draw, DRAW_CMD_LINE, (uint8_t *)&line_param, sizeof(draw_line_param_t));
+        }
+    }
+
+    draw_printf_param_t print_param = {0};
+    draw_dot_param_t dot_param = {0};
+    for (int i = 0; i < nb_keypoints; i++) {
+        if (keypoint_valid[i]) {
+
+            snprintf(print_param.str, sizeof(print_param.str), "%d", i);
+            print_param.p_font = &conf->font;
+            print_param.p_dst = conf->p_dst;
+            print_param.dst_width = conf->image_width;
+            print_param.dst_height = conf->image_height;
+            print_param.x_pos = keypoint_x[i] + conf->dot_width;
+            print_param.y_pos = keypoint_y[i];
+            device_ioctl(draw, DRAW_CMD_PRINTF, (uint8_t *)&print_param, sizeof(draw_printf_param_t));
+
+            dot_param.p_dst = conf->p_dst;
+            dot_param.dst_width = conf->image_width;
+            dot_param.dst_height = conf->image_height;
+            dot_param.x_pos = keypoint_x[i];
+            dot_param.y_pos = keypoint_y[i];
+            dot_param.dot_width = conf->dot_width;
+            dot_param.color = conf->color;
+            device_ioctl(draw, DRAW_CMD_DOT, (uint8_t *)&dot_param, sizeof(draw_dot_param_t));
+        }
+    }
 }
 /**
  * @brief Initializes the drawing configuration.
@@ -132,23 +241,11 @@ int mpe_draw_result(mpe_draw_conf_t *mpe_conf, mpe_detect_t *result)
         return -1;
     }
 
-    if(result->num_connections > 0){
-        if(mpe_conf->binds != NULL){
-            hal_mem_free(mpe_conf->binds);
-            mpe_conf->binds = NULL;
-        }
-        mpe_conf->num_binds = result->num_connections;
-        mpe_conf->binds = hal_mem_alloc_fast(sizeof(mpe_draw_bind_t) * mpe_conf->num_binds);
-        if(mpe_conf->binds == NULL){
-            LOG_DRV_ERROR("mpe_draw_result failed\r\n");
-            return -1;
-        }
-        for(int i = 0; i < mpe_conf->num_binds; i++){
-            mpe_conf->binds[i].keypoint1 = result->keypoint_connections[i*2 + 0];
-            mpe_conf->binds[i].keypoint2 = result->keypoint_connections[i*2 + 1];
-            mpe_conf->binds[i].color = COLOR_GREEN;
-        }
+    if(pose_draw_update_binds(mpe_conf, result->keypoint_connections, result->num_connections) != 0){
+        LOG_DRV_ERROR("mpe_draw_result failed\r\n");
+        return -1;
     }
+
     int x0, y0, w, h;
     convert_value(mpe_conf->image_width, mpe_conf->image_height, result->x, result->y, &x0, &y0);
     convert_value(mpe_conf->image_width, mpe_conf->image_height, result->width, result->height, &w, &h);
@@ -182,61 +279,8 @@ int mpe_draw_result(mpe_draw_conf_t *mpe_conf, mpe_detect_t *result)
     print_param.y_pos = y0 + mpe_conf->line_width;
     device_ioctl(draw, DRAW_CMD_PRINTF, (uint8_t *)&print_param, sizeof(draw_printf_param_t));
 
-    int nb_keypoints = result->nb_keypoints;
-    int keypoint_x[nb_keypoints], keypoint_y[nb_keypoints];
-    bool keypoint_valid[nb_keypoints];
-    for (int i = 0; i < nb_keypoints; i++) {
-        keypoint_valid[i] = false;
-        float x = result->keypoints[i].x;
-        float y = result->keypoints[i].y;
-        if (result->keypoints[i].conf >= MPE_YOLOV8_PP_CONF_THRESHOLD &&
-            x >= 0 && y >= 0 && x <= 1 && y <= 1) {
-            convert_value(mpe_conf->image_width, mpe_conf->image_height, x, y, &keypoint_x[i], &keypoint_y[i]);
-            keypoint_valid[i] = true;
-        }
-    }
-
-    draw_line_param_t line_param = {0};
-    for (int i = 0; i < mpe_conf->num_binds; i++) {
-        int k1 = mpe_conf->binds[i].keypoint1;
-        int k2 = mpe_conf->binds[i].keypoint2;
-        if (k1 < nb_keypoints && k2 < nb_keypoints && keypoint_valid[k1] && keypoint_valid[k2]) {
-            line_param.p_dst = mpe_conf->p_dst;
-            line_param.dst_width = mpe_conf->image_width;
-            line_param.dst_height = mpe_conf->image_height;
-            line_param.x1 = keypoint_x[k1];
-            line_param.y1 = keypoint_y[k1];
-            line_param.x2 = keypoint_x[k2];
-            line_param.y2 = keypoint_y[k2];
-            line_param.line_width = mpe_conf->line_width;
-            line_param.color = mpe_conf->binds[i].color;
-            device_ioctl(draw, DRAW_CMD_LINE, (uint8_t *)&line_param, sizeof(draw_line_param_t));
-        }
-    }
-
-    draw_dot_param_t dot_param = {0};
-    for (int i = 0; i < nb_keypoints; i++) {
-        if (keypoint_valid[i]) {
-
-            snprintf(print_param.str, sizeof(print_param.str), "%d", i);
-            print_param.p_font = &mpe_conf->font;
-            print_param.p_dst = mpe_conf->p_dst;
-            print_param.dst_width = mpe_conf->image_width;
-            print_param.dst_height = mpe_conf->image_height;
-            print_param.x_pos = keypoint_x[i] + mpe_conf->dot_width;
-            print_param.y_pos = keypoint_y[i];
-            device_ioctl(draw, DRAW_CMD_PRINTF, (uint8_t *)&print_param, sizeof(draw_printf_param_t));
-
-            dot_param.p_dst = mpe_conf->p_dst;
-            dot_param.dst_width = mpe_conf->image_width;
-            dot_param.dst_height = mpe_conf->image_height;
-            dot_param.x_pos = keypoint_x[i];
-            dot_param.y_pos = keypoint_y[i];
-            dot_param.dot_width = mpe_conf->dot_width;
-            dot_param.color = mpe_conf->color;
-            device_ioctl(draw, DRAW_CMD_DOT, (uint8_t *)&dot_param, sizeof(draw_dot_param_t));
-        }
-    }
+    pose_draw_keypoints(mpe_conf, draw, result->keypoints, result->nb_keypoints,
+                        MPE_YOLOV8_PP_CONF_THRESHOLD);
 
     return 0;
 }
@@ -606,6 +650,76 @@ int iseg_draw_result(iseg_draw_conf_t *iseg_conf, iseg_detect_t *result, uint32_
     print_param.x_pos = x0 + iseg_conf->line_width;
     print_param.y_pos = y0 + iseg_conf->line_width;
     device_ioctl(draw, DRAW_CMD_PRINTF, (uint8_t *)&print_param, sizeof(draw_printf_param_t));
+
+    return 0;
+}
+
+/* ==================== SPE Drawing ==================== */
+
+int spe_draw_init(spe_draw_conf_t *spe_conf)
+{
+    if(spe_conf == NULL){
+        LOG_DRV_ERROR("spe_draw_init invalid param\r\n");
+        return -1;
+    }
+
+    device_t *draw = device_find_pattern(DRAW_DEVICE_NAME, DEV_TYPE_VIDEO);
+    if(draw == NULL){
+        return -1;
+    }
+
+    /* Apply defaults only where the caller left values unset */
+    if(spe_conf->color == 0){
+        spe_conf->color = COLOR_BLUE;
+    }
+    if(spe_conf->line_width == 0){
+        spe_conf->line_width = 2;
+    }
+    if(spe_conf->dot_width == 0){
+        spe_conf->dot_width = 10;
+    }
+
+    /* The font is owned by this conf: free a previous setup on re-init */
+    draw_fontsetup_param_t font_param = {0};
+    if(spe_conf->font.data){
+        hal_mem_free(spe_conf->font.data);
+        spe_conf->font.data = NULL;
+    }
+    font_param.p_font_in = &Font16;
+    font_param.p_font = &spe_conf->font;
+    int ret = device_ioctl(draw, DRAW_CMD_FONT_SETUP, (uint8_t *)&font_param, sizeof(draw_fontsetup_param_t));
+    if(ret < 0){
+        LOG_DRV_ERROR("spe_draw_init failed\r\n");
+        return -1;
+    }
+    return 0;
+}
+
+int spe_draw_deinit(spe_draw_conf_t *spe_conf)
+{
+    return mpe_draw_deinit(spe_conf);
+}
+
+int spe_draw_result(spe_draw_conf_t *spe_conf, const pp_spe_out_t *result)
+{
+    if(spe_conf == NULL || result == NULL){
+        LOG_DRV_ERROR("spe_draw_result invalid param\r\n");
+        return -1;
+    }
+
+    device_t *draw = device_find_pattern(DRAW_DEVICE_NAME, DEV_TYPE_VIDEO);
+    if(draw == NULL){
+        return -1;
+    }
+
+    if(pose_draw_update_binds(spe_conf, result->keypoint_connections, result->num_connections) != 0){
+        LOG_DRV_ERROR("spe_draw_result failed\r\n");
+        return -1;
+    }
+
+    /* No bounding box or class label: SPE is detector-free (keypoints + skeleton only) */
+    pose_draw_keypoints(spe_conf, draw, result->keypoints, result->nb_keypoints,
+                        SPE_MOVENET_PP_CONF_THRESHOLD);
 
     return 0;
 }

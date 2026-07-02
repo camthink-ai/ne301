@@ -24,6 +24,7 @@ static aicam_result_t ai_draw_deinit_fonts(void);
 static aicam_result_t ai_draw_setup_draw_device(void);
 static aicam_result_t ai_draw_configure_od_drawing(void);
 static aicam_result_t ai_draw_configure_mpe_drawing(void);
+static aicam_result_t ai_draw_configure_spe_drawing(void);
 static aicam_result_t ai_draw_configure_iseg_drawing(void);
 
 /* ==================== AI Drawing Service Implementation ==================== */
@@ -76,14 +77,23 @@ aicam_result_t ai_draw_service_init(const ai_draw_config_t *config)
         return result;
     }
 
+    // Configure SPE drawing
+    result = ai_draw_configure_spe_drawing();
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to configure SPE drawing: %d", result);
+        ai_draw_deinit_fonts();
+        return result;
+    }
+
     // Configure ISEG drawing
     result = ai_draw_configure_iseg_drawing();
     if (result != AICAM_OK) {
         LOG_SVC_ERROR("Failed to configure ISEG drawing: %d", result);
+        spe_draw_deinit(&g_ai_draw_service.spe_draw_conf);  // SPE owns its font
         ai_draw_deinit_fonts();
         return result;
     }
-    
+
     g_ai_draw_service.initialized = AICAM_TRUE;
     
     LOG_SVC_INFO("AI draw service initialized successfully");
@@ -101,6 +111,9 @@ aicam_result_t ai_draw_service_deinit(void)
     
     // Deinitialize MPE drawing
     mpe_draw_deinit(&g_ai_draw_service.mpe_draw_conf);
+
+    // Deinitialize SPE drawing
+    spe_draw_deinit(&g_ai_draw_service.spe_draw_conf);
 
     // Deinitialize ISEG drawing
     iseg_draw_deinit(&g_ai_draw_service.iseg_draw_conf);
@@ -147,6 +160,12 @@ aicam_result_t ai_draw_results(uint8_t *fb,
         case PP_TYPE_MPE:
             if (result->mpe.nb_detect > 0) {
                 result_code = ai_draw_mpe_results(fb, fb_width, fb_height, &result->mpe);
+            }
+            break;
+
+        case PP_TYPE_SPE:
+            if (result->spe.nb_keypoints > 0) {
+                result_code = ai_draw_spe_results(fb, fb_width, fb_height, &result->spe);
             }
             break;
 
@@ -229,9 +248,39 @@ aicam_result_t ai_draw_mpe_results(uint8_t *fb,
     return AICAM_OK;
 }
 
-aicam_result_t ai_draw_single_od(uint8_t *fb, 
-                                 uint32_t fb_width, 
-                                 uint32_t fb_height, 
+aicam_result_t ai_draw_spe_results(uint8_t *fb,
+                                   uint32_t fb_width,
+                                   uint32_t fb_height,
+                                   const pp_spe_out_t *spe_result)
+{
+    if (!fb || !spe_result) {
+        LOG_SVC_ERROR("Invalid parameters for SPE draw results");
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    if (!g_ai_draw_service.initialized) {
+        LOG_SVC_ERROR("AI draw service not initialized");
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+
+    // Update drawing configuration with current frame buffer
+    g_ai_draw_service.spe_draw_conf.p_dst = fb;
+    g_ai_draw_service.spe_draw_conf.image_width = fb_width;
+    g_ai_draw_service.spe_draw_conf.image_height = fb_height;
+
+    // Draw the single pose instance
+    aicam_result_t result = spe_draw_result(&g_ai_draw_service.spe_draw_conf, spe_result);
+    if (result != 0) {
+        LOG_SVC_ERROR("Failed to draw SPE result: %d", result);
+        return AICAM_ERROR;
+    }
+
+    return AICAM_OK;
+}
+
+aicam_result_t ai_draw_single_od(uint8_t *fb,
+                                 uint32_t fb_width,
+                                 uint32_t fb_height,
                                  const od_detect_t *detection)
 {
     if (!fb || !detection) {
@@ -300,9 +349,10 @@ void ai_draw_get_default_config(ai_draw_config_t *config)
     config->image_height = 720;
     config->line_width = 2;
     config->box_line_width = 2;
-    config->dot_width = 4;
+    config->dot_width = 10;  // matches the effective MPE keypoint dot size
     config->od_color = COLOR_RED;
     config->mpe_color = COLOR_BLUE;
+    config->spe_color = COLOR_BLUE;
     config->iseg_color = COLOR_CYAN;
     config->iseg_mask_alpha = 102;
     config->iseg_mask_threshold = 128;
@@ -333,6 +383,12 @@ aicam_result_t ai_draw_set_config(const ai_draw_config_t *config)
     result = ai_draw_configure_mpe_drawing();
     if (result != AICAM_OK) {
         LOG_SVC_ERROR("Failed to reconfigure MPE drawing: %d", result);
+        return result;
+    }
+
+    result = ai_draw_configure_spe_drawing();
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to reconfigure SPE drawing: %d", result);
         return result;
     }
 
@@ -507,6 +563,29 @@ static aicam_result_t ai_draw_configure_mpe_drawing(void)
     }
     
     LOG_SVC_DEBUG("MPE drawing configured");
+
+    return AICAM_OK;
+}
+
+static aicam_result_t ai_draw_configure_spe_drawing(void)
+{
+    // Configure SPE drawing (the font is owned and set up by spe_draw_init;
+    // do not alias the shared font_12 here, spe_draw_init would free it)
+    g_ai_draw_service.spe_draw_conf.p_dst = NULL;  // Will be set during drawing
+    g_ai_draw_service.spe_draw_conf.color = g_ai_draw_service.config.spe_color;
+    g_ai_draw_service.spe_draw_conf.image_width = g_ai_draw_service.config.image_width;
+    g_ai_draw_service.spe_draw_conf.image_height = g_ai_draw_service.config.image_height;
+    g_ai_draw_service.spe_draw_conf.line_width = g_ai_draw_service.config.line_width;
+    g_ai_draw_service.spe_draw_conf.dot_width = g_ai_draw_service.config.dot_width;
+
+    // Initialize SPE drawing
+    aicam_result_t result = spe_draw_init(&g_ai_draw_service.spe_draw_conf);
+    if (result != 0) {
+        LOG_SVC_ERROR("Failed to initialize SPE drawing: %d", result);
+        return AICAM_ERROR;
+    }
+
+    LOG_SVC_DEBUG("SPE drawing configured");
 
     return AICAM_OK;
 }

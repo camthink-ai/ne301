@@ -702,6 +702,7 @@ static aicam_bool_t qb_ai_has_detections(const nn_result_t *r)
     if (!r->is_valid) return AICAM_FALSE;
     if (r->type == PP_TYPE_OD) return (r->od.nb_detect > 0) ? AICAM_TRUE : AICAM_FALSE;
     if (r->type == PP_TYPE_MPE) return (r->mpe.nb_detect > 0) ? AICAM_TRUE : AICAM_FALSE;
+    if (r->type == PP_TYPE_SPE) return (r->spe.nb_keypoints > 0) ? AICAM_TRUE : AICAM_FALSE;
     return AICAM_FALSE;
 }
 

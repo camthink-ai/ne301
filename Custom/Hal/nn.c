@@ -869,13 +869,34 @@ static cJSON* create_iseg_detection_json(const iseg_detect_t* detection, int ind
 static cJSON* create_keypoint_json(const keypoint_t* keypoint, int index) {
     cJSON* keypoint_json = cJSON_CreateObject();
     if (!keypoint_json) return NULL;
-    
+
     cJSON_AddNumberToObject(keypoint_json, "index", index);
     cJSON_AddNumberToObject(keypoint_json, "x", keypoint->x);
     cJSON_AddNumberToObject(keypoint_json, "y", keypoint->y);
     cJSON_AddNumberToObject(keypoint_json, "confidence", keypoint->conf);
-    
+
     return keypoint_json;
+}
+
+/**
+ * @brief Add keypoint connections ("connections" array + "connection_count") to a pose/detection JSON
+ */
+static void add_connections_json(cJSON* parent_json, const uint8_t* connections, uint8_t num_connections) {
+    if (!connections || num_connections == 0) return;
+
+    cJSON* connections_array = cJSON_CreateArray();
+    if (connections_array) {
+        for (uint8_t i = 0; i < num_connections; i++) {
+            cJSON* connection_json = cJSON_CreateObject();
+            if (connection_json) {
+                cJSON_AddNumberToObject(connection_json, "from", connections[i * 2]);
+                cJSON_AddNumberToObject(connection_json, "to", connections[i * 2 + 1]);
+                cJSON_AddItemToArray(connections_array, connection_json);
+            }
+        }
+        cJSON_AddItemToObject(parent_json, "connections", connections_array);
+    }
+    cJSON_AddNumberToObject(parent_json, "connection_count", num_connections);
 }
 
 /**
@@ -959,23 +980,41 @@ static cJSON* create_mpe_detection_json(const mpe_detect_t* detection, int index
     }
     
     // Add connections array if available
-    if (detection->keypoint_connections && detection->num_connections > 0) {
-        cJSON* connections_array = cJSON_CreateArray();
-        if (connections_array) {
-            for (uint8_t i = 0; i < detection->num_connections; i++) {
-                cJSON* connection_json = cJSON_CreateObject();
-                if (connection_json) {
-                    cJSON_AddNumberToObject(connection_json, "from", detection->keypoint_connections[i * 2]);
-                    cJSON_AddNumberToObject(connection_json, "to", detection->keypoint_connections[i * 2 + 1]);
-                    cJSON_AddItemToArray(connections_array, connection_json);
-                }
-            }
-            cJSON_AddItemToObject(detection_json, "connections", connections_array);
-        }
-        cJSON_AddNumberToObject(detection_json, "connection_count", detection->num_connections);
-    }
-    
+    add_connections_json(detection_json, detection->keypoint_connections, detection->num_connections);
+
     return detection_json;
+}
+
+/**
+ * @brief Create SPE pose result JSON (detector-free single instance, no bounding box)
+ */
+static cJSON* create_spe_pose_json(const pp_spe_out_t* spe_result, int index) {
+    cJSON* pose_json = cJSON_CreateObject();
+    if (!pose_json) return NULL;
+
+    cJSON_AddNumberToObject(pose_json, "index", index);
+
+    // Add keypoints array
+    cJSON* keypoints_array = cJSON_CreateArray();
+    if (keypoints_array) {
+        for (uint32_t i = 0; i < spe_result->nb_keypoints; i++) {
+            cJSON* keypoint_json = create_keypoint_json(&spe_result->keypoints[i], i);
+            if (keypoint_json) {
+                // Add keypoint name if available
+                if (spe_result->keypoint_names && spe_result->keypoint_names[i]) {
+                    cJSON_AddStringToObject(keypoint_json, "name", spe_result->keypoint_names[i]);
+                }
+                cJSON_AddItemToArray(keypoints_array, keypoint_json);
+            }
+        }
+        cJSON_AddItemToObject(pose_json, "keypoints", keypoints_array);
+    }
+    cJSON_AddNumberToObject(pose_json, "keypoint_count", spe_result->nb_keypoints);
+
+    // Add connections array if available
+    add_connections_json(pose_json, spe_result->keypoint_connections, spe_result->num_connections);
+
+    return pose_json;
 }
 
 /**
@@ -1018,7 +1057,24 @@ cJSON* nn_create_ai_result_json(const nn_result_t* ai_result) {
             cJSON_AddItemToObject(result_json, "poses", poses_array);
         }
         cJSON_AddNumberToObject(result_json, "pose_count", ai_result->mpe.nb_detect);
-        
+
+        // Add empty detection results for consistency
+        cJSON_AddItemToObject(result_json, "detections", cJSON_CreateArray());
+        cJSON_AddNumberToObject(result_json, "detection_count", 0);
+
+    } else if (ai_result->type == PP_TYPE_SPE && ai_result->spe.keypoints != NULL &&
+               ai_result->spe.nb_keypoints > 0) {
+        // Single-Pose Estimation results (detector-free, one instance, no bounding box)
+        cJSON* poses_array = cJSON_CreateArray();
+        if (poses_array) {
+            cJSON* pose_json = create_spe_pose_json(&ai_result->spe, 0);
+            if (pose_json) {
+                cJSON_AddItemToArray(poses_array, pose_json);
+            }
+            cJSON_AddItemToObject(result_json, "poses", poses_array);
+        }
+        cJSON_AddNumberToObject(result_json, "pose_count", 1);
+
         // Add empty detection results for consistency
         cJSON_AddItemToObject(result_json, "detections", cJSON_CreateArray());
         cJSON_AddNumberToObject(result_json, "detection_count", 0);

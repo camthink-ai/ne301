@@ -55,4 +55,11 @@ typedef struct {
 int iseg_draw_init(iseg_draw_conf_t *iseg_conf);
 int iseg_draw_deinit(iseg_draw_conf_t *iseg_conf);
 int iseg_draw_result(iseg_draw_conf_t *iseg_conf, iseg_detect_t *result, uint32_t instance_index);
+
+/* SPE drawing shares the MPE keypoint/skeleton renderer (box_line_width unused: SPE has no box) */
+typedef mpe_draw_conf_t spe_draw_conf_t;
+
+int spe_draw_init(spe_draw_conf_t *spe_conf);
+int spe_draw_deinit(spe_draw_conf_t *spe_conf);
+int spe_draw_result(spe_draw_conf_t *spe_conf, const pp_spe_out_t *result);
 #endif

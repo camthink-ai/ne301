@@ -94,11 +94,7 @@ typedef struct {
 }pp_class_out_t;
 
 /* SPE (Single Person Pose Estimation) postprocess output */
-typedef struct {
-	float x;
-	float y;
-	float conf;
-} spe_keypoint_t;
+typedef keypoint_t spe_keypoint_t;  // same layout as the MPE keypoint
 
 typedef struct {
 	spe_keypoint_t *keypoints;

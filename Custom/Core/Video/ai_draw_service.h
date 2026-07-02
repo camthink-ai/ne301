@@ -29,6 +29,7 @@ typedef struct {
     uint32_t dot_width;                    // Keypoint dot width
     uint32_t od_color;                     // Object detection box color
     uint32_t mpe_color;                    // MPE detection box color
+    uint32_t spe_color;                    // SPE keypoint color
     uint32_t iseg_color;                   // ISEG detection base color
     uint8_t  iseg_mask_alpha;              // ISEG mask overlay alpha (0-255)
     uint8_t  iseg_mask_threshold;         // ISEG mask pixel threshold (0-255)
@@ -43,6 +44,7 @@ typedef struct {
     aicam_bool_t initialized;              // Initialization status
     ai_draw_config_t config;               // Drawing configuration
     mpe_draw_conf_t mpe_draw_conf;         // MPE drawing configuration
+    spe_draw_conf_t spe_draw_conf;         // SPE drawing configuration
     od_draw_conf_t od_draw_conf;           // OD drawing configuration
     iseg_draw_conf_t iseg_draw_conf;       // ISEG drawing configuration
     DRAW_Font_t font_12;                   // 12pt font
@@ -99,10 +101,23 @@ aicam_result_t ai_draw_od_results(uint8_t *fb,
  * @param mpe_result MPE detection result
  * @return aicam_result_t Operation result
  */
-aicam_result_t ai_draw_mpe_results(uint8_t *fb, 
-                                   uint32_t fb_width, 
-                                   uint32_t fb_height, 
+aicam_result_t ai_draw_mpe_results(uint8_t *fb,
+                                   uint32_t fb_width,
+                                   uint32_t fb_height,
                                    const pp_mpe_out_t *mpe_result);
+
+/**
+ * @brief Draw SPE (Single-Person Pose Estimation) results
+ * @param fb Frame buffer pointer
+ * @param fb_width Frame buffer width
+ * @param fb_height Frame buffer height
+ * @param spe_result SPE detection result
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t ai_draw_spe_results(uint8_t *fb,
+                                   uint32_t fb_width,
+                                   uint32_t fb_height,
+                                   const pp_spe_out_t *spe_result);
 
 /**
  * @brief Draw single object detection
