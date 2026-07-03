@@ -3391,12 +3391,14 @@ int mqtt_service_publish_ai_result(const char *topic,
         buffer_free(device_info);
     }
 
-    // Add AI result if provided
+    // Add AI result if provided (explicit null on absence or serialization
+    // failure keeps the payload shape stable for consumers)
+    cJSON *ai_json = NULL;
     if (ai_result && ai_result->ai_result.is_valid) {
-        cJSON *ai_json = create_ai_result_json(ai_result);
-        if (ai_json) {
-            cJSON_AddItemToObject(root, "ai_result", ai_json);
-        }
+        ai_json = create_ai_result_json(ai_result);
+    }
+    if (ai_json) {
+        cJSON_AddItemToObject(root, "ai_result", ai_json);
     }
     else
     {

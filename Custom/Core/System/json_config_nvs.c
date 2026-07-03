@@ -1161,9 +1161,12 @@ aicam_result_t json_config_save_mqtt_service_config_to_nvs(const mqtt_service_co
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save MQTT heartbeat interval to NVS");
 
-    result = json_config_nvs_write_uint8(NVS_KEY_MQTT_REPORT_CONTENT, config->report_content);
-    if (result != AICAM_OK)
+    // Do not overwrite an earlier field's failure status with this write's success
+    aicam_result_t write_res = json_config_nvs_write_uint8(NVS_KEY_MQTT_REPORT_CONTENT, config->report_content);
+    if (write_res != AICAM_OK) {
         LOG_CORE_ERROR("Failed to save MQTT report content mode to NVS");
+        result = write_res;
+    }
 
     LOG_CORE_INFO("MQTT full service configuration saved to NVS successfully");
     return result;
