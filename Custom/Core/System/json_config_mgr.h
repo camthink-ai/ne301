@@ -314,7 +314,7 @@ typedef struct {
  * @note Selects what the capture/report flow publishes on the data report topic
  */
 typedef enum {
-    MQTT_REPORT_CONTENT_FULL = 0,           // Image + metadata + AI result (stock behavior)
+    MQTT_REPORT_CONTENT_FULL = 0,           // Image + metadata + AI result
     MQTT_REPORT_CONTENT_METADATA_ONLY = 1,  // Metadata + AI result only, no image
 } mqtt_report_content_t;
 
