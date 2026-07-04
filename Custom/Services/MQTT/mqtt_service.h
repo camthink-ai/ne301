@@ -80,6 +80,10 @@ typedef struct {
     int heartbeat_interval_ms;           // Heartbeat interval
 
     uint8_t report_content;              // Report content mode (mqtt_report_content_t)
+
+    aicam_bool_t telemetry_enabled;      // Publish AI results continuously
+    char telemetry_topic[128];           // Telemetry topic
+    int telemetry_qos;                   // Telemetry QoS
 } mqtt_service_topic_config_t;
 
 /* ==================== MQTT Service Interface Functions ==================== */
@@ -294,6 +298,19 @@ aicam_result_t mqtt_service_set_topic_config(const mqtt_service_topic_config_t *
  * @return mqtt_report_content_t Report content mode (full when unset or service not initialized)
  */
 mqtt_report_content_t mqtt_service_get_report_content(void);
+
+/**
+ * @brief Get whether continuous AI telemetry publishing is enabled
+ * @return AICAM_TRUE only when the service is initialized and telemetry is enabled
+ */
+aicam_bool_t mqtt_service_get_telemetry_enabled(void);
+
+/**
+ * @brief Publish a continuous AI telemetry message to the telemetry topic
+ * @param json_str Pre-built JSON payload
+ * @return int Message ID or error code (fails fast while disconnected)
+ */
+int mqtt_service_publish_telemetry(const char *json_str);
 
 /* ==================== Event Management ==================== */
 

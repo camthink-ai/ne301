@@ -6,6 +6,7 @@
 
 #include "web_api.h"
 #include "ai_service.h"
+#include "mqtt_service.h"
 #include "cJSON.h"
 #include "debug.h"
 #include <string.h>
@@ -233,12 +234,14 @@ static aicam_result_t ai_management_get_thresholds_handler(http_handler_context_
     cJSON_AddNumberToObject(data, "nms_threshold", nms_threshold);
     cJSON_AddNumberToObject(data, "confidence_threshold", confidence_threshold);
     cJSON_AddBoolToObject(data, "overlay_results", ai_get_overlay_results());
+    cJSON_AddNumberToObject(data, "inference_interval_ms", ai_get_inference_interval_ms());
 
     // Add threshold descriptions
     cJSON* descriptions = cJSON_CreateObject();
     cJSON_AddStringToObject(descriptions, "nms_threshold", "Non-Maximum Suppression threshold (0-100)");
     cJSON_AddStringToObject(descriptions, "confidence_threshold", "AI confidence threshold (0-100)");
     cJSON_AddStringToObject(descriptions, "overlay_results", "Draw AI results onto encoded video frames");
+    cJSON_AddStringToObject(descriptions, "inference_interval_ms", "AI inference pacing interval in ms (0 = every frame, or a positive value)");
     cJSON_AddItemToObject(data, "descriptions", descriptions);
     
     api_response_success(ctx, cJSON_Print(data), "AI threshold configuration retrieved");
@@ -325,10 +328,37 @@ static aicam_result_t ai_management_set_thresholds_handler(http_handler_context_
         }
     }
 
+    // Update inference interval if provided (0 = every frame, or any positive ms).
+    // Validate the JSON number here, where a negative / non-finite / out-of-uint32
+    // value can be rejected before it is cast to the uint32 config field.
+    cJSON* interval_item = cJSON_GetObjectItem(request, "inference_interval_ms");
+    if (interval_item && cJSON_IsNumber(interval_item)) {
+        double interval_value = cJSON_GetNumberValue(interval_item);
+        if (interval_value == 0 && mqtt_service_get_telemetry_enabled()) {
+            // Telemetry paces its publishing off this interval, so an unpaced
+            // pipeline is only allowed while telemetry is off
+            cJSON_AddStringToObject(response_data, "inference_interval_ms", "rejected");
+            cJSON_AddItemToArray(errors, cJSON_CreateString("Disable telemetry_enabled before setting inference_interval_ms to 0"));
+        } else if (interval_value >= 0 && interval_value <= 4294967295.0) {  // fits uint32
+            aicam_result_t interval_result = ai_set_inference_interval_ms((uint32_t)interval_value);
+            if (interval_result == AICAM_OK) {
+                cJSON_AddStringToObject(response_data, "inference_interval_ms", "updated");
+                cJSON_AddItemToArray(updated, cJSON_CreateString("inference_interval_ms"));
+            } else {
+                cJSON_AddStringToObject(response_data, "inference_interval_ms", "failed");
+                cJSON_AddItemToArray(errors, cJSON_CreateString("Failed to set inference interval"));
+            }
+        } else {
+            cJSON_AddStringToObject(response_data, "inference_interval_ms", "invalid_range");
+            cJSON_AddItemToArray(errors, cJSON_CreateString("inference_interval_ms must be 0 (every frame) or a positive value in ms"));
+        }
+    }
+
     // Add current values to response
     cJSON_AddNumberToObject(response_data, "current_nms_threshold", ai_get_nms_threshold());
     cJSON_AddNumberToObject(response_data, "current_confidence_threshold", ai_get_confidence_threshold());
     cJSON_AddBoolToObject(response_data, "current_overlay_results", ai_get_overlay_results());
+    cJSON_AddNumberToObject(response_data, "current_inference_interval_ms", ai_get_inference_interval_ms());
     
     // Add errors and updated arrays
     cJSON_AddItemToObject(response_data, "errors", errors);

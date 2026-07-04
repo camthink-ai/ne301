@@ -68,6 +68,13 @@ aicam_result_t json_config_save_ai_debug_config_to_nvs(const ai_debug_config_t *
         result = overlay_result;
     }
 
+    // Do not overwrite an earlier field's failure status with this write's success
+    aicam_result_t interval_result = json_config_nvs_write_uint32(NVS_KEY_INFER_INTERVAL, config->inference_interval_ms);
+    if (interval_result != AICAM_OK) {
+        LOG_CORE_ERROR("Failed to save inference interval to NVS");
+        result = interval_result;
+    }
+
     LOG_CORE_INFO("AI debug configuration saved to NVS successfully");
     return result;
 }
@@ -1174,6 +1181,25 @@ aicam_result_t json_config_save_mqtt_service_config_to_nvs(const mqtt_service_co
         result = write_res;
     }
 
+    // Do not overwrite an earlier field's failure status with these writes' success
+    aicam_result_t telemetry_result = json_config_nvs_write_bool(NVS_KEY_MQTT_TELEMETRY_ENABLE, config->telemetry_enabled);
+    if (telemetry_result != AICAM_OK) {
+        LOG_CORE_ERROR("Failed to save MQTT telemetry enable to NVS");
+        result = telemetry_result;
+    }
+
+    telemetry_result = json_config_nvs_write_string(NVS_KEY_MQTT_TELEMETRY_TOPIC, config->telemetry_topic);
+    if (telemetry_result != AICAM_OK) {
+        LOG_CORE_ERROR("Failed to save MQTT telemetry topic to NVS");
+        result = telemetry_result;
+    }
+
+    telemetry_result = json_config_nvs_write_uint8(NVS_KEY_MQTT_TELEMETRY_QOS, config->telemetry_qos);
+    if (telemetry_result != AICAM_OK) {
+        LOG_CORE_ERROR("Failed to save MQTT telemetry qos to NVS");
+        result = telemetry_result;
+    }
+
     LOG_CORE_INFO("MQTT full service configuration saved to NVS successfully");
     return result;
 }
@@ -1460,6 +1486,12 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
         config->ai_debug.overlay_results = temp_bool;
     else
         json_config_nvs_write_bool(NVS_KEY_OVERLAY_RESULTS, config->ai_debug.overlay_results);
+
+    result = json_config_nvs_read_uint32(NVS_KEY_INFER_INTERVAL, &temp_uint32);
+    if (result == AICAM_OK)
+        config->ai_debug.inference_interval_ms = temp_uint32;
+    else
+        json_config_nvs_write_uint32(NVS_KEY_INFER_INTERVAL, config->ai_debug.inference_interval_ms);
 
     // Load power mode configuration
     result = json_config_nvs_read_uint32(NVS_KEY_POWER_CURRENT_MODE, &temp_uint32);
@@ -2266,6 +2298,22 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
         config->mqtt_service.report_content = MQTT_REPORT_CONTENT_FULL;
         json_config_nvs_write_uint8(NVS_KEY_MQTT_REPORT_CONTENT, config->mqtt_service.report_content);
     }
+
+    result = json_config_nvs_read_bool(NVS_KEY_MQTT_TELEMETRY_ENABLE, &temp_bool);
+    if (result == AICAM_OK)
+        config->mqtt_service.telemetry_enabled = temp_bool;
+    else
+        json_config_nvs_write_bool(NVS_KEY_MQTT_TELEMETRY_ENABLE, config->mqtt_service.telemetry_enabled);
+
+    result = json_config_nvs_read_string(NVS_KEY_MQTT_TELEMETRY_TOPIC, config->mqtt_service.telemetry_topic, sizeof(config->mqtt_service.telemetry_topic));
+    if (result != AICAM_OK)
+        json_config_nvs_write_string(NVS_KEY_MQTT_TELEMETRY_TOPIC, config->mqtt_service.telemetry_topic);
+
+    result = json_config_nvs_read_uint8(NVS_KEY_MQTT_TELEMETRY_QOS, &temp_uint8);
+    if (result == AICAM_OK)
+        config->mqtt_service.telemetry_qos = temp_uint8;
+    else
+        json_config_nvs_write_uint8(NVS_KEY_MQTT_TELEMETRY_QOS, config->mqtt_service.telemetry_qos);
 
     // Note: RTMP config is now part of video_stream_mode, loaded below
 

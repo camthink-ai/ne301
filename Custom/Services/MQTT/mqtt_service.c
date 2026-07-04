@@ -92,6 +92,11 @@ typedef struct {
     aicam_bool_t enable_heartbeat;               // Enable heartbeat
     uint32_t heartbeat_interval_ms;              // Heartbeat interval (ms)
     uint8_t report_content;                      // Report content mode (mqtt_report_content_t)
+
+    // Continuous AI telemetry
+    aicam_bool_t telemetry_enabled;              // Publish AI results continuously
+    char telemetry_topic[MAX_TOPIC_LENGTH];      // Telemetry topic
+    uint8_t telemetry_qos;                       // Telemetry QoS (0-2)
 } mqtt_service_extended_config_t;
 
 typedef struct {
@@ -1095,6 +1100,11 @@ static aicam_result_t mqtt_config_persistent_to_runtime(const mqtt_service_confi
     runtime->heartbeat_interval_ms = persistent->heartbeat_interval_ms;
     runtime->report_content = persistent->report_content;
 
+    //copy telemetry configuration
+    runtime->telemetry_enabled = persistent->telemetry_enabled;
+    strcpy(runtime->telemetry_topic, persistent->telemetry_topic);
+    runtime->telemetry_qos = persistent->telemetry_qos;
+
     return AICAM_OK;
 }
 
@@ -1133,6 +1143,11 @@ static aicam_result_t mqtt_config_runtime_to_persistent(const mqtt_service_exten
     persistent->enable_heartbeat = runtime->enable_heartbeat;
     persistent->heartbeat_interval_ms = runtime->heartbeat_interval_ms;
     persistent->report_content = runtime->report_content;
+
+    //copy telemetry configuration
+    persistent->telemetry_enabled = runtime->telemetry_enabled;
+    strcpy(persistent->telemetry_topic, runtime->telemetry_topic);
+    persistent->telemetry_qos = runtime->telemetry_qos;
 
     return AICAM_OK;
 }
@@ -2165,7 +2180,13 @@ aicam_result_t mqtt_service_get_topic_config(mqtt_service_topic_config_t *config
     config->enable_heartbeat = g_mqtt_service.config.enable_heartbeat;
     config->heartbeat_interval_ms = g_mqtt_service.config.heartbeat_interval_ms;
     config->report_content = g_mqtt_service.config.report_content;
-    
+
+    config->telemetry_enabled = g_mqtt_service.config.telemetry_enabled;
+    strncpy(config->telemetry_topic, g_mqtt_service.config.telemetry_topic, sizeof(config->telemetry_topic) - 1);
+    config->telemetry_topic[sizeof(config->telemetry_topic) - 1] = '\0';
+    config->telemetry_qos = g_mqtt_service.config.telemetry_qos;
+
+
     return AICAM_OK;
 }
 
@@ -2207,9 +2228,15 @@ aicam_result_t mqtt_service_set_topic_config(const mqtt_service_topic_config_t *
     g_mqtt_service.config.enable_heartbeat = config->enable_heartbeat;
     g_mqtt_service.config.heartbeat_interval_ms = config->heartbeat_interval_ms;
     g_mqtt_service.config.report_content = config->report_content;
-    
+
+    g_mqtt_service.config.telemetry_enabled = config->telemetry_enabled;
+    strncpy(g_mqtt_service.config.telemetry_topic, config->telemetry_topic, sizeof(g_mqtt_service.config.telemetry_topic) - 1);
+    g_mqtt_service.config.telemetry_topic[sizeof(g_mqtt_service.config.telemetry_topic) - 1] = '\0';
+    g_mqtt_service.config.telemetry_qos = config->telemetry_qos;
+
+
     LOG_SVC_DEBUG("MQTT service topic configuration updated");
-    
+
     return AICAM_OK;
 }
 
@@ -2224,6 +2251,41 @@ mqtt_report_content_t mqtt_service_get_report_content(void)
         return MQTT_REPORT_CONTENT_METADATA_ONLY;
     }
     return MQTT_REPORT_CONTENT_FULL;
+}
+
+/**
+ * @brief Get whether continuous AI telemetry publishing is enabled
+ */
+aicam_bool_t mqtt_service_get_telemetry_enabled(void)
+{
+    // Treat an uninitialized service as telemetry off (stock behavior)
+    if (g_mqtt_service.initialized && g_mqtt_service.config.telemetry_enabled) {
+        return AICAM_TRUE;
+    }
+    return AICAM_FALSE;
+}
+
+/**
+ * @brief Publish a continuous AI telemetry message
+ * @details Fire-and-forget on the configured telemetry topic/QoS. Fails fast
+ *          while disconnected; callers treat failures as dropped beats.
+ */
+int mqtt_service_publish_telemetry(const char *json_str)
+{
+    if (!json_str) {
+        return MQTT_ERR_INVALID_ARG;
+    }
+
+    if (!mqtt_service_get_telemetry_enabled()) {
+        return MQTT_ERR_INVALID_STATE;
+    }
+
+    if (!mqtt_service_is_connected()) {
+        return MQTT_ERR_CONN;
+    }
+
+    return mqtt_service_publish_json(g_mqtt_service.config.telemetry_topic, json_str,
+                                     g_mqtt_service.config.telemetry_qos, 0);
 }
 
 /* ==================== Event Management ==================== */
@@ -3621,6 +3683,14 @@ static aicam_bool_t mqtt_build_topics(const char *mac_str, mqtt_service_config_t
     {
         snprintf(cfg->data_report_topic, sizeof(cfg->data_report_topic),
                 "ne301/%s/upload/report", mac_hex);
+        changed = AICAM_TRUE;
+    }
+
+    if (cfg->telemetry_topic[0] == '\0' ||
+        strcmp(cfg->telemetry_topic, "aicam/data/telemetry") == 0)
+    {
+        snprintf(cfg->telemetry_topic, sizeof(cfg->telemetry_topic),
+                "ne301/%s/upload/telemetry", mac_hex);
         changed = AICAM_TRUE;
     }
 

@@ -32,6 +32,7 @@
      uint32_t confidence_threshold;             // Confidence threshold 0-100
      uint32_t nms_threshold;                    // NMS threshold 0-100
      aicam_bool_t overlay_results;  // Draw AI results onto encoded frames
+     uint32_t inference_interval_ms;            // AI inference pacing interval in ms (0 = every frame)
  } ai_debug_config_t;
  
 typedef struct {
@@ -350,6 +351,11 @@ typedef struct {
     aicam_bool_t enable_heartbeat;               // Enable heartbeat
     uint32_t heartbeat_interval_ms;              // Heartbeat interval (ms)
     uint8_t report_content;                      // Report content mode (mqtt_report_content_t)
+
+    // Continuous AI telemetry
+    aicam_bool_t telemetry_enabled;              // Publish AI results continuously
+    char telemetry_topic[MAX_TOPIC_LENGTH];      // Telemetry topic
+    uint8_t telemetry_qos;                       // Telemetry QoS (0-2)
 } mqtt_service_config_t;
 
 /** Stored in image_config_t.isp_mode — built-in profiles vs NVS-backed custom IQ. */
@@ -842,6 +848,19 @@ aicam_result_t json_config_set_overlay_results(aicam_bool_t overlay_results);
  */
 aicam_bool_t json_config_get_overlay_results(void);
 
+/**
+ * @brief Set AI inference pacing interval
+ * @param interval_ms Interval in milliseconds (0 = process every frame)
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_set_inference_interval_ms(uint32_t interval_ms);
+
+/**
+ * @brief Get AI inference pacing interval
+ * @return Interval in milliseconds (0 = process every frame)
+ */
+uint32_t json_config_get_inference_interval_ms(void);
+
 
 /**
  * @brief Get mqtt service configuration
@@ -1011,6 +1030,7 @@ aicam_result_t json_config_delete_webhook_ca_cert(void);
 #define JSON_CONFIG_GET_CONFIDENCE(config)     ((config)->ai_debug.confidence_threshold)
 #define JSON_CONFIG_GET_NMS_THRESHOLD(config)  ((config)->ai_debug.nms_threshold)
 #define JSON_CONFIG_GET_OVERLAY_RESULTS(config) ((config)->ai_debug.overlay_results)
+#define JSON_CONFIG_GET_INFER_INTERVAL(config) ((config)->ai_debug.inference_interval_ms)
 
 // Macros for quick access to power mode configuration
 #define JSON_CONFIG_GET_POWER_MODE(config)     ((config)->power_mode_config.current_mode)

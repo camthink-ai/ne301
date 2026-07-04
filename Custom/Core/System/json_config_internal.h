@@ -62,6 +62,7 @@
  #define NVS_KEY_CONFIDENCE          "confidence"
  #define NVS_KEY_NMS_THRESHOLD       "nms_thresh"
  #define NVS_KEY_OVERLAY_RESULTS     "overlay_results"
+ #define NVS_KEY_INFER_INTERVAL      "ai_infer_iv"
  
  // Power mode configuration key names
  #define NVS_KEY_POWER_CURRENT_MODE  "power_cur_mode"
@@ -286,6 +287,11 @@
 
 // Report content
 #define NVS_KEY_MQTT_REPORT_CONTENT     "mqtt_rpt_ct"
+
+// Continuous AI telemetry
+#define NVS_KEY_MQTT_TELEMETRY_ENABLE   "mqtt_tel_en"
+#define NVS_KEY_MQTT_TELEMETRY_TOPIC    "mqtt_t_tel"
+#define NVS_KEY_MQTT_TELEMETRY_QOS      "mqtt_q_tel"
  
  // Work mode configuration key names
  #define NVS_KEY_WORK_MODE           "work_mode"

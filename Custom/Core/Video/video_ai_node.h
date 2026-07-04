@@ -34,6 +34,7 @@ typedef struct {
     uint32_t nms_threshold;               // NMS threshold (0-100)
     uint32_t max_detections;              // Maximum detections per frame
     uint32_t processing_interval;         // Processing interval (frames)
+    uint32_t inference_interval_ms;       // Inference pacing interval in ms (0 = every frame)
     uint32_t bpp;                         // Bits per pixel
     aicam_bool_t enabled;                 // AI processing enabled
     aicam_bool_t overlay_results;         // Overlay detection results
@@ -64,6 +65,18 @@ typedef struct {
 } nn_result_with_frame_id_t;
 
 /**
+ * @brief Inference result callback
+ * @details Invoked on the AI node's processing thread immediately after a
+ *          successful inference, while the postprocess output buffers still
+ *          hold that inference's data. The callee must copy whatever it needs
+ *          before returning and must not block.
+ */
+typedef void (*video_ai_result_callback_t)(const nn_result_t *result,
+                                           uint32_t frame_id,
+                                           uint32_t inference_time_ms,
+                                           void *user_data);
+
+/**
  * @brief AI node private data
  */
 typedef struct {
@@ -72,6 +85,9 @@ typedef struct {
     video_ai_stats_t stats;               // AI statistics
     nn_model_info_t model_info;           // NN model information
     uint32_t frame_counter;               // Frame counter for interval processing
+    uint32_t last_inference_tick;         // Tick of the last inference attempt (pacing)
+    video_ai_result_callback_t result_callback; // Post-inference result callback
+    void *result_callback_user_data;      // Opaque pointer for result_callback
     uint8_t *current_buffer;              // Current frame buffer
     aicam_bool_t is_initialized;          // Initialization status
     aicam_bool_t is_running;              // Running status
@@ -199,6 +215,17 @@ aicam_result_t video_ai_node_get_nn_result(video_node_t *node, nn_result_t *resu
  * @return Operation result
  */
 aicam_result_t video_ai_node_get_best_nn_result(video_node_t *node, nn_result_t *result, uint32_t frame_id);
+
+/**
+ * @brief Register a callback invoked after each successful inference
+ * @param node AI node handle
+ * @param callback Callback function (NULL to unregister)
+ * @param user_data Opaque pointer passed to the callback
+ * @return Operation result
+ */
+aicam_result_t video_ai_node_set_result_callback(video_node_t *node,
+                                                 video_ai_result_callback_t callback,
+                                                 void *user_data);
 
 /* ==================== Control Commands ==================== */
 
