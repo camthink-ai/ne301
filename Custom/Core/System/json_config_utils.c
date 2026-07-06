@@ -94,6 +94,29 @@
  }
  
  
+ aicam_bool_t json_config_enforce_invariants(aicam_global_config_t *config)
+ {
+     if (!config) {
+         return AICAM_FALSE;
+     }
+
+     // telemetry_enabled requires a non-zero inference interval (telemetry
+     // publishes once per paced inference). The Web APIs enforce this on
+     // write, but NVS loading and config-file import apply raw values, so
+     // normalize once all groups are populated. In-memory only: the caller
+     // decides whether to persist, since an imported config may still be
+     // rejected by validation and must not mutate stored state.
+     if (config->mqtt_service.telemetry_enabled &&
+         config->ai_debug.inference_interval_ms == 0) {
+         LOG_CORE_WARN("telemetry_enabled requires inference_interval_ms > 0; disabling telemetry");
+         config->mqtt_service.telemetry_enabled = 0;
+         return AICAM_TRUE;
+     }
+
+     return AICAM_FALSE;
+ }
+ 
+ 
  uint32_t json_config_crc32(const void *data, size_t length)
  {
      // (Copied verbatim from original file)

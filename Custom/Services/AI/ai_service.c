@@ -107,7 +107,7 @@ static void ai_telemetry_publish(void);
 static void ai_telemetry_reconcile_pipeline(void);
 static void ai_telemetry_invalidate_snapshot(void);
 static aicam_result_t ai_telemetry_init(void);
-static void ai_telemetry_stop_task(void);
+static aicam_bool_t ai_telemetry_stop_task(void);
 static void ai_telemetry_deinit(void);
 
 static void ai_camera_pipeline_event_callback(video_pipeline_t *pipeline,
@@ -1671,12 +1671,16 @@ static aicam_result_t ai_telemetry_init(void)
 
 /**
  * @brief Stop the telemetry task, unregister the callback, release the hub hold
- * @details Idempotent. After this returns, the reconciler and publisher are
- *          gone and no NEW result callback will fire, but a callback already
- *          in flight on the AI node thread may still be running — the caller
- *          must stop the AI pipeline before freeing snapshot resources.
+ * @details Idempotent. After this returns TRUE, the reconciler and publisher
+ *          are gone and no NEW result callback will fire, but a callback
+ *          already in flight on the AI node thread may still be running — the
+ *          caller must stop the AI pipeline before freeing snapshot resources.
+ * @return AICAM_TRUE when no task remains (never started, or joined);
+ *         AICAM_FALSE when the task did not exit within the join window, in
+ *         which case the task handle and hub hold are left in place so a
+ *         later call can retry the join.
  */
-static void ai_telemetry_stop_task(void)
+static aicam_bool_t ai_telemetry_stop_task(void)
 {
     g_ai_telemetry.initialized = AICAM_FALSE;
 
@@ -1687,9 +1691,15 @@ static void ai_telemetry_stop_task(void)
     if (g_ai_telemetry.task_handle) {
         g_ai_telemetry.task_running = AICAM_FALSE;
         osEventFlagsSet(g_ai_telemetry.event_flags, AI_TELEMETRY_FLAG_RESULT);
-        // Wait for the task to leave its loop before it can be freed
-        for (uint32_t waited_ms = 0; !g_ai_telemetry.task_exited && waited_ms < 2000; waited_ms += 100) {
+        // Wait for the task to leave its loop. Worst-case exit latency is one
+        // flag-wait timeout (1 s) plus one publish blocked on a degraded link
+        // (network timeout, 3 s default), so 6 s covers it with margin.
+        for (uint32_t waited_ms = 0; !g_ai_telemetry.task_exited && waited_ms < 6000; waited_ms += 100) {
             osDelay(100);
+        }
+        if (!g_ai_telemetry.task_exited) {
+            LOG_SVC_ERROR("Telemetry task did not exit within the join window");
+            return AICAM_FALSE;
         }
         g_ai_telemetry.task_handle = NULL;
     }
@@ -1699,6 +1709,8 @@ static void ai_telemetry_stop_task(void)
         video_hub_unsubscribe(g_ai_telemetry.hub_sub_id);
         g_ai_telemetry.hub_sub_id = VIDEO_HUB_INVALID_SUBSCRIBER_ID;
     }
+
+    return AICAM_TRUE;
 }
 
 /**
@@ -1707,11 +1719,16 @@ static void ai_telemetry_stop_task(void)
  *          the AI node thread is stopped first (so no result callback is in
  *          flight); ai_service_stop does this via ai_pipeline_stop(). The
  *          init-failure paths are safe because the AI pipeline is not yet
- *          running when ai_telemetry_init runs.
+ *          running when ai_telemetry_init runs. If the publisher task cannot
+ *          be joined, the shared resources are deliberately leaked rather
+ *          than freed under a live task.
  */
 static void ai_telemetry_deinit(void)
 {
-    ai_telemetry_stop_task();
+    if (!ai_telemetry_stop_task()) {
+        LOG_SVC_ERROR("Leaking telemetry resources: publisher task still running");
+        return;
+    }
 
     if (g_ai_telemetry.event_flags) {
         osEventFlagsDelete(g_ai_telemetry.event_flags);

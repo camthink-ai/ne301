@@ -1188,6 +1188,10 @@ aicam_result_t json_config_parse_json_object(const char *json_str, aicam_global_
         parse_auth_mgr(auth_mgr, &config->auth_mgr);
 
     cJSON_Delete(root);
+
+    // Cross-group invariants can only be checked once every section has parsed
+    json_config_enforce_invariants(config);
+
     return result;
 }
 

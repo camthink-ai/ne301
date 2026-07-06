@@ -395,6 +395,7 @@ aicam_result_t json_config_load_webhook_from_nvs(webhook_config_t *config);
  uint32_t json_config_crc32(const void *data, size_t length);
  uint64_t json_config_get_timestamp(void);
  aicam_result_t json_config_validate_ranges(const aicam_global_config_t *config);
+ aicam_bool_t json_config_enforce_invariants(aicam_global_config_t *config);
  void json_config_generate_device_name_from_mac(char *device_name, size_t name_size, const char *mac_address);
  
  

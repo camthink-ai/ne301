@@ -2510,6 +2510,13 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
         json_config_save_to_nvs(config);  // Will call flush internally
     }
 
+    // Stored values violating a cross-field invariant are corrected in place;
+    // persist the correction so the next boot loads a consistent state
+    if (json_config_enforce_invariants(config)) {
+        json_config_nvs_write_uint8(NVS_KEY_MQTT_TELEMETRY_ENABLE,
+                                    config->mqtt_service.telemetry_enabled);
+    }
+
     LOG_CORE_INFO("Config loaded from NVS successfully");
     return AICAM_OK;
 }
