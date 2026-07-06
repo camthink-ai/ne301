@@ -312,6 +312,8 @@ typedef struct {
 /**
  * @brief Data report content mode
  * @note Selects what the capture/report flow publishes on the data report topic
+ * @note Applies to the normal capture path; the Quick_Bootstrap fast-capture
+ *       path builds its report independently and always sends the full report
  */
 typedef enum {
     MQTT_REPORT_CONTENT_FULL = 0,           // Image + metadata + AI result

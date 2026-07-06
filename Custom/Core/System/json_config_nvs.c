@@ -2246,10 +2246,14 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
         json_config_nvs_write_uint32(NVS_KEY_MQTT_HEARTBEAT_INTERVAL, (uint32_t)config->mqtt_service.heartbeat_interval_ms);
 
     result = json_config_nvs_read_uint8(NVS_KEY_MQTT_REPORT_CONTENT, &temp_uint8);
-    if (result == AICAM_OK)
+    if (result == AICAM_OK &&
+        (temp_uint8 == MQTT_REPORT_CONTENT_FULL || temp_uint8 == MQTT_REPORT_CONTENT_METADATA_ONLY)) {
         config->mqtt_service.report_content = temp_uint8;
-    else
+    } else {
+        // Missing or out-of-range stored value: normalize to full and persist it
+        config->mqtt_service.report_content = MQTT_REPORT_CONTENT_FULL;
         json_config_nvs_write_uint8(NVS_KEY_MQTT_REPORT_CONTENT, config->mqtt_service.report_content);
+    }
 
     // Note: RTMP config is now part of video_stream_mode, loaded below
 
