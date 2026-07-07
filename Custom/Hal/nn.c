@@ -1162,7 +1162,7 @@ static float nn_cbor_clamp01(float value) {
 }
 
 static void nn_cbor_put_class(cbor_enc_t* enc, const char* class_name, const char* fallback) {
-    const char* name = class_name ? class_name : fallback;
+    const char* name = class_name ? class_name : (fallback ? fallback : "");
     size_t len = strlen(name);
     if (len > NN_CBOR_CLASS_NAME_MAX) {
         len = NN_CBOR_CLASS_NAME_MAX;
@@ -1191,6 +1191,9 @@ static void nn_cbor_put_box(cbor_enc_t* enc, float x, float y, float width, floa
 }
 
 static void nn_cbor_put_keypoints(cbor_enc_t* enc, const keypoint_t* keypoints, uint32_t count) {
+    if (!keypoints) {
+        count = 0;
+    }
     cbor_enc_text(enc, "kp");
     cbor_enc_array(enc, count);
     for (uint32_t i = 0; i < count && !enc->overflow; i++) {
