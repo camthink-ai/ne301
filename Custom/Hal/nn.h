@@ -374,4 +374,20 @@ int nn_validate_model(const uintptr_t file_ptr);
  */
 cJSON* nn_create_ai_result_json(const nn_result_t* ai_result);
 
+/**
+ * @brief Encode an AI result as a compact CBOR map (RFC 8949)
+ * @details Binary counterpart of nn_create_ai_result_json for
+ *          bandwidth-constrained publishers. Coordinates and confidences are
+ *          clamped to [0,1] and carried as half-precision floats; static
+ *          per-model metadata (keypoint names, skeleton connections) is not
+ *          carried. ISEG carries mask_size only, matching the JSON path.
+ *          The result's counts and pointers are trusted as-is (same caller
+ *          contract as nn_create_ai_result_json).
+ * @param ai_result AI result
+ * @param buf Output buffer
+ * @param cap Output buffer capacity in bytes
+ * @return Bytes written, or -1 on invalid arguments or buffer overflow
+ */
+int nn_encode_ai_result_cbor(const nn_result_t* ai_result, uint8_t* buf, size_t cap);
+
 #endif // _NN_H

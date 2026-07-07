@@ -263,7 +263,8 @@
         // Continuous AI telemetry
         .telemetry_enabled = AICAM_FALSE,
         .telemetry_topic = "aicam/data/telemetry",
-        .telemetry_qos = 0
+        .telemetry_qos = 0,
+        .telemetry_format = MQTT_TELEMETRY_FORMAT_JSON
     }
  };
 

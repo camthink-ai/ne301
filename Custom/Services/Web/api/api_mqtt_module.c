@@ -322,6 +322,8 @@ static aicam_result_t mqtt_config_get_handler(http_handler_context_t* ctx)
         cJSON_AddBoolToObject(response_json, "telemetry_enabled", topic_config.telemetry_enabled);
         cJSON_AddStringToObject(response_json, "telemetry_topic", topic_config.telemetry_topic);
         cJSON_AddNumberToObject(response_json, "telemetry_qos", topic_config.telemetry_qos);
+        cJSON_AddStringToObject(response_json, "telemetry_format",
+                                topic_config.telemetry_format == MQTT_TELEMETRY_FORMAT_CBOR ? "cbor" : "json");
 
 
         //cJSON *auto_subscribe = cJSON_CreateObject();
@@ -422,6 +424,19 @@ static aicam_result_t mqtt_config_set_handler(http_handler_context_t* ctx)
                           telemetry_qos->valueint < 0 || telemetry_qos->valueint > 2)) {
         cJSON_Delete(request_json);
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "telemetry_qos must be 0, 1, or 2");
+    }
+    cJSON *telemetry_format = cJSON_GetObjectItem(request_json, "telemetry_format");
+    int telemetry_format_value = MQTT_TELEMETRY_FORMAT_JSON;
+    if (telemetry_format) {
+        if (cJSON_IsString(telemetry_format) && strcmp(telemetry_format->valuestring, "json") == 0) {
+            telemetry_format_value = MQTT_TELEMETRY_FORMAT_JSON;
+        } else if (cJSON_IsString(telemetry_format) && strcmp(telemetry_format->valuestring, "cbor") == 0) {
+            telemetry_format_value = MQTT_TELEMETRY_FORMAT_CBOR;
+        } else {
+            cJSON_Delete(request_json);
+            return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
+                                      "telemetry_format must be 'json' or 'cbor'");
+        }
     }
 
     // Get current configuration
@@ -579,7 +594,7 @@ static aicam_result_t mqtt_config_set_handler(http_handler_context_t* ctx)
     cJSON *topics = cJSON_GetObjectItem(request_json, "topics");
     cJSON *qos = cJSON_GetObjectItem(request_json, "qos");
 
-    if (topics || qos || report_content || telemetry_enabled || telemetry_topic || telemetry_qos) {
+    if (topics || qos || report_content || telemetry_enabled || telemetry_topic || telemetry_qos || telemetry_format) {
         mqtt_service_topic_config_t topic_config;
         result = mqtt_service_get_topic_config(&topic_config);
         if (result == AICAM_OK) {
@@ -632,6 +647,9 @@ static aicam_result_t mqtt_config_set_handler(http_handler_context_t* ctx)
             }
             if (telemetry_qos) {
                 topic_config.telemetry_qos = (int)telemetry_qos->valueint;
+            }
+            if (telemetry_format) {
+                topic_config.telemetry_format = telemetry_format_value;
             }
 
             // Apply topic configuration

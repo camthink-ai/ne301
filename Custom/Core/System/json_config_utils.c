@@ -96,6 +96,8 @@
  
  aicam_bool_t json_config_enforce_invariants(aicam_global_config_t *config)
  {
+     aicam_bool_t changed = AICAM_FALSE;
+
      if (!config) {
          return AICAM_FALSE;
      }
@@ -110,10 +112,19 @@
          config->ai_debug.inference_interval_ms == 0) {
          LOG_CORE_WARN("telemetry_enabled requires inference_interval_ms > 0; disabling telemetry");
          config->mqtt_service.telemetry_enabled = 0;
-         return AICAM_TRUE;
+         changed = AICAM_TRUE;
      }
 
-     return AICAM_FALSE;
+     // telemetry_format bytes outside the known enum (a future firmware's
+     // value, or corruption) degrade to the stock JSON payload
+     if (config->mqtt_service.telemetry_format > MQTT_TELEMETRY_FORMAT_CBOR) {
+         LOG_CORE_WARN("Unknown telemetry_format %u; falling back to json",
+                       config->mqtt_service.telemetry_format);
+         config->mqtt_service.telemetry_format = MQTT_TELEMETRY_FORMAT_JSON;
+         changed = AICAM_TRUE;
+     }
+
+     return changed;
  }
  
  

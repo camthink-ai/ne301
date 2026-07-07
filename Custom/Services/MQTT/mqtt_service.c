@@ -97,6 +97,7 @@ typedef struct {
     aicam_bool_t telemetry_enabled;              // Publish AI results continuously
     char telemetry_topic[MAX_TOPIC_LENGTH];      // Telemetry topic
     uint8_t telemetry_qos;                       // Telemetry QoS (0-2)
+    uint8_t telemetry_format;                    // Payload format (mqtt_telemetry_format_t)
 } mqtt_service_extended_config_t;
 
 typedef struct {
@@ -1104,6 +1105,7 @@ static aicam_result_t mqtt_config_persistent_to_runtime(const mqtt_service_confi
     runtime->telemetry_enabled = persistent->telemetry_enabled;
     strcpy(runtime->telemetry_topic, persistent->telemetry_topic);
     runtime->telemetry_qos = persistent->telemetry_qos;
+    runtime->telemetry_format = persistent->telemetry_format;
 
     return AICAM_OK;
 }
@@ -1148,6 +1150,7 @@ static aicam_result_t mqtt_config_runtime_to_persistent(const mqtt_service_exten
     persistent->telemetry_enabled = runtime->telemetry_enabled;
     strcpy(persistent->telemetry_topic, runtime->telemetry_topic);
     persistent->telemetry_qos = runtime->telemetry_qos;
+    persistent->telemetry_format = runtime->telemetry_format;
 
     return AICAM_OK;
 }
@@ -2185,6 +2188,7 @@ aicam_result_t mqtt_service_get_topic_config(mqtt_service_topic_config_t *config
     strncpy(config->telemetry_topic, g_mqtt_service.config.telemetry_topic, sizeof(config->telemetry_topic) - 1);
     config->telemetry_topic[sizeof(config->telemetry_topic) - 1] = '\0';
     config->telemetry_qos = g_mqtt_service.config.telemetry_qos;
+    config->telemetry_format = g_mqtt_service.config.telemetry_format;
 
 
     return AICAM_OK;
@@ -2233,6 +2237,7 @@ aicam_result_t mqtt_service_set_topic_config(const mqtt_service_topic_config_t *
     strncpy(g_mqtt_service.config.telemetry_topic, config->telemetry_topic, sizeof(g_mqtt_service.config.telemetry_topic) - 1);
     g_mqtt_service.config.telemetry_topic[sizeof(g_mqtt_service.config.telemetry_topic) - 1] = '\0';
     g_mqtt_service.config.telemetry_qos = config->telemetry_qos;
+    g_mqtt_service.config.telemetry_format = (uint8_t)config->telemetry_format;
 
 
     LOG_SVC_DEBUG("MQTT service topic configuration updated");
@@ -2266,6 +2271,20 @@ aicam_bool_t mqtt_service_get_telemetry_enabled(void)
 }
 
 /**
+ * @brief Get the continuous AI telemetry payload format
+ */
+mqtt_telemetry_format_t mqtt_service_get_telemetry_format(void)
+{
+    // Only the exact non-default value selects CBOR; an uninitialized service
+    // or an out-of-range stored byte degrades to the stock JSON payload
+    if (g_mqtt_service.initialized &&
+        g_mqtt_service.config.telemetry_format == MQTT_TELEMETRY_FORMAT_CBOR) {
+        return MQTT_TELEMETRY_FORMAT_CBOR;
+    }
+    return MQTT_TELEMETRY_FORMAT_JSON;
+}
+
+/**
  * @brief Publish a continuous AI telemetry message
  * @details Fire-and-forget on the configured telemetry topic/QoS. Fails fast
  *          while disconnected; callers treat failures as dropped beats.
@@ -2286,6 +2305,30 @@ int mqtt_service_publish_telemetry(const char *json_str)
 
     return mqtt_service_publish_json(g_mqtt_service.config.telemetry_topic, json_str,
                                      g_mqtt_service.config.telemetry_qos, 0);
+}
+
+/**
+ * @brief Publish a binary continuous AI telemetry message
+ * @details Same guards and topic/QoS as mqtt_service_publish_telemetry, but
+ *          the payload is length-delimited rather than a NUL-terminated
+ *          string, so binary encodings (containing 0x00 bytes) pass through.
+ */
+int mqtt_service_publish_telemetry_raw(const uint8_t *payload, int payload_len)
+{
+    if (!payload || payload_len <= 0) {
+        return MQTT_ERR_INVALID_ARG;
+    }
+
+    if (!mqtt_service_get_telemetry_enabled()) {
+        return MQTT_ERR_INVALID_STATE;
+    }
+
+    if (!mqtt_service_is_connected()) {
+        return MQTT_ERR_CONN;
+    }
+
+    return mqtt_service_publish(g_mqtt_service.config.telemetry_topic, payload, payload_len,
+                                g_mqtt_service.config.telemetry_qos, 0);
 }
 
 /* ==================== Event Management ==================== */

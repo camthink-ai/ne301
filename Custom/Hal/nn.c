@@ -15,6 +15,7 @@
 #include "pp.h"
 #include "nn.h"
 #include "cJSON.h"
+#include "cbor_enc.h"
 #include "gauge_reading.h"
 #include "mpool.h"
 #include "camera.h"
@@ -1140,8 +1141,162 @@ cJSON* nn_create_ai_result_json(const nn_result_t* ai_result) {
             break;
     }
     cJSON_AddStringToObject(result_json, "type_name", type_name);
-    
+
     return result_json;
+}
+
+/* ==================== Compact CBOR encoding ==================== */
+
+// Longest class name carried in a compact payload; longer names truncate
+#define NN_CBOR_CLASS_NAME_MAX 63
+
+/**
+ * @brief Clamp to [0,1] before half-precision encoding
+ * @details The pp layer floor-clamps some MPE fields only (box and keypoint
+ *          x/y have no upper clamp); NaN maps to 0.
+ */
+static float nn_cbor_clamp01(float value) {
+    if (!(value > 0.0f)) return 0.0f;
+    if (value > 1.0f) return 1.0f;
+    return value;
+}
+
+static void nn_cbor_put_class(cbor_enc_t* enc, const char* class_name, const char* fallback) {
+    const char* name = class_name ? class_name : fallback;
+    size_t len = strlen(name);
+    if (len > NN_CBOR_CLASS_NAME_MAX) {
+        len = NN_CBOR_CLASS_NAME_MAX;
+        // Never cut a multi-byte UTF-8 sequence: RFC 8949 text strings must be
+        // valid UTF-8, and strict decoders reject the whole document otherwise
+        while (len > 0 && ((unsigned char)name[len] & 0xC0U) == 0x80U) {
+            len--;
+        }
+    }
+    cbor_enc_text(enc, "c");
+    cbor_enc_text_n(enc, name, len);
+}
+
+static void nn_cbor_put_conf(cbor_enc_t* enc, float conf) {
+    cbor_enc_text(enc, "conf");
+    cbor_enc_f16(enc, nn_cbor_clamp01(conf));
+}
+
+static void nn_cbor_put_box(cbor_enc_t* enc, float x, float y, float width, float height) {
+    cbor_enc_text(enc, "box");
+    cbor_enc_array(enc, 4);
+    cbor_enc_f16(enc, nn_cbor_clamp01(x));
+    cbor_enc_f16(enc, nn_cbor_clamp01(y));
+    cbor_enc_f16(enc, nn_cbor_clamp01(width));
+    cbor_enc_f16(enc, nn_cbor_clamp01(height));
+}
+
+static void nn_cbor_put_keypoints(cbor_enc_t* enc, const keypoint_t* keypoints, uint32_t count) {
+    cbor_enc_text(enc, "kp");
+    cbor_enc_array(enc, count);
+    for (uint32_t i = 0; i < count && !enc->overflow; i++) {
+        cbor_enc_array(enc, 3);
+        cbor_enc_f16(enc, nn_cbor_clamp01(keypoints[i].x));
+        cbor_enc_f16(enc, nn_cbor_clamp01(keypoints[i].y));
+        cbor_enc_f16(enc, nn_cbor_clamp01(keypoints[i].conf));
+    }
+}
+
+/**
+ * @brief Encode AI result as a compact CBOR map (see nn.h)
+ * @details Map shape mirrors the JSON serializer's dispatch: {"type": N} plus
+ *          one kind-specific key (OD "det", MPE/SPE "poses", ISEG "seg");
+ *          unknown kinds carry {"type": N} alone. Counts and pointers in the
+ *          result are trusted exactly as nn_create_ai_result_json trusts them
+ *          - the caller guarantees they match their backing allocations.
+ *          Loops stop early once the output buffer overflows.
+ */
+int nn_encode_ai_result_cbor(const nn_result_t* ai_result, uint8_t* buf, size_t cap) {
+    if (!ai_result || !buf) {
+        return -1;
+    }
+
+    cbor_enc_t enc;
+    cbor_enc_init(&enc, buf, cap);
+
+    switch (ai_result->type) {
+    case PP_TYPE_OD: {
+        uint8_t count = ai_result->od.detects ? ai_result->od.nb_detect : 0;
+        cbor_enc_map(&enc, 2);
+        cbor_enc_text(&enc, "type");
+        cbor_enc_uint(&enc, PP_TYPE_OD);
+        cbor_enc_text(&enc, "det");
+        cbor_enc_array(&enc, count);
+        for (uint8_t i = 0; i < count && !enc.overflow; i++) {
+            const od_detect_t* detect = &ai_result->od.detects[i];
+            cbor_enc_map(&enc, 3);
+            nn_cbor_put_class(&enc, detect->class_name, "");
+            nn_cbor_put_conf(&enc, detect->conf);
+            nn_cbor_put_box(&enc, detect->x, detect->y, detect->width, detect->height);
+        }
+        break;
+    }
+    case PP_TYPE_MPE: {
+        uint8_t count = ai_result->mpe.detects ? ai_result->mpe.nb_detect : 0;
+        cbor_enc_map(&enc, 2);
+        cbor_enc_text(&enc, "type");
+        cbor_enc_uint(&enc, PP_TYPE_MPE);
+        cbor_enc_text(&enc, "poses");
+        cbor_enc_array(&enc, count);
+        for (uint8_t i = 0; i < count && !enc.overflow; i++) {
+            const mpe_detect_t* detect = &ai_result->mpe.detects[i];
+            // Same inline-array bound as the JSON serializer's keypoint loop
+            uint32_t nb_kp = detect->nb_keypoints < 33 ? detect->nb_keypoints : 33;
+            cbor_enc_map(&enc, 4);
+            nn_cbor_put_class(&enc, detect->class_name, "person");
+            nn_cbor_put_conf(&enc, detect->conf);
+            nn_cbor_put_box(&enc, detect->x, detect->y, detect->width, detect->height);
+            nn_cbor_put_keypoints(&enc, detect->keypoints, nb_kp);
+        }
+        break;
+    }
+    case PP_TYPE_SPE: {
+        int have_pose = (ai_result->spe.keypoints != NULL && ai_result->spe.nb_keypoints > 0);
+        cbor_enc_map(&enc, 2);
+        cbor_enc_text(&enc, "type");
+        cbor_enc_uint(&enc, PP_TYPE_SPE);
+        cbor_enc_text(&enc, "poses");
+        cbor_enc_array(&enc, have_pose ? 1 : 0);
+        if (have_pose) {
+            cbor_enc_map(&enc, 1);
+            nn_cbor_put_keypoints(&enc, ai_result->spe.keypoints, ai_result->spe.nb_keypoints);
+        }
+        break;
+    }
+    case PP_TYPE_ISEG: {
+        uint8_t count = ai_result->iseg.detects ? ai_result->iseg.nb_detect : 0;
+        cbor_enc_map(&enc, 2);
+        cbor_enc_text(&enc, "type");
+        cbor_enc_uint(&enc, PP_TYPE_ISEG);
+        cbor_enc_text(&enc, "seg");
+        cbor_enc_array(&enc, count);
+        for (uint8_t i = 0; i < count && !enc.overflow; i++) {
+            const iseg_detect_t* detect = &ai_result->iseg.detects[i];
+            cbor_enc_map(&enc, 4);
+            nn_cbor_put_class(&enc, detect->class_name, "");
+            nn_cbor_put_conf(&enc, detect->conf);
+            nn_cbor_put_box(&enc, detect->x, detect->y, detect->width, detect->height);
+            cbor_enc_text(&enc, "msz");
+            cbor_enc_uint(&enc, detect->mask_size);
+        }
+        break;
+    }
+    default:
+        cbor_enc_map(&enc, 1);
+        cbor_enc_text(&enc, "type");
+        cbor_enc_uint(&enc, (uint64_t)ai_result->type);
+        break;
+    }
+
+    size_t total = 0;
+    if (cbor_enc_finish(&enc, &total) != 0) {
+        return -1;
+    }
+    return (int)total;
 }
 
 /* ==================== command processing function ==================== */

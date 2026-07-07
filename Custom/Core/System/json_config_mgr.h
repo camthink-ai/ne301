@@ -356,7 +356,18 @@ typedef struct {
     aicam_bool_t telemetry_enabled;              // Publish AI results continuously
     char telemetry_topic[MAX_TOPIC_LENGTH];      // Telemetry topic
     uint8_t telemetry_qos;                       // Telemetry QoS (0-2)
+    uint8_t telemetry_format;                    // Payload format (mqtt_telemetry_format_t)
 } mqtt_service_config_t;
+
+/**
+ * @brief Continuous AI telemetry payload format
+ * @note Consumers distinguish the payloads on the wire by the first byte:
+ *       '{' (0x7B) for JSON, a CBOR map header (0xA0-0xBF) for CBOR.
+ */
+typedef enum {
+    MQTT_TELEMETRY_FORMAT_JSON = 0,              // cJSON text payload (default)
+    MQTT_TELEMETRY_FORMAT_CBOR = 1               // Compact CBOR binary payload
+} mqtt_telemetry_format_t;
 
 /** Stored in image_config_t.isp_mode — built-in profiles vs NVS-backed custom IQ. */
 #define IMAGE_ISP_MODE_OUTDOOR  0u   /* default */

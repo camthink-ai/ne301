@@ -84,6 +84,7 @@ typedef struct {
     aicam_bool_t telemetry_enabled;      // Publish AI results continuously
     char telemetry_topic[128];           // Telemetry topic
     int telemetry_qos;                   // Telemetry QoS
+    int telemetry_format;                // Payload format (mqtt_telemetry_format_t)
 } mqtt_service_topic_config_t;
 
 /* ==================== MQTT Service Interface Functions ==================== */
@@ -306,11 +307,27 @@ mqtt_report_content_t mqtt_service_get_report_content(void);
 aicam_bool_t mqtt_service_get_telemetry_enabled(void);
 
 /**
+ * @brief Get the continuous AI telemetry payload format
+ * @return MQTT_TELEMETRY_FORMAT_CBOR only when the service is initialized and
+ *         that exact format is configured; any other stored value degrades to
+ *         MQTT_TELEMETRY_FORMAT_JSON (stock behavior)
+ */
+mqtt_telemetry_format_t mqtt_service_get_telemetry_format(void);
+
+/**
  * @brief Publish a continuous AI telemetry message to the telemetry topic
  * @param json_str Pre-built JSON payload
  * @return int Message ID or error code (fails fast while disconnected)
  */
 int mqtt_service_publish_telemetry(const char *json_str);
+
+/**
+ * @brief Publish a binary continuous AI telemetry message
+ * @param payload Encoded payload bytes (may contain 0x00)
+ * @param payload_len Payload length in bytes
+ * @return int Message ID or error code (fails fast while disconnected)
+ */
+int mqtt_service_publish_telemetry_raw(const uint8_t *payload, int payload_len);
 
 /* ==================== Event Management ==================== */
 

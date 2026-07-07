@@ -23,6 +23,7 @@
 #include "mqtt_service.h"
 #include "drtc.h"
 #include "common_utils.h"
+#include "cbor_enc.h"
 
 /* ==================== AI Service Context ==================== */
 
@@ -65,6 +66,10 @@ static ai_service_context_t g_ai_service = {0};
 #define AI_TELEMETRY_MAX_DETECTS    32   // matches max_detections in the AI configs
 #define AI_TELEMETRY_MAX_KEYPOINTS  64
 
+#define AI_TELEMETRY_CBOR_VERSION   1U
+// Bounds the worst-case CBOR beat (32 MPE detects x 33 keypoints) with margin
+#define AI_TELEMETRY_ENCODE_BUF_SIZE (16U * 1024U)
+
 /**
  * @brief One published telemetry beat, deep-copied at inference time
  * @details The pp module rewrites its output buffers on every inference (on
@@ -92,6 +97,7 @@ static struct {
     mpe_detect_t *mpe_detects;             // Deep-copy destination (MPE)
     spe_keypoint_t *spe_keypoints;         // Deep-copy destination (SPE)
     iseg_detect_t *iseg_detects;           // Deep-copy destination (ISEG, masks omitted)
+    uint8_t *encode_buf;                   // CBOR beat encode buffer
     video_hub_subscriber_id_t hub_sub_id;  // Hub subscription that holds the pipeline running
 } g_ai_telemetry = {0};
 
@@ -1527,11 +1533,11 @@ static void ai_telemetry_invalidate_snapshot(void)
 }
 
 /**
- * @brief Build and publish one telemetry message from the current snapshot
- * @details The snapshot mutex is held only across the JSON build; the network
- *          publish (which can block on a degraded link) runs unlocked.
+ * @brief Build and publish one JSON telemetry message from the current snapshot
+ * @details The snapshot mutex is held only across the payload build; the
+ *          network publish (which can block on a degraded link) runs unlocked.
  */
-static void ai_telemetry_publish(void)
+static void ai_telemetry_publish_json(void)
 {
     if (osMutexAcquire(g_ai_telemetry.snapshot_mutex, osWaitForever) != osOK) {
         return;
@@ -1585,6 +1591,90 @@ static void ai_telemetry_publish(void)
 }
 
 /**
+ * @brief Build and publish one compact CBOR telemetry message
+ * @details Envelope map carries the JSON wrapper's fields key-for-key:
+ *          {v, ts, fid, model, it, r}, with r the nn_encode_ai_result_cbor
+ *          output or null when the snapshot result is invalid (same
+ *          absent-result semantics as the JSON path). Same locking shape:
+ *          encode under the snapshot mutex into the telemetry-owned buffer,
+ *          publish unlocked (the publisher task is the buffer's only user).
+ */
+static void ai_telemetry_publish_cbor(void)
+{
+    if (osMutexAcquire(g_ai_telemetry.snapshot_mutex, osWaitForever) != osOK) {
+        return;
+    }
+
+    if (!g_ai_telemetry.snapshot.valid) {
+        osMutexRelease(g_ai_telemetry.snapshot_mutex);
+        return;
+    }
+
+    cbor_enc_t enc;
+    cbor_enc_init(&enc, g_ai_telemetry.encode_buf, AI_TELEMETRY_ENCODE_BUF_SIZE);
+    cbor_enc_map(&enc, 6);
+    cbor_enc_text(&enc, "v");
+    cbor_enc_uint(&enc, AI_TELEMETRY_CBOR_VERSION);
+    cbor_enc_text(&enc, "ts");
+    cbor_enc_uint(&enc, g_ai_telemetry.snapshot.timestamp_ms);
+    cbor_enc_text(&enc, "fid");
+    cbor_enc_uint(&enc, g_ai_telemetry.snapshot.frame_id);
+    cbor_enc_text(&enc, "model");
+    cbor_enc_text(&enc, g_ai_telemetry.snapshot.model_name);
+    cbor_enc_text(&enc, "it");
+    cbor_enc_uint(&enc, g_ai_telemetry.snapshot.inference_time_ms);
+    cbor_enc_text(&enc, "r");
+
+    // Same absent-result semantics as the JSON path's ai_result:null - and on
+    // a result-encode failure, rewind and publish r=null rather than dropping
+    // the beat, so consumers keep receiving a liveness signal
+    size_t result_mark = enc.len;
+    int have_result = 0;
+    if (g_ai_telemetry.snapshot.result.is_valid && !enc.overflow) {
+        int result_len = nn_encode_ai_result_cbor(&g_ai_telemetry.snapshot.result,
+                                                  enc.buf + enc.len, enc.cap - enc.len);
+        if (result_len < 0) {
+            LOG_SVC_ERROR("AI result CBOR encode failed; publishing r=null");
+            enc.len = result_mark;
+        } else {
+            enc.len += (size_t)result_len;
+            have_result = 1;
+        }
+    }
+    if (!have_result) {
+        cbor_enc_null(&enc);
+    }
+
+    size_t payload_len = 0;
+    int build_status = cbor_enc_finish(&enc, &payload_len);
+    osMutexRelease(g_ai_telemetry.snapshot_mutex);
+
+    if (build_status != 0) {
+        LOG_SVC_ERROR("Failed to encode telemetry payload");
+        return;
+    }
+
+    int publish_result = mqtt_service_publish_telemetry_raw(g_ai_telemetry.encode_buf,
+                                                            (int)payload_len);
+    if (publish_result < 0) {
+        // Expected while the broker is unreachable; QoS/backpressure errors land here too
+        LOG_SVC_DEBUG("Telemetry publish failed: %d", publish_result);
+    }
+}
+
+/**
+ * @brief Publish one telemetry beat in the configured payload format
+ */
+static void ai_telemetry_publish(void)
+{
+    if (mqtt_service_get_telemetry_format() == MQTT_TELEMETRY_FORMAT_CBOR) {
+        ai_telemetry_publish_cbor();
+    } else {
+        ai_telemetry_publish_json();
+    }
+}
+
+/**
  * @brief Telemetry publisher task
  * @details Publishes on each new-result signal; the wait timeout doubles as
  *          the pipeline-reconciliation tick so config changes apply within ~1 s.
@@ -1632,10 +1722,12 @@ static aicam_result_t ai_telemetry_init(void)
     g_ai_telemetry.mpe_detects = buffer_calloc(AI_TELEMETRY_MAX_DETECTS, sizeof(mpe_detect_t));
     g_ai_telemetry.spe_keypoints = buffer_calloc(AI_TELEMETRY_MAX_KEYPOINTS, sizeof(spe_keypoint_t));
     g_ai_telemetry.iseg_detects = buffer_calloc(AI_TELEMETRY_MAX_DETECTS, sizeof(iseg_detect_t));
+    g_ai_telemetry.encode_buf = buffer_calloc(1, AI_TELEMETRY_ENCODE_BUF_SIZE);
 
     if (!g_ai_telemetry.snapshot_mutex || !g_ai_telemetry.event_flags ||
         !g_ai_telemetry.od_detects || !g_ai_telemetry.mpe_detects ||
-        !g_ai_telemetry.spe_keypoints || !g_ai_telemetry.iseg_detects) {
+        !g_ai_telemetry.spe_keypoints || !g_ai_telemetry.iseg_detects ||
+        !g_ai_telemetry.encode_buf) {
         LOG_SVC_ERROR("Failed to allocate telemetry resources");
         ai_telemetry_deinit();
         return AICAM_ERROR_NO_MEMORY;
@@ -1753,6 +1845,10 @@ static void ai_telemetry_deinit(void)
     if (g_ai_telemetry.iseg_detects) {
         buffer_free(g_ai_telemetry.iseg_detects);
         g_ai_telemetry.iseg_detects = NULL;
+    }
+    if (g_ai_telemetry.encode_buf) {
+        buffer_free(g_ai_telemetry.encode_buf);
+        g_ai_telemetry.encode_buf = NULL;
     }
 }
 

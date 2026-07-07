@@ -531,6 +531,7 @@ static void parse_mqtt_service(cJSON *json, mqtt_service_config_t *cfg)
     json_get_bool(json, "telemetry_enabled", &cfg->telemetry_enabled);
     json_get_string(json, "telemetry_topic", cfg->telemetry_topic, sizeof(cfg->telemetry_topic));
     json_get_uint8(json, "telemetry_qos", &cfg->telemetry_qos);
+    json_get_uint8(json, "telemetry_format", &cfg->telemetry_format);
 }
 
 static void parse_work_mode(cJSON *json, work_mode_config_t *cfg)
@@ -1046,6 +1047,7 @@ static cJSON *serialize_mqtt_service(const mqtt_service_config_t *cfg)
     cJSON_AddBoolToObject(json, "telemetry_enabled", cfg->telemetry_enabled);
     cJSON_AddStringToObject(json, "telemetry_topic", cfg->telemetry_topic);
     cJSON_AddNumberToObject(json, "telemetry_qos", cfg->telemetry_qos);
+    cJSON_AddNumberToObject(json, "telemetry_format", cfg->telemetry_format);
 
     return json;
 }
