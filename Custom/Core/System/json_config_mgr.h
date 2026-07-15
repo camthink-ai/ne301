@@ -392,14 +392,15 @@ typedef enum {
     MQTT_TELEMETRY_FORMAT_CBOR = 1               // Compact CBOR binary payload
 } mqtt_telemetry_format_t;
 
-/** Stored in image_config_t.isp_mode — built-in profiles vs NVS-backed custom IQ. */
-#define IMAGE_ISP_MODE_OUTDOOR  0u   /* default */
-#define IMAGE_ISP_MODE_INDOOR   1u
-#define IMAGE_ISP_MODE_CUSTOM   255u   /* 0xFF: use isp_config_t from NVS when valid */
-
-/** Stored in image_config_t.grayscale — ISP luma matrix when enabled (PIPE1 stays RGB565). */
-#define IMAGE_GRAYSCALE_OFF     AICAM_FALSE
-#define IMAGE_GRAYSCALE_ON      AICAM_TRUE
+/**
+ * Day/Night mode stored in image_config_t.isp_mode.
+ * Replaces the former outdoor/indoor/custom semantics: the ISP profile is now
+ * selected by the day/night state (day = color IQ, night = IR IQ) or auto-switched.
+ * Legacy NVS values are migrated on load (outdoor/indoor -> day, custom -> auto).
+ */
+#define IMAGE_ISP_MODE_DAY      0u   /* daytime color profile (default) */
+#define IMAGE_ISP_MODE_NIGHT    1u   /* nighttime IR profile */
+#define IMAGE_ISP_MODE_AUTO     2u   /* auto-switch by configured source */
 
 //device service configuration structure
 typedef struct {
@@ -407,8 +408,7 @@ typedef struct {
     uint32_t contrast;                       // image contrast (0-100)
     aicam_bool_t horizontal_flip;            // image horizontal flip
     aicam_bool_t vertical_flip;              // image vertical flip
-    uint32_t isp_mode;                       // IMAGE_ISP_MODE_OUTDOOR(0) / INDOOR(1) / CUSTOM
-    aicam_bool_t grayscale;                  // AICAM_TRUE: ISP grayscale overlay (PIPE1 RGB565)
+    uint32_t isp_mode;                       // IMAGE_ISP_MODE_DAY(0) / NIGHT(1) / AUTO(2)
     uint32_t aec;                            // image auto exposure control (0=manual, 1=auto)
     uint32_t startup_skip_frames;            // frames to skip on camera startup for stabilization (1-300)
     uint32_t fast_capture_skip_frames;       // frames to skip for fast capture (number of skipped frames for snapshot capture)
@@ -543,10 +543,55 @@ typedef struct {
     uint32_t light_threshold;                // light threshold
 } light_config_t;
 
+/**
+ * @brief Day/Night auto-switch judgment source
+ */
+typedef enum {
+    DAY_NIGHT_SOURCE_TIME         = 0,  // custom time range
+    DAY_NIGHT_SOURCE_LIGHT_SENSOR = 1,  // ambient light sensor (ADC percent)
+    DAY_NIGHT_SOURCE_ISP_STATS    = 2,  // ISP statistics (lux/avgL/exposure/gain)
+} day_night_source_t;
+
+/**
+ * @brief Day/Night configuration
+ * @note The active mode (day/night/auto) is stored in image_config_t.isp_mode
+ *       (IMAGE_ISP_MODE_DAY/NIGHT/AUTO). This struct holds the auto-switch
+ *       source selection, per-source thresholds/schedule and IR light intensity.
+ */
+typedef struct {
+    day_night_source_t auto_source;          // judgment source when mode == AUTO
+
+    /* TIME source */
+    uint32_t time_start_hour;                 // night window start (hour 0-23)
+    uint32_t time_start_minute;               // night window start (minute 0-59)
+    uint32_t time_end_hour;                   // night window end (hour 0-23)
+    uint32_t time_end_minute;                 // night window end (minute 0-59)
+
+    /* LIGHT_SENSOR source (0-100; lower = darker) */
+    uint8_t  light_sensor_night_threshold;   // <= enter night
+    uint8_t  light_sensor_day_threshold;     // >= return to day (hysteresis)
+
+    /* ISP_STATS source (mirrors software_light defaults) */
+    uint32_t isp_night_enter_lux;            // lux EMA <= -> night
+    uint32_t isp_day_enter_lux;              // lux EMA >= -> day
+    uint32_t isp_night_enter_exposure_us;    // us
+    uint32_t isp_night_enter_gain_mdb;       // milli-dB
+    uint8_t  isp_night_enter_avgl;           // average L (0-255)
+    uint32_t isp_day_enter_exposure_us;      // us
+    uint32_t isp_day_enter_gain_mdb;         // milli-dB
+    uint8_t  isp_day_enter_avgl;             // average L (0-255)
+    uint8_t  isp_ema_alpha_num;              // EMA smoothing numerator
+    uint8_t  isp_ema_alpha_den;              // EMA smoothing denominator
+
+    /* IR light */
+    uint8_t  ir_brightness;                  // IR light intensity when night (0-100)
+} day_night_config_t;
+
 typedef struct {
     image_config_t image_config;
     light_config_t light_config;
     isp_config_t isp_config;
+    day_night_config_t day_night_config;
 } device_service_config_t;
 
 typedef struct {
@@ -1004,6 +1049,20 @@ aicam_result_t json_config_get_device_service_light_config(light_config_t *light
  * @return aicam_result_t Operation result
  */
 aicam_result_t json_config_set_device_service_light_config(const light_config_t *light_config);
+
+/**
+ * @brief Get day/night configuration
+ * @param day_night_config Day/Night configuration structure pointer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_get_day_night_config(day_night_config_t *day_night_config);
+
+/**
+ * @brief Set day/night configuration
+ * @param day_night_config Day/Night configuration structure pointer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_set_day_night_config(const day_night_config_t *day_night_config);
 
 /**
  * @brief Get ISP configuration

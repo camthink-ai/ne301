@@ -612,10 +612,6 @@ aicam_result_t json_config_save_device_service_image_config_to_nvs(const image_c
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save image ISP mode to NVS");
 
-    result = json_config_nvs_write_bool(NVS_KEY_IMAGE_GRAYSCALE, config->grayscale);
-    if (result != AICAM_OK)
-        LOG_CORE_ERROR("Failed to save image grayscale to NVS");
-
     result = json_config_nvs_write_uint32(NVS_KEY_IMAGE_SKIP_FRAMES, config->startup_skip_frames);
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save image startup skip frames to NVS");
@@ -690,6 +686,41 @@ aicam_result_t json_config_save_device_service_light_config_to_nvs(const light_c
         LOG_CORE_ERROR("Failed to save light threshold to NVS");
 
     LOG_CORE_INFO("Device service light configuration saved to NVS successfully");
+    return result;
+}
+
+// save day/night configuration to NVS
+aicam_result_t json_config_save_day_night_config_to_nvs(const day_night_config_t *config)
+{
+    if (!config)
+    {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    aicam_result_t result = AICAM_OK;
+
+    result = json_config_nvs_write_uint32(NVS_KEY_DN_SOURCE, (uint32_t)config->auto_source);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to save day/night source to NVS");
+
+    json_config_nvs_write_uint32(NVS_KEY_DN_TIME_S_H, config->time_start_hour);
+    json_config_nvs_write_uint32(NVS_KEY_DN_TIME_S_M, config->time_start_minute);
+    json_config_nvs_write_uint32(NVS_KEY_DN_TIME_E_H, config->time_end_hour);
+    json_config_nvs_write_uint32(NVS_KEY_DN_TIME_E_M, config->time_end_minute);
+    json_config_nvs_write_uint8(NVS_KEY_DN_LS_NIGHT_TH, config->light_sensor_night_threshold);
+    json_config_nvs_write_uint8(NVS_KEY_DN_LS_DAY_TH, config->light_sensor_day_threshold);
+    json_config_nvs_write_uint32(NVS_KEY_DN_ISP_NIGHT_LUX, config->isp_night_enter_lux);
+    json_config_nvs_write_uint32(NVS_KEY_DN_ISP_DAY_LUX, config->isp_day_enter_lux);
+    json_config_nvs_write_uint32(NVS_KEY_DN_ISP_NIGHT_EXPO, config->isp_night_enter_exposure_us);
+    json_config_nvs_write_uint32(NVS_KEY_DN_ISP_NIGHT_GAIN, config->isp_night_enter_gain_mdb);
+    json_config_nvs_write_uint8(NVS_KEY_DN_ISP_NIGHT_AVGL, config->isp_night_enter_avgl);
+    json_config_nvs_write_uint32(NVS_KEY_DN_ISP_DAY_EXPO, config->isp_day_enter_exposure_us);
+    json_config_nvs_write_uint32(NVS_KEY_DN_ISP_DAY_GAIN, config->isp_day_enter_gain_mdb);
+    json_config_nvs_write_uint8(NVS_KEY_DN_ISP_DAY_AVGL, config->isp_day_enter_avgl);
+    json_config_nvs_write_uint8(NVS_KEY_DN_ISP_EMA_NUM, config->isp_ema_alpha_num);
+    json_config_nvs_write_uint8(NVS_KEY_DN_ISP_EMA_DEN, config->isp_ema_alpha_den);
+    json_config_nvs_write_uint8(NVS_KEY_DN_IR_BRIGHTNESS, config->ir_brightness);
+
+    LOG_CORE_INFO("Day/Night configuration saved to NVS successfully");
     return result;
 }
 
@@ -1830,12 +1861,6 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     else
         json_config_nvs_write_uint32(NVS_KEY_IMAGE_ISP_MODE, config->device_service.image_config.isp_mode);
 
-    result = json_config_nvs_read_bool(NVS_KEY_IMAGE_GRAYSCALE, &temp_bool);
-    if (result == AICAM_OK)
-        config->device_service.image_config.grayscale = temp_bool;
-    else
-        json_config_nvs_write_bool(NVS_KEY_IMAGE_GRAYSCALE, config->device_service.image_config.grayscale);
-
     result = json_config_nvs_read_uint32(NVS_KEY_IMAGE_SKIP_FRAMES, &temp_uint32);
     if (result == AICAM_OK)
         config->device_service.image_config.startup_skip_frames = temp_uint32;
@@ -1926,6 +1951,71 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
         config->device_service.light_config.light_threshold = temp_uint32;
     else
         json_config_nvs_write_uint32(NVS_KEY_LIGHT_THRESHOLD, config->device_service.light_config.light_threshold);
+
+
+    // Load Day/Night configuration
+    result = json_config_nvs_read_uint32(NVS_KEY_DN_SOURCE, &temp_uint32);
+    if (result == AICAM_OK)
+        config->device_service.day_night_config.auto_source = (day_night_source_t)temp_uint32;
+    else
+        json_config_nvs_write_uint32(NVS_KEY_DN_SOURCE, (uint32_t)config->device_service.day_night_config.auto_source);
+
+    result = json_config_nvs_read_uint32(NVS_KEY_DN_TIME_S_H, &temp_uint32);
+    if (result == AICAM_OK) config->device_service.day_night_config.time_start_hour = temp_uint32;
+    else json_config_nvs_write_uint32(NVS_KEY_DN_TIME_S_H, config->device_service.day_night_config.time_start_hour);
+    result = json_config_nvs_read_uint32(NVS_KEY_DN_TIME_S_M, &temp_uint32);
+    if (result == AICAM_OK) config->device_service.day_night_config.time_start_minute = temp_uint32;
+    else json_config_nvs_write_uint32(NVS_KEY_DN_TIME_S_M, config->device_service.day_night_config.time_start_minute);
+    result = json_config_nvs_read_uint32(NVS_KEY_DN_TIME_E_H, &temp_uint32);
+    if (result == AICAM_OK) config->device_service.day_night_config.time_end_hour = temp_uint32;
+    else json_config_nvs_write_uint32(NVS_KEY_DN_TIME_E_H, config->device_service.day_night_config.time_end_hour);
+    result = json_config_nvs_read_uint32(NVS_KEY_DN_TIME_E_M, &temp_uint32);
+    if (result == AICAM_OK) config->device_service.day_night_config.time_end_minute = temp_uint32;
+    else json_config_nvs_write_uint32(NVS_KEY_DN_TIME_E_M, config->device_service.day_night_config.time_end_minute);
+
+    {
+        uint8_t temp_u8 = 0;
+        result = json_config_nvs_read_uint8(NVS_KEY_DN_LS_NIGHT_TH, &temp_u8);
+        if (result == AICAM_OK) config->device_service.day_night_config.light_sensor_night_threshold = temp_u8;
+        else json_config_nvs_write_uint8(NVS_KEY_DN_LS_NIGHT_TH, config->device_service.day_night_config.light_sensor_night_threshold);
+        result = json_config_nvs_read_uint8(NVS_KEY_DN_LS_DAY_TH, &temp_u8);
+        if (result == AICAM_OK) config->device_service.day_night_config.light_sensor_day_threshold = temp_u8;
+        else json_config_nvs_write_uint8(NVS_KEY_DN_LS_DAY_TH, config->device_service.day_night_config.light_sensor_day_threshold);
+        result = json_config_nvs_read_uint8(NVS_KEY_DN_ISP_NIGHT_AVGL, &temp_u8);
+        if (result == AICAM_OK) config->device_service.day_night_config.isp_night_enter_avgl = temp_u8;
+        else json_config_nvs_write_uint8(NVS_KEY_DN_ISP_NIGHT_AVGL, config->device_service.day_night_config.isp_night_enter_avgl);
+        result = json_config_nvs_read_uint8(NVS_KEY_DN_ISP_DAY_AVGL, &temp_u8);
+        if (result == AICAM_OK) config->device_service.day_night_config.isp_day_enter_avgl = temp_u8;
+        else json_config_nvs_write_uint8(NVS_KEY_DN_ISP_DAY_AVGL, config->device_service.day_night_config.isp_day_enter_avgl);
+        result = json_config_nvs_read_uint8(NVS_KEY_DN_ISP_EMA_NUM, &temp_u8);
+        if (result == AICAM_OK) config->device_service.day_night_config.isp_ema_alpha_num = temp_u8;
+        else json_config_nvs_write_uint8(NVS_KEY_DN_ISP_EMA_NUM, config->device_service.day_night_config.isp_ema_alpha_num);
+        result = json_config_nvs_read_uint8(NVS_KEY_DN_ISP_EMA_DEN, &temp_u8);
+        if (result == AICAM_OK) config->device_service.day_night_config.isp_ema_alpha_den = temp_u8;
+        else json_config_nvs_write_uint8(NVS_KEY_DN_ISP_EMA_DEN, config->device_service.day_night_config.isp_ema_alpha_den);
+        result = json_config_nvs_read_uint8(NVS_KEY_DN_IR_BRIGHTNESS, &temp_u8);
+        if (result == AICAM_OK) config->device_service.day_night_config.ir_brightness = temp_u8;
+        else json_config_nvs_write_uint8(NVS_KEY_DN_IR_BRIGHTNESS, config->device_service.day_night_config.ir_brightness);
+    }
+
+    result = json_config_nvs_read_uint32(NVS_KEY_DN_ISP_NIGHT_LUX, &temp_uint32);
+    if (result == AICAM_OK) config->device_service.day_night_config.isp_night_enter_lux = temp_uint32;
+    else json_config_nvs_write_uint32(NVS_KEY_DN_ISP_NIGHT_LUX, config->device_service.day_night_config.isp_night_enter_lux);
+    result = json_config_nvs_read_uint32(NVS_KEY_DN_ISP_DAY_LUX, &temp_uint32);
+    if (result == AICAM_OK) config->device_service.day_night_config.isp_day_enter_lux = temp_uint32;
+    else json_config_nvs_write_uint32(NVS_KEY_DN_ISP_DAY_LUX, config->device_service.day_night_config.isp_day_enter_lux);
+    result = json_config_nvs_read_uint32(NVS_KEY_DN_ISP_NIGHT_EXPO, &temp_uint32);
+    if (result == AICAM_OK) config->device_service.day_night_config.isp_night_enter_exposure_us = temp_uint32;
+    else json_config_nvs_write_uint32(NVS_KEY_DN_ISP_NIGHT_EXPO, config->device_service.day_night_config.isp_night_enter_exposure_us);
+    result = json_config_nvs_read_uint32(NVS_KEY_DN_ISP_NIGHT_GAIN, &temp_uint32);
+    if (result == AICAM_OK) config->device_service.day_night_config.isp_night_enter_gain_mdb = temp_uint32;
+    else json_config_nvs_write_uint32(NVS_KEY_DN_ISP_NIGHT_GAIN, config->device_service.day_night_config.isp_night_enter_gain_mdb);
+    result = json_config_nvs_read_uint32(NVS_KEY_DN_ISP_DAY_EXPO, &temp_uint32);
+    if (result == AICAM_OK) config->device_service.day_night_config.isp_day_enter_exposure_us = temp_uint32;
+    else json_config_nvs_write_uint32(NVS_KEY_DN_ISP_DAY_EXPO, config->device_service.day_night_config.isp_day_enter_exposure_us);
+    result = json_config_nvs_read_uint32(NVS_KEY_DN_ISP_DAY_GAIN, &temp_uint32);
+    if (result == AICAM_OK) config->device_service.day_night_config.isp_day_enter_gain_mdb = temp_uint32;
+    else json_config_nvs_write_uint32(NVS_KEY_DN_ISP_DAY_GAIN, config->device_service.day_night_config.isp_day_enter_gain_mdb);
 
     // Load ISP configuration
     result = json_config_nvs_read_bool(NVS_KEY_ISP_VALID, &temp_bool);

@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdint.h>
+#include <string.h>
 #include "cmw_camera.h"
 #include "camera.h"
 #include "common_utils.h"
@@ -10,6 +11,7 @@
 #include "isp_param_conf.h"
 #include "isp_api.h"
 #include "isp_core.h"
+#include "isp_services.h"
 
 // Constant definitions
 #define CAMERA_TASK_DELAY_MS            0
@@ -556,6 +558,10 @@ static void camera_copy_default_isp_iq(CMW_Sensor_Name_t sensor_id, ISP_IQParamT
     }
 }
 
+#if defined(IR_FIXED_POWER_TUNING)
+#error "IR_FIXED_POWER_TUNING (grayscale tuning mode) has been removed in favor of day/night/auto ISP modes."
+#endif
+
 void camera_fill_isp_iq_scene(cam_iq_scene_t scene, ISP_IQParamTypeDef *out_iq)
 {
     if (!out_iq) {
@@ -567,8 +573,8 @@ void camera_fill_isp_iq_scene(cam_iq_scene_t scene, ISP_IQParamTypeDef *out_iq)
         return;
     }
     camera_copy_default_isp_iq(sensor, out_iq);
-    /* Indoor: IQTune snapshot — contrast curve + statistic region (OS04C10 full frame). */
-    if (scene == CAM_IQ_SCENE_INDOOR) {
+    /* Day: tuned color profile — contrast curve + statistic region (OS04C10 full frame). */
+    if (scene == CAM_IQ_SCENE_DAY) {
         out_iq->contrast.enable = 1;
         /* Contrast strength: IQT unit x100 (e.g. 100 = 1.0), from IQTune "Contrast 1" / INDOOR */
         out_iq->contrast.coeff.LUM_0 = 50;
@@ -586,47 +592,146 @@ void camera_fill_isp_iq_scene(cam_iq_scene_t scene, ISP_IQParamTypeDef *out_iq)
             out_iq->statAreaStatic.XSize = 2418U;
             out_iq->statAreaStatic.YSize = 1329U;
         }
+    } else if (scene == CAM_IQ_SCENE_NIGHT) {
+        /* IR night profile: only OS04C10 has a tuned profile; others fall back to defaults. */
+        if (sensor == CMW_OS04C10_Sensor) {
+            memcpy(out_iq, &ISP_IQParamCacheInit_OS04C10_NIGHT, sizeof(ISP_IQParamTypeDef));
+        }
     }
+}
+
+void camera_fill_isp_iq_for_mode(uint32_t isp_mode, ISP_IQParamTypeDef *out_iq)
+{
+    if (!out_iq) {
+        return;
+    }
+    if (isp_mode == IMAGE_ISP_MODE_NIGHT) {
+        camera_fill_isp_iq_scene(CAM_IQ_SCENE_NIGHT, out_iq);
+    } else {
+        /* DAY and AUTO both start on the tuned color profile; AUTO re-applies at runtime. */
+        camera_fill_isp_iq_scene(CAM_IQ_SCENE_DAY, out_iq);
+    }
+}
+
+ISP_StatusTypeDef camera_apply_isp_iq_runtime(ISP_HandleTypeDef *hIsp, const ISP_IQParamTypeDef *params)
+{
+    ISP_IQParamTypeDef *iq;
+    ISP_StatAreaTypeDef statArea;
+    ISP_StatusTypeDef ret;
+
+    if ((hIsp == NULL) || (params == NULL)) {
+        return ISP_ERR_EINVAL;
+    }
+
+    iq = ISP_SVC_IQParam_Get(hIsp);
+    if (iq == NULL) {
+        return ISP_ERR_EINVAL;
+    }
+
+    ret = ISP_SVC_ISP_SetDemosaicing(hIsp, (ISP_DemosaicingTypeDef *)&params->demosaicing);
+    if (ret != ISP_OK) {
+        return ret;
+    }
+    iq->demosaicing = params->demosaicing;
+
+    ret = ISP_SVC_ISP_SetStatRemoval(hIsp, (ISP_StatRemovalTypeDef *)&params->statRemoval);
+    if (ret != ISP_OK) {
+        return ret;
+    }
+    iq->statRemoval = params->statRemoval;
+
+    ret = ISP_SVC_ISP_SetContrast(hIsp, (ISP_ContrastTypeDef *)&params->contrast);
+    if (ret != ISP_OK) {
+        return ret;
+    }
+    iq->contrast = params->contrast;
+
+    ret = ISP_SVC_ISP_SetBadPixel(hIsp, (ISP_BadPixelTypeDef *)&params->badPixelStatic);
+    if (ret != ISP_OK) {
+        return ret;
+    }
+    iq->badPixelStatic = params->badPixelStatic;
+
+    ret = ISP_SVC_ISP_SetBlackLevel(hIsp, (ISP_BlackLevelTypeDef *)&params->blackLevelStatic);
+    if (ret != ISP_OK) {
+        return ret;
+    }
+    iq->blackLevelStatic = params->blackLevelStatic;
+
+    statArea = params->statAreaStatic;
+    if ((statArea.XSize == 0U) || (statArea.XSize == ISP_STATWINDOW_MAX)) {
+        statArea.XSize = hIsp->sensorInfo.width - statArea.X0;
+    }
+    if ((statArea.YSize == 0U) || (statArea.YSize == ISP_STATWINDOW_MAX)) {
+        statArea.YSize = hIsp->sensorInfo.height - statArea.Y0;
+    }
+
+    ret = ISP_SVC_ISP_SetStatArea(hIsp, &statArea);
+    if (ret != ISP_OK) {
+        return ret;
+    }
+    iq->statAreaStatic = statArea;
+    hIsp->statArea = statArea;
+
+    iq->badPixelAlgo = params->badPixelAlgo;
+    iq->sensorDelay = params->sensorDelay;
+    iq->luxRef = params->luxRef;
+
+    iq->AECAlgo = params->AECAlgo;
+    ret = ISP_SetExposureTarget(hIsp, params->AECAlgo.exposureCompensation);
+    if (ret != ISP_OK) {
+        return ret;
+    }
+
+    ret = ISP_SetAECState(hIsp, params->AECAlgo.enable);
+    if (ret != ISP_OK) {
+        return ret;
+    }
+
+    iq->AWBAlgo = params->AWBAlgo;
+    if (params->AWBAlgo.enable != 0U) {
+        iq->AWBAlgo.enable = ISP_AWB_ENABLE_RECONFIGURE;
+    } else {
+        ret = ISP_SVC_ISP_SetGain(hIsp, (ISP_ISPGainTypeDef *)&params->ispGainStatic);
+        if (ret != ISP_OK) {
+            return ret;
+        }
+        iq->ispGainStatic = params->ispGainStatic;
+
+        ret = ISP_SVC_ISP_SetColorConv(hIsp, (ISP_ColorConvTypeDef *)&params->colorConvStatic);
+        if (ret != ISP_OK) {
+            return ret;
+        }
+        iq->colorConvStatic = params->colorConvStatic;
+    }
+
+    ret = ISP_SVC_ISP_SetGamma(hIsp, (ISP_GammaTypeDef *)&params->gamma);
+    if (ret != ISP_OK) {
+        return ret;
+    }
+    iq->gamma = params->gamma;
+
+    iq->sensorGainStatic = params->sensorGainStatic;
+    iq->sensorExposureStatic = params->sensorExposureStatic;
+
+    if ((params->sensorGainStatic.gain != 0U) && (params->AECAlgo.enable == 0U)) {
+        ret = ISP_SVC_Sensor_SetGain(hIsp, &iq->sensorGainStatic);
+        if (ret != ISP_OK) {
+            return ret;
+        }
+    }
+
+    if ((params->sensorExposureStatic.exposure != 0U) && (params->AECAlgo.enable == 0U)) {
+        ret = ISP_SVC_Sensor_SetExposure(hIsp, &iq->sensorExposureStatic);
+        if (ret != ISP_OK) {
+            return ret;
+        }
+    }
+
+    return ISP_OK;
 }
 
 #define CAMERA_ISP_COEFF_UNIT   100000000
-#define CAMERA_LUMA_COEFF_R     29900000
-#define CAMERA_LUMA_COEFF_G     58700000
-#define CAMERA_LUMA_COEFF_B     11400000
-
-void camera_apply_grayscale_iq(ISP_IQParamTypeDef *iq, aicam_bool_t grayscale)
-{
-    int row;
-
-    if (iq == NULL) {
-        return;
-    }
-    if (grayscale != AICAM_TRUE) {
-        return;
-    }
-
-    iq->AWBAlgo.enable = 0;
-    iq->colorConvStatic.enable = 1;
-    for (row = 0; row < 3; row++) {
-        iq->colorConvStatic.coeff[row][0] = CAMERA_LUMA_COEFF_R;
-        iq->colorConvStatic.coeff[row][1] = CAMERA_LUMA_COEFF_G;
-        iq->colorConvStatic.coeff[row][2] = CAMERA_LUMA_COEFF_B;
-    }
-    if (iq->ispGainStatic.enable) {
-        iq->ispGainStatic.ispGainR = CAMERA_ISP_COEFF_UNIT;
-        iq->ispGainStatic.ispGainG = CAMERA_ISP_COEFF_UNIT;
-        iq->ispGainStatic.ispGainB = CAMERA_ISP_COEFF_UNIT;
-    }
-}
-
-void camera_configure_pipe1_grayscale(pipe_params_t *pipe1, aicam_bool_t grayscale)
-{
-    (void)pipe1;
-    (void)grayscale;
-    /* Grayscale is applied via ISP (camera_apply_grayscale_iq); keep PIPE1 RGB565 so
-     * video pipeline / encoder stride (bpp=2) stays consistent. */
-}
-
 static void CAM_setSensorInfo(CMW_Sensor_Name_t sensor, camera_t *camera)
 {
     CMW_Sensor_Name_t sensor_id = sensor;
@@ -1341,6 +1446,32 @@ static int camera_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsig
             }
             memcpy(ubuf, &camera->isp_iq_param, sizeof(ISP_IQParamTypeDef));
             ret = AICAM_OK;
+            break;
+
+        case CAM_CMD_APPLY_ISP_IQ:
+            /* Hot-swap ISP IQ on a running pipeline. Mutex is already held here,
+               serializing against cameraProcess/ISP background processing. */
+            if (ubuf == NULL) {
+                ret = AICAM_ERROR_INVALID_PARAM;
+                break;
+            }
+            if (camera->state.camera_state != CAMERA_START) {
+                /* Camera not streaming: just cache for next start. */
+                memcpy(&camera->isp_iq_param, ubuf, sizeof(ISP_IQParamTypeDef));
+                ret = AICAM_OK;
+                break;
+            }
+            {
+                ISP_HandleTypeDef *hIsp = camera_get_isp_handle();
+                if (hIsp == NULL) {
+                    ret = AICAM_ERROR_NOT_FOUND;
+                    break;
+                }
+                ret = (int)camera_apply_isp_iq_runtime(hIsp, (ISP_IQParamTypeDef *)ubuf);
+                if (ret == ISP_OK) {
+                    memcpy(&camera->isp_iq_param, ubuf, sizeof(ISP_IQParamTypeDef));
+                }
+            }
             break;
 
         case CAM_CMD_SET_PIPE_CTRL:

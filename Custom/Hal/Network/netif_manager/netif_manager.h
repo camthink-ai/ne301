@@ -40,7 +40,7 @@
 #define NETIF_ETH_WAN_SBUF_CHANGE_IDLE_TIME (10)
 #define NETIF_ETH_WAN_W5500_FW_VERSION      (0x04) ///< W5500 firmware version 0.4
 
-#define NETIF_4G_CAT1_IS_ENABLE             (1)
+#define NETIF_4G_CAT1_IS_ENABLE             (0)
 #define NETIF_4G_CAT1_INIT_TIMEOUT_MS       (10000)
 #define NETIF_4G_CAT1_CNT_TIMEOUT_MS        (30000)
 #define NETIF_4G_CAT1_EXIT_TIMEOUT_MS       (10000)
@@ -49,7 +49,7 @@
 #define NETIF_4G_CAT1_PPP_SEND_TIMEOUT      (50)
 #define NETIF_4G_CAT1_TRY_CNT               (3)
 
-#define NETIF_USB_ECM_IS_ENABLE             (1)
+#define NETIF_USB_ECM_IS_ENABLE             (0)
 #define NETIF_USB_ECM_ACTIVATE_TIMEOUT_MS   (30000)
 #define NETIF_USB_ECM_DHCP_TIMEOUT_MS       (30000)
 #define NETIF_USB_ECM_UP_TIMEOUT_MS         (3000)
@@ -77,7 +77,7 @@
 #define NETIF_DEFAULT_NETIF_NAME            NETIF_NAME_ETH_WAN
 
 #ifndef NETIF_WIFI_HALOW_IS_ENABLE
-#define NETIF_WIFI_HALOW_IS_ENABLE          (1)
+#define NETIF_WIFI_HALOW_IS_ENABLE          (0)
 #endif
 #define NETIF_WIFI_HALOW_DEFAULT_TX_PWR       (0)
 #define NETIF_WIFI_HALOW_DEFAULT_SCAN_DWELL   (30)

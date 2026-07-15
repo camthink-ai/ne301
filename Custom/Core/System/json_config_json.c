@@ -263,7 +263,6 @@ static void parse_device_service(cJSON *json, device_service_config_t *cfg)
         json_get_bool(img_cfg, "vertical_flip", &cfg->image_config.vertical_flip);
         json_get_uint32(img_cfg, "aec", &cfg->image_config.aec);
         json_get_uint32(img_cfg, "isp_mode", &cfg->image_config.isp_mode);
-        json_get_bool(img_cfg, "grayscale", &cfg->image_config.grayscale);
         json_get_uint32(img_cfg, "fast_capture_skip_frames", &cfg->image_config.fast_capture_skip_frames);
         json_get_uint32(img_cfg, "fast_capture_resolution", &cfg->image_config.fast_capture_resolution);
         json_get_uint32(img_cfg, "fast_capture_jpeg_quality", &cfg->image_config.fast_capture_jpeg_quality);
@@ -290,6 +289,31 @@ static void parse_device_service(cJSON *json, device_service_config_t *cfg)
     cJSON *isp_cfg = cJSON_GetObjectItem(json, "isp_config");
     if (cJSON_IsObject(isp_cfg))
         parse_isp_config(isp_cfg, &cfg->isp_config);
+
+    cJSON *dn_cfg = cJSON_GetObjectItem(json, "day_night_config");
+    if (cJSON_IsObject(dn_cfg)) {
+        uint32_t tmp = 0;
+        json_get_uint32(dn_cfg, "auto_source", &tmp);
+        if (tmp <= (uint32_t)DAY_NIGHT_SOURCE_ISP_STATS)
+            cfg->day_night_config.auto_source = (day_night_source_t)tmp;
+        json_get_uint32(dn_cfg, "time_start_hour", &cfg->day_night_config.time_start_hour);
+        json_get_uint32(dn_cfg, "time_start_minute", &cfg->day_night_config.time_start_minute);
+        json_get_uint32(dn_cfg, "time_end_hour", &cfg->day_night_config.time_end_hour);
+        json_get_uint32(dn_cfg, "time_end_minute", &cfg->day_night_config.time_end_minute);
+        json_get_uint8(dn_cfg, "light_sensor_night_threshold", &cfg->day_night_config.light_sensor_night_threshold);
+        json_get_uint8(dn_cfg, "light_sensor_day_threshold", &cfg->day_night_config.light_sensor_day_threshold);
+        json_get_uint32(dn_cfg, "isp_night_enter_lux", &cfg->day_night_config.isp_night_enter_lux);
+        json_get_uint32(dn_cfg, "isp_day_enter_lux", &cfg->day_night_config.isp_day_enter_lux);
+        json_get_uint32(dn_cfg, "isp_night_enter_exposure_us", &cfg->day_night_config.isp_night_enter_exposure_us);
+        json_get_uint32(dn_cfg, "isp_night_enter_gain_mdb", &cfg->day_night_config.isp_night_enter_gain_mdb);
+        json_get_uint8(dn_cfg, "isp_night_enter_avgl", &cfg->day_night_config.isp_night_enter_avgl);
+        json_get_uint32(dn_cfg, "isp_day_enter_exposure_us", &cfg->day_night_config.isp_day_enter_exposure_us);
+        json_get_uint32(dn_cfg, "isp_day_enter_gain_mdb", &cfg->day_night_config.isp_day_enter_gain_mdb);
+        json_get_uint8(dn_cfg, "isp_day_enter_avgl", &cfg->day_night_config.isp_day_enter_avgl);
+        json_get_uint8(dn_cfg, "isp_ema_alpha_num", &cfg->day_night_config.isp_ema_alpha_num);
+        json_get_uint8(dn_cfg, "isp_ema_alpha_den", &cfg->day_night_config.isp_ema_alpha_den);
+        json_get_uint8(dn_cfg, "ir_brightness", &cfg->day_night_config.ir_brightness);
+    }
 }
 
 static void parse_network_service(cJSON *json, network_service_config_t *cfg)
@@ -859,7 +883,6 @@ static cJSON *serialize_device_service(const device_service_config_t *cfg)
     cJSON_AddBoolToObject(img_cfg, "vertical_flip", cfg->image_config.vertical_flip);
     cJSON_AddNumberToObject(img_cfg, "aec", cfg->image_config.aec);
     cJSON_AddNumberToObject(img_cfg, "isp_mode", cfg->image_config.isp_mode);
-    cJSON_AddBoolToObject(img_cfg, "grayscale", cfg->image_config.grayscale);
     cJSON_AddNumberToObject(img_cfg, "fast_capture_skip_frames", cfg->image_config.fast_capture_skip_frames);
     cJSON_AddNumberToObject(img_cfg, "fast_capture_resolution", cfg->image_config.fast_capture_resolution);
     cJSON_AddNumberToObject(img_cfg, "fast_capture_jpeg_quality", cfg->image_config.fast_capture_jpeg_quality);
@@ -880,6 +903,27 @@ static cJSON *serialize_device_service(const device_service_config_t *cfg)
     cJSON_AddItemToObject(json, "light_config", light_cfg);
 
     cJSON_AddItemToObject(json, "isp_config", serialize_isp_config(&cfg->isp_config));
+
+    cJSON *dn_cfg = cJSON_CreateObject();
+    cJSON_AddNumberToObject(dn_cfg, "auto_source", cfg->day_night_config.auto_source);
+    cJSON_AddNumberToObject(dn_cfg, "time_start_hour", cfg->day_night_config.time_start_hour);
+    cJSON_AddNumberToObject(dn_cfg, "time_start_minute", cfg->day_night_config.time_start_minute);
+    cJSON_AddNumberToObject(dn_cfg, "time_end_hour", cfg->day_night_config.time_end_hour);
+    cJSON_AddNumberToObject(dn_cfg, "time_end_minute", cfg->day_night_config.time_end_minute);
+    cJSON_AddNumberToObject(dn_cfg, "light_sensor_night_threshold", cfg->day_night_config.light_sensor_night_threshold);
+    cJSON_AddNumberToObject(dn_cfg, "light_sensor_day_threshold", cfg->day_night_config.light_sensor_day_threshold);
+    cJSON_AddNumberToObject(dn_cfg, "isp_night_enter_lux", cfg->day_night_config.isp_night_enter_lux);
+    cJSON_AddNumberToObject(dn_cfg, "isp_day_enter_lux", cfg->day_night_config.isp_day_enter_lux);
+    cJSON_AddNumberToObject(dn_cfg, "isp_night_enter_exposure_us", cfg->day_night_config.isp_night_enter_exposure_us);
+    cJSON_AddNumberToObject(dn_cfg, "isp_night_enter_gain_mdb", cfg->day_night_config.isp_night_enter_gain_mdb);
+    cJSON_AddNumberToObject(dn_cfg, "isp_night_enter_avgl", cfg->day_night_config.isp_night_enter_avgl);
+    cJSON_AddNumberToObject(dn_cfg, "isp_day_enter_exposure_us", cfg->day_night_config.isp_day_enter_exposure_us);
+    cJSON_AddNumberToObject(dn_cfg, "isp_day_enter_gain_mdb", cfg->day_night_config.isp_day_enter_gain_mdb);
+    cJSON_AddNumberToObject(dn_cfg, "isp_day_enter_avgl", cfg->day_night_config.isp_day_enter_avgl);
+    cJSON_AddNumberToObject(dn_cfg, "isp_ema_alpha_num", cfg->day_night_config.isp_ema_alpha_num);
+    cJSON_AddNumberToObject(dn_cfg, "isp_ema_alpha_den", cfg->day_night_config.isp_ema_alpha_den);
+    cJSON_AddNumberToObject(dn_cfg, "ir_brightness", cfg->day_night_config.ir_brightness);
+    cJSON_AddItemToObject(json, "day_night_config", dn_cfg);
 
     return json;
 }

@@ -20,7 +20,7 @@ extern "C" {
 #if defined(WAKECORE_VERSION)
 #define APP_VERSION             WAKECORE_VERSION
 #else
-#define APP_VERSION             "0.2.7.5"  
+#define APP_VERSION             "0.2.7.115"  
 #endif
 
 /// @brief Error code

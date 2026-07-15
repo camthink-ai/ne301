@@ -45,6 +45,7 @@ void MX_GPIO_Init(void)
   __HAL_RCC_GPIOG_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
@@ -53,6 +54,25 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
+  
+  /*Configure PWR_SENSOR_ON GPIO pin(s) */
+  HAL_GPIO_WritePin(PWR_SENSOR_ON_GPIO_Port, PWR_SENSOR_ON_Pin, GPIO_PIN_SET);
+  /*Configure IR-CUT GPIO pin(s) */
+  HAL_GPIO_WritePin(IR_CUT_A_GPIO_Port, IR_CUT_A_Pin, GPIO_PIN_RESET);
+
+  /*Configure PWR_SENSOR_ON GPIO pin(s) */
+  GPIO_InitStruct.Pin = PWR_SENSOR_ON_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(PWR_SENSOR_ON_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure IR-CUT GPIO pin(s) */
+  GPIO_InitStruct.Pin = IR_CUT_A_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(IR_CUT_A_GPIO_Port, &GPIO_InitStruct);
 }
 
 /* USER CODE BEGIN 2 */

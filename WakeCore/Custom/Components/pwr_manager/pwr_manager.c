@@ -93,7 +93,7 @@ void pwr_ctrl(const char *module, const char *state)
 
     if (strncmp(module, PWR_ALL_NAME, sizeof(PWR_ALL_NAME)) == 0) {
         HAL_GPIO_WritePin(PWR_3V3_GPIO_Port, PWR_3V3_Pin, PinState);
-        HAL_GPIO_WritePin(PWR_EXT_GPIO_Port, PWR_EXT_Pin, PinState);
+        // HAL_GPIO_WritePin(PWR_EXT_GPIO_Port, PWR_EXT_Pin, PinState);
         HAL_GPIO_WritePin(PWR_WIFI_GPIO_Port, PWR_WIFI_Pin, PinState);
         HAL_GPIO_WritePin(PWR_AON_GPIO_Port, PWR_AON_Pin, PinState);
         HAL_GPIO_WritePin(PWR_N6_GPIO_Port, PWR_N6_Pin, PinState);
@@ -106,7 +106,7 @@ void pwr_ctrl(const char *module, const char *state)
     } else if (strncmp(module, PWR_N6_NAME, sizeof(PWR_N6_NAME)) == 0) {
         HAL_GPIO_WritePin(PWR_N6_GPIO_Port, PWR_N6_Pin, PinState);
     } else if (strncmp(module, PWR_EXT_NAME, sizeof(PWR_EXT_NAME)) == 0) {
-        HAL_GPIO_WritePin(PWR_EXT_GPIO_Port, PWR_EXT_Pin, PinState);
+        // HAL_GPIO_WritePin(PWR_EXT_GPIO_Port, PWR_EXT_Pin, PinState);
     }
 }
 
@@ -119,7 +119,7 @@ const char *pwr_get_state(const char *module)
         snprintf(pwr_state_buf, sizeof(pwr_state_buf),
                  "%s: %s\r\n%s: %s\r\n%s: %s\r\n%s: %s\r\n%s: %s\r\n",
                  PWR_3V3_NAME, PWR_STATE_STR(HAL_GPIO_ReadPin(PWR_3V3_GPIO_Port, PWR_3V3_Pin)),
-                 PWR_EXT_NAME, PWR_STATE_STR(HAL_GPIO_ReadPin(PWR_EXT_GPIO_Port, PWR_EXT_Pin)),
+                 PWR_EXT_NAME, PWR_STATE_STR(0),
                  PWR_WIFI_NAME, PWR_STATE_STR(HAL_GPIO_ReadPin(PWR_WIFI_GPIO_Port, PWR_WIFI_Pin)),
                  PWR_AON_NAME, PWR_STATE_STR(HAL_GPIO_ReadPin(PWR_AON_GPIO_Port, PWR_AON_Pin)),
                  PWR_N6_NAME, PWR_STATE_STR(HAL_GPIO_ReadPin(PWR_N6_GPIO_Port, PWR_N6_Pin))
@@ -142,7 +142,7 @@ const char *pwr_get_state(const char *module)
         );
     } else if (strncmp(module, PWR_EXT_NAME, sizeof(PWR_EXT_NAME)) == 0) {
         snprintf(pwr_state_buf, sizeof(pwr_state_buf), "%s: %s\r\n",
-                 PWR_EXT_NAME, PWR_STATE_STR(HAL_GPIO_ReadPin(PWR_EXT_GPIO_Port, PWR_EXT_Pin))
+                 PWR_EXT_NAME, PWR_STATE_STR(0)
         );
     } else {
         return NULL;
@@ -178,11 +178,11 @@ void pwr_ctrl_bits(uint32_t switch_bits)
         HAL_GPIO_WritePin(PWR_3V3_GPIO_Port, PWR_3V3_Pin, GPIO_PIN_RESET);
     }
 
-    if (switch_bits & PWR_EXT_SWITCH_BIT) {
-        HAL_GPIO_WritePin(PWR_EXT_GPIO_Port, PWR_EXT_Pin, GPIO_PIN_SET);
-    } else {
-        HAL_GPIO_WritePin(PWR_EXT_GPIO_Port, PWR_EXT_Pin, GPIO_PIN_RESET);
-    }
+    // if (switch_bits & PWR_EXT_SWITCH_BIT) {
+    //     HAL_GPIO_WritePin(PWR_EXT_GPIO_Port, PWR_EXT_Pin, GPIO_PIN_SET);
+    // } else {
+    //     HAL_GPIO_WritePin(PWR_EXT_GPIO_Port, PWR_EXT_Pin, GPIO_PIN_RESET);
+    // }
 
     if (switch_bits & PWR_WIFI_SWITCH_BIT) {
         HAL_GPIO_WritePin(PWR_WIFI_GPIO_Port, PWR_WIFI_Pin, GPIO_PIN_SET);
@@ -208,7 +208,7 @@ uint32_t pwr_get_switch_bits(void)
     uint32_t switch_bits = 0;
 
     if (HAL_GPIO_ReadPin(PWR_3V3_GPIO_Port, PWR_3V3_Pin) == GPIO_PIN_SET) switch_bits |= PWR_3V3_SWITCH_BIT;
-    if (HAL_GPIO_ReadPin(PWR_EXT_GPIO_Port, PWR_EXT_Pin) == GPIO_PIN_SET) switch_bits |= PWR_EXT_SWITCH_BIT;
+    // if (HAL_GPIO_ReadPin(PWR_EXT_GPIO_Port, PWR_EXT_Pin) == GPIO_PIN_SET) switch_bits |= PWR_EXT_SWITCH_BIT;
     if (HAL_GPIO_ReadPin(PWR_WIFI_GPIO_Port, PWR_WIFI_Pin) == GPIO_PIN_SET) switch_bits |= PWR_WIFI_SWITCH_BIT;
     if (HAL_GPIO_ReadPin(PWR_AON_GPIO_Port, PWR_AON_Pin) == GPIO_PIN_SET) switch_bits |= PWR_AON_SWITCH_BIT;
     if (HAL_GPIO_ReadPin(PWR_N6_GPIO_Port, PWR_N6_Pin) == GPIO_PIN_SET) switch_bits |= PWR_N6_SWITCH_BIT;
@@ -239,13 +239,17 @@ uint32_t pwr_get_wakeup_flags(void)
             __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF1);
         }
         if (__HAL_PWR_GET_FLAG(PWR_FLAG_WUF3) != RESET) {
+            // if (global_wakeup_flags & PWR_WAKEUP_FLAG_STANDBY) {
+            //     if (bkp_wakeup_flags & PWR_WAKEUP_FLAG_PIR_HIGH) global_wakeup_flags |= PWR_WAKEUP_FLAG_PIR_HIGH;
+            //     else if (bkp_wakeup_flags & PWR_WAKEUP_FLAG_PIR_LOW) global_wakeup_flags |= PWR_WAKEUP_FLAG_PIR_LOW;
+            // }
+            __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF3);
+        }
+        if (__HAL_PWR_GET_FLAG(PWR_FLAG_WUF4) != RESET) {
             if (global_wakeup_flags & PWR_WAKEUP_FLAG_STANDBY) {
                 if (bkp_wakeup_flags & PWR_WAKEUP_FLAG_PIR_HIGH) global_wakeup_flags |= PWR_WAKEUP_FLAG_PIR_HIGH;
                 else if (bkp_wakeup_flags & PWR_WAKEUP_FLAG_PIR_LOW) global_wakeup_flags |= PWR_WAKEUP_FLAG_PIR_LOW;
             }
-            __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF3);
-        }
-        if (__HAL_PWR_GET_FLAG(PWR_FLAG_WUF4) != RESET) {
             __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF4);
         }
         if (__HAL_PWR_GET_FLAG(PWR_FLAG_WUFI) != RESET) {
@@ -278,7 +282,7 @@ uint32_t pwr_get_wakeup_flags(void)
             if (stop2_wakeup_falling_pins & CONFIG_KEY_Pin) global_wakeup_flags |= PWR_WAKEUP_FLAG_CONFIG_KEY;
             if (stop2_wakeup_falling_pins & PIR_TRIGGER_Pin) global_wakeup_flags |= PWR_WAKEUP_FLAG_PIR_FALLING;
             if (stop2_wakeup_rising_pins & PIR_TRIGGER_Pin) global_wakeup_flags |= PWR_WAKEUP_FLAG_PIR_RISING;
-            if (stop2_wakeup_rising_pins & NET_WKUP_Pin) global_wakeup_flags |= PWR_WAKEUP_FLAG_NET;
+            // if (stop2_wakeup_rising_pins & NET_WKUP_Pin) global_wakeup_flags |= PWR_WAKEUP_FLAG_NET;
             if (stop2_wakeup_rising_pins & WIFI_SPI_IRQ_Pin) global_wakeup_flags |= PWR_WAKEUP_FLAG_SI91X;
             if (rtc_wake_up_flag) global_wakeup_flags |= PWR_WAKEUP_FLAG_RTC_TIMING;
             if (rtc_alarm_a_flag) global_wakeup_flags |= PWR_WAKEUP_FLAG_RTC_ALARM_A;
@@ -329,16 +333,16 @@ void pwr_enter_standby(uint32_t wakeup_flags, pwr_rtc_wakeup_config_t *rtc_wakeu
     }
 
     if ((wakeup_flags & PWR_WAKEUP_FLAG_PIR_LOW) && (wakeup_flags & PWR_WAKEUP_FLAG_PIR_HIGH) == 0) {
-        HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_1);
+        HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_2);
         HAL_PWREx_EnablePullUpPullDownConfig();
         HAL_PWR_EnableWakeUpPin(PWR_WAKEUP_PIN3_HIGH);
-        __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF3);
+        __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF4);
 
     } else if ((wakeup_flags & PWR_WAKEUP_FLAG_PIR_HIGH) && (wakeup_flags & PWR_WAKEUP_FLAG_PIR_LOW) == 0) {
-        HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_1);
+        HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_2);
         HAL_PWREx_EnablePullUpPullDownConfig();
         HAL_PWR_EnableWakeUpPin(PWR_WAKEUP_PIN3_LOW);
-        __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF3);
+        __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF4);
     }
 
     // if (wakeup_flags & PWR_WAKEUP_FLAG_NET) {
@@ -440,16 +444,16 @@ void pwr_enter_stop2(uint32_t wakeup_flags, uint32_t switch_bits, pwr_rtc_wakeup
             HAL_GPIO_Init(PWR_3V3_GPIO_Port, &GPIO_InitStruct);
         }
     }
-    if (!(switch_bits & PWR_EXT_SWITCH_BIT)) {
-        HAL_GPIO_WritePin(PWR_EXT_GPIO_Port, PWR_EXT_Pin, GPIO_PIN_RESET);
-        if (usb_in_status == 0) {
-            GPIO_InitStruct.Pin = PWR_EXT_Pin;
-            GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-            GPIO_InitStruct.Pull = GPIO_NOPULL;
-            HAL_GPIO_DeInit(PWR_EXT_GPIO_Port, GPIO_InitStruct.Pin);
-            HAL_GPIO_Init(PWR_EXT_GPIO_Port, &GPIO_InitStruct);
-        }
-    }
+    // if (!(switch_bits & PWR_EXT_SWITCH_BIT)) {
+    //     HAL_GPIO_WritePin(PWR_EXT_GPIO_Port, PWR_EXT_Pin, GPIO_PIN_RESET);
+    //     if (usb_in_status == 0) {
+    //         GPIO_InitStruct.Pin = PWR_EXT_Pin;
+    //         GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+    //         GPIO_InitStruct.Pull = GPIO_NOPULL;
+    //         HAL_GPIO_DeInit(PWR_EXT_GPIO_Port, GPIO_InitStruct.Pin);
+    //         HAL_GPIO_Init(PWR_EXT_GPIO_Port, &GPIO_InitStruct);
+    //     }
+    // }
     if (!(switch_bits & PWR_WIFI_SWITCH_BIT)) {
         HAL_GPIO_WritePin(PWR_WIFI_GPIO_Port, PWR_WIFI_Pin, GPIO_PIN_RESET);
         if (usb_in_status == 0) {
@@ -506,16 +510,16 @@ void pwr_enter_stop2(uint32_t wakeup_flags, uint32_t switch_bits, pwr_rtc_wakeup
         HAL_NVIC_EnableIRQ(PIR_TRIGGER_EXTI_IRQn);
     }
 
-    if (wakeup_flags & PWR_WAKEUP_FLAG_NET) {
-        GPIO_InitStruct.Pin = NET_WKUP_Pin;
-        GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-        GPIO_InitStruct.Pull = GPIO_PULLDOWN;
-        HAL_GPIO_DeInit(NET_WKUP_GPIO_Port, GPIO_InitStruct.Pin);
-        HAL_GPIO_Init(NET_WKUP_GPIO_Port, &GPIO_InitStruct);
+    // if (wakeup_flags & PWR_WAKEUP_FLAG_NET) {
+    //     GPIO_InitStruct.Pin = NET_WKUP_Pin;
+    //     GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+    //     GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+    //     HAL_GPIO_DeInit(NET_WKUP_GPIO_Port, GPIO_InitStruct.Pin);
+    //     HAL_GPIO_Init(NET_WKUP_GPIO_Port, &GPIO_InitStruct);
 
-        HAL_NVIC_SetPriority(NET_WKUP_EXTI_IRQn, 0, 0);
-        HAL_NVIC_EnableIRQ(NET_WKUP_EXTI_IRQn);
-    }
+    //     HAL_NVIC_SetPriority(NET_WKUP_EXTI_IRQn, 0, 0);
+    //     HAL_NVIC_EnableIRQ(NET_WKUP_EXTI_IRQn);
+    // }
 
     if (wakeup_flags & PWR_WAKEUP_FLAG_SI91X) {
         GPIO_InitStruct.Pin = WIFI_SPI_IRQ_Pin;
@@ -633,14 +637,14 @@ void pwr_enter_stop2(uint32_t wakeup_flags, uint32_t switch_bits, pwr_rtc_wakeup
         HAL_GPIO_DeInit(PIR_TRIGGER_GPIO_Port, GPIO_InitStruct.Pin);
         HAL_GPIO_Init(PIR_TRIGGER_GPIO_Port, &GPIO_InitStruct);
     }
-    if (wakeup_flags & PWR_WAKEUP_FLAG_NET) {
-        HAL_NVIC_DisableIRQ(NET_WKUP_EXTI_IRQn);
-        GPIO_InitStruct.Pin = NET_WKUP_Pin;
-        GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        HAL_GPIO_DeInit(NET_WKUP_GPIO_Port, GPIO_InitStruct.Pin);
-        HAL_GPIO_Init(NET_WKUP_GPIO_Port, &GPIO_InitStruct);
-    }
+    // if (wakeup_flags & PWR_WAKEUP_FLAG_NET) {
+    //     HAL_NVIC_DisableIRQ(NET_WKUP_EXTI_IRQn);
+    //     GPIO_InitStruct.Pin = NET_WKUP_Pin;
+    //     GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+    //     GPIO_InitStruct.Pull = GPIO_NOPULL;
+    //     HAL_GPIO_DeInit(NET_WKUP_GPIO_Port, GPIO_InitStruct.Pin);
+    //     HAL_GPIO_Init(NET_WKUP_GPIO_Port, &GPIO_InitStruct);
+    // }
     if (wakeup_flags & PWR_WAKEUP_FLAG_SI91X) {
         HAL_NVIC_DisableIRQ(WIFI_SPI_IRQ_EXTI_IRQn);
         GPIO_InitStruct.Pin = WIFI_SPI_IRQ_Pin;
@@ -667,13 +671,13 @@ void pwr_enter_stop2(uint32_t wakeup_flags, uint32_t switch_bits, pwr_rtc_wakeup
     }
     if (!(switch_bits & PWR_EXT_SWITCH_BIT)) {
         // HAL_GPIO_WritePin(PWR_EXT_GPIO_Port, PWR_EXT_Pin, GPIO_PIN_SET);
-        if (usb_in_status == 0) {
-            GPIO_InitStruct.Pin = PWR_EXT_Pin;
-            GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-            GPIO_InitStruct.Pull = GPIO_NOPULL;
-            HAL_GPIO_DeInit(PWR_EXT_GPIO_Port, GPIO_InitStruct.Pin);
-            HAL_GPIO_Init(PWR_EXT_GPIO_Port, &GPIO_InitStruct);
-        }
+        // if (usb_in_status == 0) {
+        //     GPIO_InitStruct.Pin = PWR_EXT_Pin;
+        //     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+        //     GPIO_InitStruct.Pull = GPIO_NOPULL;
+        //     HAL_GPIO_DeInit(PWR_EXT_GPIO_Port, GPIO_InitStruct.Pin);
+        //     HAL_GPIO_Init(PWR_EXT_GPIO_Port, &GPIO_InitStruct);
+        // }
     }
     if (!(switch_bits & PWR_WIFI_SWITCH_BIT)) {
         // HAL_GPIO_WritePin(PWR_WIFI_GPIO_Port, PWR_WIFI_Pin, GPIO_PIN_SET);

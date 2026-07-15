@@ -77,8 +77,8 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(PIR_TRIGGER_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : NET_WKUP_Pin WIFI_SPI_IRQ_Pin */
-  GPIO_InitStruct.Pin = NET_WKUP_Pin|WIFI_SPI_IRQ_Pin;
+  /*Configure GPIO pins : WIFI_SPI_IRQ_Pin */
+  GPIO_InitStruct.Pin = WIFI_SPI_IRQ_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
@@ -89,19 +89,26 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PWR_WIFI_Pin PWR_3V3_Pin PWR_AON_Pin PWR_N6_Pin PIR_SERIAL_Pin*/
-  GPIO_InitStruct.Pin = PWR_WIFI_Pin|PWR_3V3_Pin|PWR_AON_Pin|PWR_N6_Pin|PIR_SERIAL_Pin;
+  /*Configure GPIO pins : PWR_WIFI_Pin PWR_3V3_Pin PWR_AON_Pin PWR_N6_Pin*/
+  GPIO_InitStruct.Pin = PWR_WIFI_Pin|PWR_3V3_Pin|PWR_AON_Pin|PWR_N6_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PWR_EXT_Pin */
-  GPIO_InitStruct.Pin = PWR_EXT_Pin;
+  /*Configure GPIO pin : PIR_SERIAL_Pin */
+  GPIO_InitStruct.Pin = PIR_SERIAL_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  HAL_GPIO_Init(PWR_EXT_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(PIR_SERIAL_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PWR_EXT_Pin */
+  // GPIO_InitStruct.Pin = PWR_EXT_Pin;
+  // GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  // GPIO_InitStruct.Pull = GPIO_NOPULL;
+  // GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  // HAL_GPIO_Init(PWR_EXT_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PB1 */
   GPIO_InitStruct.Pin = GPIO_PIN_1;
@@ -138,10 +145,10 @@ void GPIO_All_Config_Analog(void)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     
     // Batch configure all ports
-    GPIO_InitStruct.Pin = GPIO_PIN_ALL ^ (PWR_WIFI_Pin | PWR_3V3_Pin | PWR_AON_Pin | PWR_N6_Pin | PIR_TRIGGER_Pin | PIR_SERIAL_Pin);// | GPIO_PIN_13 | GPIO_PIN_14 | U1_TX_Pin | U1_RX_Pin);
+    GPIO_InitStruct.Pin = GPIO_PIN_ALL ^ (PWR_WIFI_Pin | PWR_3V3_Pin | PWR_AON_Pin | PWR_N6_Pin | PIR_TRIGGER_Pin);// | GPIO_PIN_13 | GPIO_PIN_14 | U1_TX_Pin | U1_RX_Pin);
     HAL_GPIO_DeInit(GPIOA, GPIO_InitStruct.Pin);
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-    GPIO_InitStruct.Pin = GPIO_PIN_ALL ^ PWR_EXT_Pin;
+    GPIO_InitStruct.Pin = GPIO_PIN_ALL ^ PIR_SERIAL_Pin;
     HAL_GPIO_DeInit(GPIOB, GPIO_InitStruct.Pin);
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
     GPIO_InitStruct.Pin = GPIO_PIN_ALL;

@@ -63,11 +63,14 @@ void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOF, PIR_Serial_IN_Pin|PWR_SENSOR_ON_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOG, LED_Pin|PWR_CAT1_ON_Pin|PWR_COEDC_Pin|PWR_USB_3V3_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOG, LED_Pin|PWR_COEDC_Pin|PWR_USB_3V3_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, PWR_BAT_DET_ON_Pin|PWR_TF_ON_Pin, GPIO_PIN_RESET);
+
+  /*Configure IR-CUT GPIO output level: High (day) */
+  HAL_GPIO_WritePin(IR_CUT_A_GPIO_Port, IR_CUT_A_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pins : PWR_PIR_ON_Pin */
   GPIO_InitStruct.Pin = PWR_PIR_ON_Pin;
@@ -129,8 +132,8 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : LED_Pin PWR_CAT1_ON_Pin PWR_COEDC_Pin */
-  GPIO_InitStruct.Pin = LED_Pin|LED2_Pin|PWR_CAT1_ON_Pin|PWR_COEDC_Pin|PWR_USB_3V3_Pin;
+  /*Configure GPIO pins : LED_Pin PWR_COEDC_Pin */
+  GPIO_InitStruct.Pin = LED_Pin|LED2_Pin|PWR_COEDC_Pin|PWR_USB_3V3_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -151,6 +154,13 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Alternate = GPIO_AF0_MCO;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
   HAL_RCC_MCOConfig(RCC_MCO1, RCC_MCO1SOURCE_HSE, RCC_MCODIV_2);
+
+  /*Configure IR-CUT GPIO pin(s) */
+  GPIO_InitStruct.Pin = IR_CUT_A_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(IR_CUT_A_GPIO_Port, &GPIO_InitStruct);
 
 #if defined(STM32N6_DK_BOARD)
   HAL_GPIO_WritePin(PWR_WIFI_ON_GPIO_Port, PWR_WIFI_ON_Pin, GPIO_PIN_SET);

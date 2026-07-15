@@ -284,6 +284,81 @@ aicam_result_t device_service_light_set_brightness(uint32_t brightness_level);
  */
 aicam_result_t device_service_light_blink(uint32_t blink_times, uint32_t interval_ms);
 
+/* ==================== Day/Night Interface ==================== */
+
+/** Day/Night control mode (whether switching is manual or auto-driven). */
+typedef enum {
+    DAY_NIGHT_CONTROL_MANUAL = 0,
+    DAY_NIGHT_CONTROL_AUTO   = 1,
+} day_night_control_t;
+
+/** Day/Night runtime status (reported to Web). */
+typedef struct {
+    aicam_bool_t configured;            // sensor supports day/night (OS04C10 with night IQ)
+    uint32_t mode;                       // configured mode: IMAGE_ISP_MODE_DAY/NIGHT/AUTO
+    day_night_control_t control;         // manual / auto
+    day_night_source_t source;           // active judgment source (when auto)
+    uint32_t effective_mode;             // currently applied mode: DAY/NIGHT
+    aicam_bool_t ir_on;                   // IR light power state
+    uint8_t ir_brightness;                // IR light intensity (0-100)
+    uint8_t ircut_mode;                   // IR-CUT: 0=day/color, 1=night/IR
+    /* ISP statistics metrics (valid when metrics_valid) */
+    aicam_bool_t metrics_valid;
+    uint32_t lux;
+    uint32_t lux_ema;
+    uint8_t avg_l;
+    uint8_t avg_l_ema;
+    uint32_t exposure_us;
+    uint32_t gain_mdb;
+    uint8_t light_sensor_percent;        // 0-100 from ambient light sensor (when available)
+} day_night_status_t;
+
+/**
+ * @brief Get day/night configuration
+ */
+aicam_result_t device_service_day_night_get_config(day_night_config_t *config);
+
+/**
+ * @brief Set day/night configuration (applies mode in real time)
+ */
+aicam_result_t device_service_day_night_set_config(const day_night_config_t *config);
+
+/**
+ * @brief Get day/night runtime status
+ */
+aicam_result_t device_service_day_night_get_status(day_night_status_t *status);
+
+/**
+ * @brief Set the active day/night mode (IMAGE_ISP_MODE_DAY/NIGHT/AUTO), applied in real time.
+ *        Helper for image_config.isp_mode changes; also exposed for CLI.
+ */
+aicam_result_t device_service_day_night_set_mode(uint32_t isp_mode);
+
+/**
+ * @brief Query whether the IR light should be on for capture and at what brightness.
+ *        Used by capture/fast-capture paths.
+ */
+void device_service_day_night_capture_light(aicam_bool_t *on, uint8_t *brightness);
+
+/**
+ * @brief Prepare day/night optics for a capture: evaluate the effective mode
+ *        (DAY/NIGHT; AUTO is evaluated against TIME/LIGHT_SENSOR when feasible),
+ *        switch IR-CUT accordingly, and report IR light on/off + brightness.
+ *        When device_service is running (capture paths in device_service.c), the
+ *        loaded config + task-maintained mode are used. In the sleep-wake fast
+ *        path the caller supplies the day/night config + isp_mode read from NVS
+ *        via quick_storage (no NVS read here).
+ * @param fast_cfg Day/night config for the fast path (NULL when device_service is running).
+ * @param fast_isp_mode Configured ISP mode for the fast path (0 when device_service is running).
+ * @param on Output: TRUE if IR light should be on (night).
+ * @param brightness Output: IR light intensity (0-100).
+ * @return Effective mode (IMAGE_ISP_MODE_DAY / NIGHT).
+ */
+uint32_t device_service_day_night_capture_prepare(const day_night_config_t *fast_cfg,
+                                                   uint32_t fast_isp_mode,
+                                                   aicam_bool_t *on,
+                                                   uint8_t *brightness);
+
 /* ==================== Camera Interface ==================== */
 
 /**

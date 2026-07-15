@@ -98,7 +98,6 @@
  #define NVS_KEY_IMAGE_VFLIP             "img_vflip"
  #define NVS_KEY_IMAGE_AEC               "img_aec"
  #define NVS_KEY_IMAGE_ISP_MODE          "img_isp_mode"
- #define NVS_KEY_IMAGE_GRAYSCALE         "img_gray"
  #define NVS_KEY_IMAGE_SKIP_FRAMES       "img_skip"
  #define NVS_KEY_IMAGE_FAST_SKIP_FRAMES  "img_fast_skip"
  #define NVS_KEY_IMAGE_FAST_RESOLUTION   "img_fast_res"
@@ -115,6 +114,26 @@
  #define NVS_KEY_LIGHT_BRIGHTNESS        "light_brt"
  #define NVS_KEY_LIGHT_AUTO_TRIGGER      "light_auto"
  #define NVS_KEY_LIGHT_THRESHOLD         "light_thr"
+
+ // Day/Night configuration key names
+ #define NVS_KEY_DN_SOURCE               "dn_src"
+ #define NVS_KEY_DN_TIME_S_H             "dn_t_sh"
+ #define NVS_KEY_DN_TIME_S_M             "dn_t_sm"
+ #define NVS_KEY_DN_TIME_E_H             "dn_t_eh"
+ #define NVS_KEY_DN_TIME_E_M             "dn_t_em"
+ #define NVS_KEY_DN_LS_NIGHT_TH          "dn_ls_n"
+ #define NVS_KEY_DN_LS_DAY_TH            "dn_ls_d"
+ #define NVS_KEY_DN_ISP_NIGHT_LUX        "dn_isp_nl"
+ #define NVS_KEY_DN_ISP_DAY_LUX          "dn_isp_dl"
+ #define NVS_KEY_DN_ISP_NIGHT_EXPO       "dn_isp_ne"
+ #define NVS_KEY_DN_ISP_NIGHT_GAIN       "dn_isp_ng"
+ #define NVS_KEY_DN_ISP_NIGHT_AVGL       "dn_isp_na"
+ #define NVS_KEY_DN_ISP_DAY_EXPO         "dn_isp_de"
+ #define NVS_KEY_DN_ISP_DAY_GAIN         "dn_isp_dg"
+ #define NVS_KEY_DN_ISP_DAY_AVGL         "dn_isp_da"
+ #define NVS_KEY_DN_ISP_EMA_NUM          "dn_ema_n"
+ #define NVS_KEY_DN_ISP_EMA_DEN          "dn_ema_d"
+ #define NVS_KEY_DN_IR_BRIGHTNESS        "dn_ir_brt"
 
 // ISP configuration key names
 #define NVS_KEY_ISP_VALID               "isp_valid"
@@ -393,6 +412,7 @@ aicam_result_t json_config_save_device_info_config_to_nvs(const device_info_conf
 aicam_result_t json_config_save_device_service_image_config_to_nvs(const image_config_t *config);
 aicam_result_t json_config_save_device_service_light_config_to_nvs(const light_config_t *config);
 aicam_result_t json_config_save_isp_config_to_nvs(const isp_config_t *config);
+aicam_result_t json_config_save_day_night_config_to_nvs(const day_night_config_t *config);
 aicam_result_t json_config_save_network_service_config_to_nvs(const network_service_config_t *config);
 aicam_result_t json_config_save_poe_config_to_nvs(const poe_config_persist_t *config);
 aicam_result_t json_config_load_poe_config_from_nvs(poe_config_persist_t *config);

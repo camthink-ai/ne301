@@ -27,7 +27,7 @@ VERSION_PATCH  := 0
 # Version suffix (optional, for alpha/beta/rc releases)
 # Examples: alpha, beta, rc1, dev
 # Leave empty for production releases
-VERSION_SUFFIX := 
+VERSION_SUFFIX := ir_ver
 
 # =============================================================================
 # Build number auto-generation
@@ -71,11 +71,11 @@ endif
 # =============================================================================
 # Set component-specific versions (leave empty to use main version)
 # Format: MAJOR.MINOR.PATCH.BUILD or empty
-FSBL_VERSION_OVERRIDE    := 1.0.3.0
+FSBL_VERSION_OVERRIDE    := 1.0.3.115
 APP_VERSION_OVERRIDE     := $(VERSION)
-WEB_VERSION_OVERRIDE     := 1.5.0.0
+WEB_VERSION_OVERRIDE     := 1.5.0.115
 MODEL_VERSION_OVERRIDE   := 2.0.0.0
-WAKECORE_VERSION_OVERRIDE := 0.2.7.5
+WAKECORE_VERSION_OVERRIDE := 0.2.7.115
 
 # Set component-specific version suffixes
 # - Leave undefined (commented or not set) to inherit main suffix
@@ -99,7 +99,7 @@ WAKECORE_VERSION := $(if $(WAKECORE_VERSION_OVERRIDE),$(WAKECORE_VERSION_OVERRID
 # user to upgrade when a mismatch is detected.
 #
 # NOTE: keep EXPECTED_FSBL_VERSION in sync with FSBL_VERSION_OVERRIDE above.
-EXPECTED_FSBL_VERSION := 1.0.3.0
+EXPECTED_FSBL_VERSION := 1.0.3.115
 
 # Expected WiFi (SiWG917) firmware version.  Must match the .rps bundled under
 # Custom/Common/Lib/SiliconLabs_SDK/firmware/ using the same encoding as the

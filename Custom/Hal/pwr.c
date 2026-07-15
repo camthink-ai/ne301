@@ -247,13 +247,13 @@ static void usb_power_off(void)
 
 static void cat1_power_init(void)
 {
-    HAL_GPIO_WritePin(PWR_CAT1_ON_GPIO_Port, PWR_CAT1_ON_Pin, GPIO_PIN_RESET);
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-    GPIO_InitStruct.Pin = PWR_CAT1_ON_Pin;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_PULLDOWN;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(PWR_CAT1_ON_GPIO_Port, &GPIO_InitStruct);
+    // HAL_GPIO_WritePin(PWR_CAT1_ON_GPIO_Port, PWR_CAT1_ON_Pin, GPIO_PIN_RESET);
+    // GPIO_InitTypeDef GPIO_InitStruct = {0};
+    // GPIO_InitStruct.Pin = PWR_CAT1_ON_Pin;
+    // GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    // GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+    // GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    // HAL_GPIO_Init(PWR_CAT1_ON_GPIO_Port, &GPIO_InitStruct);
 }
 
 static void cat1_power_on(void)
@@ -265,7 +265,7 @@ static void cat1_power_on(void)
         u0_module_power_control(switch_bits);
     }
 #endif
-    HAL_GPIO_WritePin(PWR_CAT1_ON_GPIO_Port, PWR_CAT1_ON_Pin, GPIO_PIN_SET);
+    // HAL_GPIO_WritePin(PWR_CAT1_ON_GPIO_Port, PWR_CAT1_ON_Pin, GPIO_PIN_SET);
 }
 
 static void cat1_power_off(void)
@@ -277,7 +277,7 @@ static void cat1_power_off(void)
         u0_module_power_control(switch_bits);
     }
 #endif
-    HAL_GPIO_WritePin(PWR_CAT1_ON_GPIO_Port, PWR_CAT1_ON_Pin, GPIO_PIN_RESET);
+    // HAL_GPIO_WritePin(PWR_CAT1_ON_GPIO_Port, PWR_CAT1_ON_Pin, GPIO_PIN_RESET);
 }
 
 static void tf_power_init(void)

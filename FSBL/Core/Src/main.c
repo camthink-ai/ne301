@@ -111,6 +111,7 @@ int main(void)
   XSPI_NOR_EnableMemoryMappedMode();
   /* USER CODE END Init */
   
+  HAL_GPIO_WritePin(IR_CUT_A_GPIO_Port, IR_CUT_A_Pin, GPIO_PIN_SET);
   /* Copy application from flash to SRAM/PSRAM */
   BOOT_Copy_Application();
   

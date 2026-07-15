@@ -39,6 +39,8 @@ const osThreadAttr_t keyTask_attributes = {
 static osThreadId_t led_processId, key_processId, bat_processId;
 static misc_t g_key, g_flash, g_ind, g_light, g_battery, g_io, g_ind_ext;
 
+#define IO_IRCUT_NAME "IR_CUT"
+
 gpio_group_t io_groups[] = {
     {
         .name = IO_ALARM_NAME,
@@ -48,6 +50,16 @@ gpio_group_t io_groups[] = {
         .int_type = IO_INT_RISING_EDGE,
         .int_cb = NULL,
         .output_state = IO_OUTPUT_LOW
+    },
+    {
+        /* IR-CUT filter: PE9. Hardware polarity: HIGH = day (color), LOW = night (IR). */
+        .name = IO_IRCUT_NAME,
+        .pin = IR_CUT_A_Pin,
+        .port = IR_CUT_A_GPIO_Port,
+        .mode = IO_MODE_OUTPUT,
+        .int_type = IO_INT_RISING_EDGE,
+        .int_cb = NULL,
+        .output_state = IO_OUTPUT_HIGH
     }
 };
 static io_dev_cfg_t g_io_cfg = {0};
@@ -155,7 +167,11 @@ static int misc_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsigne
                 break;
             
             case MISC_CMD_PWM_SET_DUTY:
-                ((pwm_cfg_t *)misc->config)->duty = *ubuf;
+                ((pwm_cfg_t *)misc->config)->duty = (*ubuf > 100U) ? 100U : *ubuf;
+                break;
+            
+            case MISC_CMD_PWM_GET_DUTY:
+                *ubuf = ((pwm_cfg_t *)misc->config)->duty;
                 break;
             default:
                 ret = AICAM_ERROR_NOT_SUPPORTED;
@@ -584,7 +600,7 @@ static int ind_ext_deinit(void *priv)
     return 0;
 }
 
-static void ind_ext_register(void)
+__attribute__((unused)) static void ind_ext_register(void)
 {
     static dev_ops_t ind_ext_ops = {
         .init = ind_ext_init,
@@ -600,7 +616,7 @@ static void ind_ext_register(void)
     device_register(g_ind_ext.dev);
 }
 
-static void ind_ext_unregister(void)
+__attribute__((unused)) static void ind_ext_unregister(void)
 {
     if (g_ind_ext.dev) {
         device_unregister(g_ind_ext.dev);
@@ -623,11 +639,12 @@ static int light_get_value(uint8_t *rate)
     uint32_t voltage = 0;
     if(!g_light.is_init)
         return -1;
-    pwr_manager_acquire(g_light.pwr_handle);
-    osDelay(1000);
+    // pwr_manager_acquire(g_light.pwr_handle);
+    // osDelay(50);
     ADC_get_value(&voltage, 1);
-    pwr_manager_release(g_light.pwr_handle);
-    LOG_SIMPLE("light  get  voltage :%ld \r\n",voltage);
+    // pwr_manager_release(g_light.pwr_handle);
+    // LOG_SIMPLE("light  get  voltage :%ld \r\n",voltage);
+    voltage *= 2;
     voltage = MIN(MAX(voltage, LIGHT_MIN_SENS), LIGHT_MAX_SENS);
     *rate = (uint8_t)((voltage - LIGHT_MIN_SENS) * 100 / (LIGHT_MAX_SENS - LIGHT_MIN_SENS));
     return 0;
@@ -639,7 +656,7 @@ static int light_init(void *priv)
     MX_ADC1_Init();
     light->mtx_id = osMutexNew(NULL);
     light->type = MISC_TYPE_ADC;
-    light->pwr_handle = pwr_manager_get_handle(PWR_SENSOR_NAME);
+    // light->pwr_handle = pwr_manager_get_handle(PWR_SENSOR_NAME);
     light->is_init = true;
     return 0;
 }
@@ -652,10 +669,10 @@ static int light_deinit(void *priv)
         osMutexDelete(light->mtx_id);
         light->mtx_id = NULL;
     }
-    if (light->pwr_handle != 0) {
-        pwr_manager_release(light->pwr_handle);
-        light->pwr_handle = 0;
-    }
+    // if (light->pwr_handle != 0) {
+    //     pwr_manager_release(light->pwr_handle);
+    //     light->pwr_handle = 0;
+    // }
     MX_ADC1_DeInit();
     return 0;
 }
@@ -843,8 +860,11 @@ int misc_register(void)
     key_register();
     flash_register();
     ind_register();
-    ind_ext_register();
-    // light_register();
+    /* External indicator (ind_ext, PF3) is disabled: its pin (LED1_Pin/PF3)
+       conflicts with the ambient light sensor on PF3/ADC1_IN16. Use the
+       internal indicator (ind, PG9) only. */
+    // ind_ext_register();
+    light_register();
     battery_register();
     io_register();
 
@@ -864,9 +884,9 @@ int misc_unregister(void)
 
     // Unregister all submodules
     battery_unregister();
-    // light_unregister();
+    light_unregister();
     ind_unregister();
-    ind_ext_unregister();
+    // ind_ext_unregister();
     flash_unregister();
     key_unregister();
     io_unregister();

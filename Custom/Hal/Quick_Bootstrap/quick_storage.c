@@ -68,7 +68,7 @@ static aicam_result_t qs_nvs_read_int32(const char *key, int32_t *value)
 }
 
 /* Load `isp_config_t` from user NVS (same layout as json_config_load path). */
-static void qs_load_isp_config_from_nvs(isp_config_t *isp)
+__attribute__((unused)) static void qs_load_isp_config_from_nvs(isp_config_t *isp)
 {
     if (!isp) {
         return;
@@ -251,7 +251,7 @@ static void qs_load_isp_config_from_nvs(isp_config_t *isp)
 }
 
 /* Same field mapping as json_config_config_to_isp_param (no json_config runtime). */
-static void qs_isp_config_to_iq_param(const isp_config_t *isp_config, ISP_IQParamTypeDef *isp_param)
+__attribute__((unused)) static void qs_isp_config_to_iq_param(const isp_config_t *isp_config, ISP_IQParamTypeDef *isp_param)
 {
     if (isp_config == NULL || isp_param == NULL) {
         return;
@@ -340,34 +340,67 @@ static void qs_isp_config_to_iq_param(const isp_config_t *isp_config, ISP_IQPara
     isp_param->luxRef.calibFactor = isp_config->lux_calib_factor;
 }
 
-int quick_storage_fill_isp_iq_param(uint32_t isp_mode, uint8_t grayscale,
+int quick_storage_fill_isp_iq_param(uint32_t isp_mode,
                                     ISP_IQParamTypeDef *isp_param)
 {
-    aicam_bool_t gray_on = (grayscale != 0u) ? AICAM_TRUE : AICAM_FALSE;
-
     if (!isp_param) {
         return AICAM_ERROR_INVALID_PARAM;
     }
 
-    if (isp_mode == QS_IMAGE_ISP_MODE_CUSTOM) {
-        isp_config_t cfg = {0};
-        qs_load_isp_config_from_nvs(&cfg);
-        if (cfg.valid) {
-            qs_isp_config_to_iq_param(&cfg, isp_param);
-            camera_apply_grayscale_iq(isp_param, gray_on);
-            return AICAM_OK;
-        }
+    /* Day/night IQ selection: NIGHT -> IR night profile; DAY/AUTO -> tuned color. */
+    camera_fill_isp_iq_for_mode(isp_mode, isp_param);
+    return AICAM_OK;
+}
+
+/* Read day/night configuration directly from NVS (no json_config ctx needed).
+   Used by the sleep-wake fast-capture path. Defaults mirror `default_config.day_night_config`. */
+int quick_storage_read_day_night_config(day_night_config_t *config)
+{
+    uint32_t tmp32 = 0U;
+    uint8_t tmp8 = 0U;
+
+    if (!config) {
+        return AICAM_ERROR_INVALID_PARAM;
     }
 
-    cam_iq_scene_t scene = CAM_IQ_SCENE_INDOOR;
-    if (isp_mode == QS_IMAGE_ISP_MODE_OUTDOOR) {
-        scene = CAM_IQ_SCENE_OUTDOOR;
-    } else if (isp_mode == QS_IMAGE_ISP_MODE_CUSTOM) {
-        /* Align with device_service_build_isp_iq_param: custom without valid NVS profile. */
-        scene = CAM_IQ_SCENE_INDOOR;
-    }
-    camera_fill_isp_iq_scene(scene, isp_param);
-    camera_apply_grayscale_iq(isp_param, gray_on);
+    config->auto_source = default_config.device_service.day_night_config.auto_source;
+    config->time_start_hour = default_config.device_service.day_night_config.time_start_hour;
+    config->time_start_minute = default_config.device_service.day_night_config.time_start_minute;
+    config->time_end_hour = default_config.device_service.day_night_config.time_end_hour;
+    config->time_end_minute = default_config.device_service.day_night_config.time_end_minute;
+    config->light_sensor_night_threshold = default_config.device_service.day_night_config.light_sensor_night_threshold;
+    config->light_sensor_day_threshold = default_config.device_service.day_night_config.light_sensor_day_threshold;
+    config->isp_night_enter_lux = default_config.device_service.day_night_config.isp_night_enter_lux;
+    config->isp_day_enter_lux = default_config.device_service.day_night_config.isp_day_enter_lux;
+    config->isp_night_enter_exposure_us = default_config.device_service.day_night_config.isp_night_enter_exposure_us;
+    config->isp_night_enter_gain_mdb = default_config.device_service.day_night_config.isp_night_enter_gain_mdb;
+    config->isp_night_enter_avgl = default_config.device_service.day_night_config.isp_night_enter_avgl;
+    config->isp_day_enter_exposure_us = default_config.device_service.day_night_config.isp_day_enter_exposure_us;
+    config->isp_day_enter_gain_mdb = default_config.device_service.day_night_config.isp_day_enter_gain_mdb;
+    config->isp_day_enter_avgl = default_config.device_service.day_night_config.isp_day_enter_avgl;
+    config->isp_ema_alpha_num = default_config.device_service.day_night_config.isp_ema_alpha_num;
+    config->isp_ema_alpha_den = default_config.device_service.day_night_config.isp_ema_alpha_den;
+    config->ir_brightness = default_config.device_service.day_night_config.ir_brightness;
+
+    if (qs_nvs_read_uint32(NVS_KEY_DN_SOURCE, &tmp32) == AICAM_OK && tmp32 <= (uint32_t)DAY_NIGHT_SOURCE_ISP_STATS)
+        config->auto_source = (day_night_source_t)tmp32;
+    if (qs_nvs_read_uint32(NVS_KEY_DN_TIME_S_H, &tmp32) == AICAM_OK) config->time_start_hour = tmp32;
+    if (qs_nvs_read_uint32(NVS_KEY_DN_TIME_S_M, &tmp32) == AICAM_OK) config->time_start_minute = tmp32;
+    if (qs_nvs_read_uint32(NVS_KEY_DN_TIME_E_H, &tmp32) == AICAM_OK) config->time_end_hour = tmp32;
+    if (qs_nvs_read_uint32(NVS_KEY_DN_TIME_E_M, &tmp32) == AICAM_OK) config->time_end_minute = tmp32;
+    if (qs_nvs_read_uint8(NVS_KEY_DN_LS_NIGHT_TH, &tmp8) == AICAM_OK) config->light_sensor_night_threshold = tmp8;
+    if (qs_nvs_read_uint8(NVS_KEY_DN_LS_DAY_TH, &tmp8) == AICAM_OK) config->light_sensor_day_threshold = tmp8;
+    if (qs_nvs_read_uint32(NVS_KEY_DN_ISP_NIGHT_LUX, &tmp32) == AICAM_OK) config->isp_night_enter_lux = tmp32;
+    if (qs_nvs_read_uint32(NVS_KEY_DN_ISP_DAY_LUX, &tmp32) == AICAM_OK) config->isp_day_enter_lux = tmp32;
+    if (qs_nvs_read_uint32(NVS_KEY_DN_ISP_NIGHT_EXPO, &tmp32) == AICAM_OK) config->isp_night_enter_exposure_us = tmp32;
+    if (qs_nvs_read_uint32(NVS_KEY_DN_ISP_NIGHT_GAIN, &tmp32) == AICAM_OK) config->isp_night_enter_gain_mdb = tmp32;
+    if (qs_nvs_read_uint8(NVS_KEY_DN_ISP_NIGHT_AVGL, &tmp8) == AICAM_OK) config->isp_night_enter_avgl = tmp8;
+    if (qs_nvs_read_uint32(NVS_KEY_DN_ISP_DAY_EXPO, &tmp32) == AICAM_OK) config->isp_day_enter_exposure_us = tmp32;
+    if (qs_nvs_read_uint32(NVS_KEY_DN_ISP_DAY_GAIN, &tmp32) == AICAM_OK) config->isp_day_enter_gain_mdb = tmp32;
+    if (qs_nvs_read_uint8(NVS_KEY_DN_ISP_DAY_AVGL, &tmp8) == AICAM_OK) config->isp_day_enter_avgl = tmp8;
+    if (qs_nvs_read_uint8(NVS_KEY_DN_ISP_EMA_NUM, &tmp8) == AICAM_OK) config->isp_ema_alpha_num = tmp8;
+    if (qs_nvs_read_uint8(NVS_KEY_DN_ISP_EMA_DEN, &tmp8) == AICAM_OK) config->isp_ema_alpha_den = tmp8;
+    if (qs_nvs_read_uint8(NVS_KEY_DN_IR_BRIGHTNESS, &tmp8) == AICAM_OK) config->ir_brightness = tmp8;
     return AICAM_OK;
 }
 
@@ -544,7 +577,6 @@ int quick_storage_read_snapshot_config(qs_snapshot_config_t *snapshot_config)
     snapshot_config->fast_capture_jpeg_quality = default_config.device_service.image_config.fast_capture_jpeg_quality;
     snapshot_config->capture_storage_ai = default_config.device_service.image_config.capture_storage_ai;
     snapshot_config->isp_mode = default_config.device_service.image_config.isp_mode;
-    snapshot_config->grayscale = (uint8_t)default_config.device_service.image_config.grayscale;
 
     aicam_result_t result;
     aicam_bool_t temp_bool = AICAM_FALSE;
@@ -624,15 +656,8 @@ int quick_storage_read_snapshot_config(qs_snapshot_config_t *snapshot_config)
 
     result = qs_nvs_read_uint32(NVS_KEY_IMAGE_ISP_MODE, &temp_u32);
     if (result == AICAM_OK) snapshot_config->isp_mode = temp_u32;
-    if (snapshot_config->isp_mode != QS_IMAGE_ISP_MODE_INDOOR &&
-        snapshot_config->isp_mode != QS_IMAGE_ISP_MODE_OUTDOOR &&
-        snapshot_config->isp_mode != QS_IMAGE_ISP_MODE_CUSTOM) {
+    if (snapshot_config->isp_mode > QS_IMAGE_ISP_MODE_AUTO) {
         snapshot_config->isp_mode = default_config.device_service.image_config.isp_mode;
-    }
-
-    result = qs_nvs_read_bool(NVS_KEY_IMAGE_GRAYSCALE, &temp_bool);
-    if (result == AICAM_OK) {
-        snapshot_config->grayscale = (uint8_t)temp_bool;
     }
 
     return AICAM_OK;

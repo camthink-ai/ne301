@@ -10,8 +10,8 @@
 
 /** ISP IQ preset for built-in tuning profiles (see image_config_t.isp_mode on device side). */
 typedef enum {
-    CAM_IQ_SCENE_INDOOR = 0,
-    CAM_IQ_SCENE_OUTDOOR = 1,
+    CAM_IQ_SCENE_DAY = 0,    /* daytime tuned color profile */
+    CAM_IQ_SCENE_NIGHT = 2,  /* IR night profile (OS04C10) */
 } cam_iq_scene_t;
 
 /* Define sensor info */
@@ -100,6 +100,7 @@ typedef enum {
     CAM_CMD_GET_STARTUP_SKIP_FRAMES,    // Get current startup skip frames setting
     CAM_CMD_UNSHARE_PIPE1_BUFFER,
     CAM_CMD_UNSHARE_PIPE2_BUFFER,
+    CAM_CMD_APPLY_ISP_IQ,            // Hot-swap ISP IQ params on a running pipeline (ubuf = ISP_IQParamTypeDef*)
 } CAM_CMD_E;
 
 typedef enum {
@@ -210,21 +211,28 @@ ISP_HandleTypeDef* camera_get_isp_handle(void);
 
 /**
  * @brief Fill ISP IQ parameters for a built-in scene (indoor vs outdoor stock).
- * @param scene CAM_IQ_SCENE_INDOOR applies IQTune contrast + stat region (OS04C10); outdoor uses sensor defaults only.
+ * @param scene CAM_IQ_SCENE_DAY applies the tuned contrast + stat region (OS04C10); NIGHT applies the IR profile.
  * @param out_iq Output buffer (must not be NULL).
  */
 void camera_fill_isp_iq_scene(cam_iq_scene_t scene, ISP_IQParamTypeDef *out_iq);
 
 /**
- * @brief Overlay grayscale (BT.601 luma) ISP settings on an IQ profile.
- * @param iq IQ buffer to modify in place.
- * @param grayscale AICAM_TRUE: disable AWB and use luma color matrix; AICAM_FALSE: no change.
+ * @brief Fill ISP IQ parameters for a day/night mode (IMAGE_ISP_MODE_DAY/NIGHT/AUTO).
+ *        DAY/AUTO -> tuned color profile; NIGHT -> IR night profile.
+ * @param isp_mode IMAGE_ISP_MODE_DAY / NIGHT / AUTO.
+ * @param out_iq Output buffer (must not be NULL).
  */
-void camera_apply_grayscale_iq(ISP_IQParamTypeDef *iq, aicam_bool_t grayscale);
+void camera_fill_isp_iq_for_mode(uint32_t isp_mode, ISP_IQParamTypeDef *out_iq);
 
 /**
- * @brief Reserved: PIPE1 stays RGB565; grayscale is ISP-only (see camera_apply_grayscale_iq).
+ * @brief Apply a full ISP IQ parameter set to a running ISP pipeline without restart.
+ * @details Hot-swaps demosaic/stat-removal/contrast/bad-pixel/black-level/stat-area/
+ *          AEC/AWB/gain/color-conv/gamma/sensor gain+exposure. Caller must serialize
+ *          against the camera/ISP processing context (e.g. camera mutex).
+ * @param hIsp ISP handle (must not be NULL).
+ * @param params IQ parameters to apply (must not be NULL).
+ * @return ISP_StatusTypeDef ISP_OK on success.
  */
-void camera_configure_pipe1_grayscale(pipe_params_t *pipe1, aicam_bool_t grayscale);
+ISP_StatusTypeDef camera_apply_isp_iq_runtime(ISP_HandleTypeDef *hIsp, const ISP_IQParamTypeDef *params);
 
 #endif

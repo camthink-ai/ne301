@@ -574,6 +574,8 @@ static void SystemIsolation_Config(void)
     HAL_GPIO_ConfigPinAttributes(GPIOG,GPIO_PIN_12,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
     HAL_GPIO_ConfigPinAttributes(GPIOG,GPIO_PIN_15,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
     HAL_GPIO_ConfigPinAttributes(GPIOH,GPIO_PIN_2,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
+    HAL_GPIO_ConfigPinAttributes(IR_CUT_A_GPIO_Port, IR_CUT_A_Pin, GPIO_PIN_SEC|GPIO_PIN_NPRIV);
+
 
 /* USER CODE BEGIN RIF_Init 1 */
 

@@ -154,7 +154,16 @@ void Error_Handler(void);
 #define OCTOSPI_IO7_GPIO_Port GPION
 
 /* USER CODE BEGIN Private defines */
+#define PWR_SENSOR_ON_Pin GPIO_PIN_9
+#define PWR_SENSOR_ON_GPIO_Port GPIOF
 
+#ifndef IR_CUT_A_Pin
+#define IR_CUT_A_Pin GPIO_PIN_9
+#endif
+
+#ifndef IR_CUT_A_GPIO_Port
+#define IR_CUT_A_GPIO_Port GPIOE
+#endif
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

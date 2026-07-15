@@ -172,6 +172,14 @@ void _Error_Handler_(void);
 void SystemClock_Config(void);
 void Fuse_Programming(void);
 
+#ifndef IR_CUT_A_Pin
+#define IR_CUT_A_Pin GPIO_PIN_9
+#endif
+
+#ifndef IR_CUT_A_GPIO_Port
+#define IR_CUT_A_GPIO_Port GPIOE
+#endif
+
 #ifdef __cplusplus
 }
 #endif

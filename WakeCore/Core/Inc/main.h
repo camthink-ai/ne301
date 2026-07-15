@@ -60,14 +60,14 @@ void Error_Handler(void);
 #define CONFIG_KEY_Pin GPIO_PIN_0
 #define CONFIG_KEY_GPIO_Port GPIOA
 #define CONFIG_KEY_EXTI_IRQn EXTI0_1_IRQn
-#define PIR_TRIGGER_Pin GPIO_PIN_1
+#define PIR_TRIGGER_Pin GPIO_PIN_2
 #define PIR_TRIGGER_GPIO_Port GPIOA
-#define PIR_TRIGGER_EXTI_IRQn EXTI0_1_IRQn
-#define NET_WKUP_Pin GPIO_PIN_2
-#define NET_WKUP_GPIO_Port GPIOA
-#define NET_WKUP_EXTI_IRQn EXTI2_3_IRQn
-#define PIR_SERIAL_Pin GPIO_PIN_3
-#define PIR_SERIAL_GPIO_Port GPIOA
+#define PIR_TRIGGER_EXTI_IRQn EXTI2_3_IRQn
+// #define NET_WKUP_Pin GPIO_PIN_2
+// #define NET_WKUP_GPIO_Port GPIOA
+// #define NET_WKUP_EXTI_IRQn EXTI2_3_IRQn
+#define PIR_SERIAL_Pin GPIO_PIN_0
+#define PIR_SERIAL_GPIO_Port GPIOB
 #define PWR_WIFI_Pin GPIO_PIN_4
 #define PWR_WIFI_GPIO_Port GPIOA
 #define PWR_3V3_Pin GPIO_PIN_5
@@ -76,8 +76,8 @@ void Error_Handler(void);
 #define PWR_AON_GPIO_Port GPIOA
 #define PWR_N6_Pin GPIO_PIN_7
 #define PWR_N6_GPIO_Port GPIOA
-#define PWR_EXT_Pin GPIO_PIN_0
-#define PWR_EXT_GPIO_Port GPIOB
+// #define PWR_EXT_Pin GPIO_PIN_0
+// #define PWR_EXT_GPIO_Port GPIOB
 #define USB_IN_Pin GPIO_PIN_8
 #define USB_IN_GPIO_Port GPIOA
 #define U1_TX_Pin GPIO_PIN_9
