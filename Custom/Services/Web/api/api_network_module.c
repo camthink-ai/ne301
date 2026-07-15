@@ -1439,6 +1439,7 @@ aicam_result_t network_halow_region_set_handler(http_handler_context_t *ctx)
 {
     cJSON *request_json;
     const char *region;
+    char region_buf[MM_HALOW_REGDOMAIN_CC_LEN];
     network_service_config_t sys_net = {0};
     cJSON *response_json;
     char *json_string;
@@ -1462,6 +1463,9 @@ aicam_result_t network_halow_region_set_handler(http_handler_context_t *ctx)
         cJSON_Delete(request_json);
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Missing or invalid 'region'");
     }
+    strncpy(region_buf, region, sizeof(region_buf) - 1U);
+    region_buf[sizeof(region_buf) - 1U] = '\0';
+    region = region_buf;
     cJSON_Delete(request_json);
 
     if (json_config_get_network_service_config(&sys_net) != AICAM_OK) {

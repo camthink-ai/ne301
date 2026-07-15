@@ -228,7 +228,10 @@ static aicam_result_t persist_record(FS_Type_t fs, const char *id,
 static aicam_result_t move_record(FS_Type_t fs, const char *id,
                                    record_state_t from, record_state_t to);
 static aicam_result_t parse_meta_file(FS_Type_t fs, const char *path, cJSON **out_json);
-static aicam_result_t upload_one_record(FS_Type_t fs, const char *id);
+static aicam_result_t upload_one_record(FS_Type_t fs, const char *id,
+                                        const mqtt_ai_result_t *ai_result);
+static aicam_result_t load_ai_result_from_disk(FS_Type_t fs, const char *id,
+                                               mqtt_ai_result_t *out);
 static aicam_result_t cleanup_for_space(FS_Type_t fs, uint64_t need_bytes);
 static aicam_result_t purge_old_sent(FS_Type_t fs);
 static uint32_t      count_state(FS_Type_t fs, record_state_t state);
@@ -1524,11 +1527,19 @@ static aicam_result_t record_publish_mqtt(FS_Type_t fs, const char *id, int *out
 
     if (mqtt_service_is_running() && mqtt_service_is_connected()) {
         const uint32_t threshold = 1024u * 1024u;
+
+        /* Load AI result from persisted file if present */
+        mqtt_ai_result_t ai_from_disk;
+        const mqtt_ai_result_t *ai_ptr = NULL;
+        if (load_ai_result_from_disk(fs, id, &ai_from_disk) == AICAM_OK) {
+            ai_ptr = &ai_from_disk;
+        }
+
         int rc;
         if (m.size < threshold) {
-            rc = mqtt_service_publish_image_with_ai(NULL, jpeg, jpeg_size, &m, NULL);
+            rc = mqtt_service_publish_image_with_ai(NULL, jpeg, jpeg_size, &m, ai_ptr);
         } else {
-            rc = mqtt_service_publish_image_chunked(NULL, jpeg, jpeg_size, &m, NULL, 100 * 1024);
+            rc = mqtt_service_publish_image_chunked(NULL, jpeg, jpeg_size, &m, ai_ptr, 100 * 1024);
         }
         if (rc >= 0) {
             msg_id = rc;
@@ -1553,6 +1564,107 @@ static aicam_result_t record_publish_mqtt(FS_Type_t fs, const char *id, int *out
     return result;
 }
 
+/* Load persisted AI result from disk. Returns AICAM_OK and fills *out if the
+ * ai_result JSON file exists and can be parsed into nn_result_t. Caller must
+ * free *out with buffer_free. */
+static aicam_result_t load_ai_result_from_disk(FS_Type_t fs, const char *id,
+                                               mqtt_ai_result_t *out)
+{
+    if (!out) return AICAM_ERROR_INVALID_PARAM;
+    memset(out, 0, sizeof(*out));
+
+    /* Read AI JSON file */
+    char ai_path[128];
+    path_for_data(ai_path, sizeof(ai_path), id, 'a');
+    char *text = NULL;
+    uint32_t size = 0;
+    if (read_text_file(fs, ai_path, &text, &size) != AICAM_OK || !text) {
+        return AICAM_ERROR;
+    }
+    cJSON *json = cJSON_Parse(text);
+    buffer_free(text);
+    if (!json) return AICAM_ERROR;
+
+    /* Parse type and detection/pose count */
+    nn_result_t nn = {0};
+    cJSON *type_item = cJSON_GetObjectItem(json, "type");
+    if (type_item) nn.type = (pp_type_t)type_item->valueint;
+
+    cJSON *det_count = cJSON_GetObjectItem(json, "detection_count");
+    cJSON *pose_count = cJSON_GetObjectItem(json, "pose_count");
+
+    if (nn.type == PP_TYPE_OD && det_count && det_count->valueint > 0) {
+        cJSON *detections = cJSON_GetObjectItem(json, "detections");
+        if (detections && cJSON_IsArray(detections)) {
+            int n = cJSON_GetArraySize(detections);
+            if (n > 0 && (uint32_t)n <= det_count->valueint) {
+                nn.od.detects = (od_detect_t *)buffer_calloc((size_t)n, sizeof(od_detect_t));
+                if (nn.od.detects) {
+                    for (int i = 0; i < n; i++) {
+                        cJSON *d = cJSON_GetArrayItem(detections, i);
+                        if (!d) continue;
+                        cJSON *cx = cJSON_GetObjectItem(d, "x");
+                        cJSON *cy = cJSON_GetObjectItem(d, "y");
+                        cJSON *cw = cJSON_GetObjectItem(d, "width");
+                        cJSON *ch = cJSON_GetObjectItem(d, "height");
+                        cJSON *cc = cJSON_GetObjectItem(d, "conf");
+                        cJSON *ccls = cJSON_GetObjectItem(d, "class_name");
+                        if (cx) nn.od.detects[i].x = (float)cx->valuedouble;
+                        if (cy) nn.od.detects[i].y = (float)cy->valuedouble;
+                        if (cw) nn.od.detects[i].width = (float)cw->valuedouble;
+                        if (ch) nn.od.detects[i].height = (float)ch->valuedouble;
+                        if (cc) nn.od.detects[i].conf = (float)cc->valuedouble;
+                        if (ccls && cJSON_IsString(ccls)) {
+                            size_t clen = strlen(ccls->valuestring) + 1;
+                            nn.od.detects[i].class_name = (char *)buffer_calloc(1, clen);
+                            if (nn.od.detects[i].class_name)
+                                memcpy(nn.od.detects[i].class_name, ccls->valuestring, clen);
+                        }
+                    }
+                    nn.od.nb_detect = (uint8_t)n;
+                    nn.is_valid = 1;
+                }
+            }
+        }
+    } else if (nn.type == PP_TYPE_MPE && pose_count && pose_count->valueint > 0) {
+        cJSON *poses = cJSON_GetObjectItem(json, "poses");
+        if (poses && cJSON_IsArray(poses)) {
+            int n = cJSON_GetArraySize(poses);
+            if (n > 0 && (uint32_t)n <= pose_count->valueint) {
+                nn.mpe.detects = (mpe_detect_t *)buffer_calloc((size_t)n, sizeof(mpe_detect_t));
+                if (nn.mpe.detects) {
+                    for (int i = 0; i < n; i++) {
+                        cJSON *p = cJSON_GetArrayItem(poses, i);
+                        if (!p) continue;
+                        cJSON *cx = cJSON_GetObjectItem(p, "x");
+                        cJSON *cy = cJSON_GetObjectItem(p, "y");
+                        cJSON *cw = cJSON_GetObjectItem(p, "width");
+                        cJSON *ch = cJSON_GetObjectItem(p, "height");
+                        cJSON *cc = cJSON_GetObjectItem(p, "conf");
+                        if (cx) nn.mpe.detects[i].x = (float)cx->valuedouble;
+                        if (cy) nn.mpe.detects[i].y = (float)cy->valuedouble;
+                        if (cw) nn.mpe.detects[i].width = (float)cw->valuedouble;
+                        if (ch) nn.mpe.detects[i].height = (float)ch->valuedouble;
+                        if (cc) nn.mpe.detects[i].conf = (float)cc->valuedouble;
+                    }
+                    nn.mpe.nb_detect = (uint8_t)n;
+                    nn.is_valid = 1;
+                }
+            }
+        }
+    }
+    cJSON_Delete(json);
+
+    if (!nn.is_valid) return AICAM_ERROR;
+
+    /* Build mqtt_ai_result_t with default model info.
+     * NOTE: mqtt_service_init_ai_result does a shallow memcpy of nn_result_t,
+     * so the detects/class_name pointers are now owned by *out. Do NOT free
+     * the arrays here — the caller stack-lifetime outlives the MQTT call. */
+    mqtt_service_init_ai_result(out, &nn, NULL, NULL, 0);
+    return AICAM_OK;
+}
+
 /* Webhook serial path: load + push + wait_pending + move/retry. */
 static aicam_result_t upload_one_record_webhook(FS_Type_t fs, const char *id)
 {
@@ -1567,10 +1679,17 @@ static aicam_result_t upload_one_record_webhook(FS_Type_t fs, const char *id)
 
     aicam_result_t result = AICAM_ERROR;
     if (webhook_service_is_enabled()) {
+        /* Load AI result from persisted file if present */
+        mqtt_ai_result_t ai_from_disk;
+        const mqtt_ai_result_t *ai_ptr = NULL;
+        if (load_ai_result_from_disk(fs, id, &ai_from_disk) == AICAM_OK) {
+            ai_ptr = &ai_from_disk;
+        }
+
         uint8_t *copy = (uint8_t *)buffer_calloc(1, jpeg_size);
         if (copy) {
             memcpy(copy, jpeg, jpeg_size);
-            aicam_result_t pr = webhook_service_push_capture(copy, jpeg_size, &m, NULL);
+            aicam_result_t pr = webhook_service_push_capture(copy, jpeg_size, &m, ai_ptr);
             if (pr == AICAM_OK) {
                 result = (webhook_service_wait_pending(30000) == AICAM_OK) ? AICAM_OK : AICAM_ERROR;
             } else {
@@ -1595,7 +1714,8 @@ static aicam_result_t upload_one_record_webhook(FS_Type_t fs, const char *id)
     return result;
 }
 
-static aicam_result_t upload_one_record(FS_Type_t fs, const char *id)
+static aicam_result_t upload_one_record(FS_Type_t fs, const char *id,
+                                        const mqtt_ai_result_t *ai_result_in)
 {
     char meta_path[128];
     path_for_meta(meta_path, sizeof(meta_path), id);
@@ -1674,11 +1794,21 @@ static aicam_result_t upload_one_record(FS_Type_t fs, const char *id)
         }
         if (mqtt_service_is_running() && mqtt_service_is_connected()) {
             const uint32_t threshold = 1024u * 1024u;
+
+            /* AI result: use caller-provided, or load from persisted file */
+            mqtt_ai_result_t ai_from_disk;
+            const mqtt_ai_result_t *ai_ptr = ai_result_in;
+            if (!ai_ptr) {
+                if (load_ai_result_from_disk(fs, id, &ai_from_disk) == AICAM_OK) {
+                    ai_ptr = &ai_from_disk;
+                }
+            }
+
             int rc;
             if (m.size < threshold) {
-                rc = mqtt_service_publish_image_with_ai(NULL, jpeg, m.size, &m, NULL);
+                rc = mqtt_service_publish_image_with_ai(NULL, jpeg, m.size, &m, ai_ptr);
             } else {
-                rc = mqtt_service_publish_image_chunked(NULL, jpeg, m.size, &m, NULL, 100 * 1024);
+                rc = mqtt_service_publish_image_chunked(NULL, jpeg, m.size, &m, ai_ptr, 100 * 1024);
             }
             if (rc >= 0) {
                 /* publish_image_with_ai just queues the message - wait for the
@@ -1797,7 +1927,7 @@ static aicam_result_t flush_visitor(FS_Type_t fs, const char *id, void *user)
 {
     flush_ctx_t *ctx = (flush_ctx_t *)user;
     ctx->attempts++;
-    aicam_result_t r = upload_one_record(fs, id);
+    aicam_result_t r = upload_one_record(fs, id, NULL);  /* ai_result from disk */
     if (r == AICAM_OK) ctx->successes++;
     else               ctx->failures++;
     return AICAM_OK;
@@ -2411,7 +2541,8 @@ aicam_result_t upload_coordinator_reload_config(void)
  * persistence). Waits for network readiness with fast-fail on all-netifs-failed. */
 static aicam_result_t direct_publish_capture(const uint8_t *jpeg_buffer,
                                              uint32_t jpeg_size,
-                                             const mqtt_image_metadata_t *meta_in)
+                                             const mqtt_image_metadata_t *meta_in,
+                                             const mqtt_ai_result_t *ai_result)
 {
     aicam_result_t r = AICAM_ERROR;
     uint32_t wait_ms = 30000;
@@ -2434,8 +2565,8 @@ static aicam_result_t direct_publish_capture(const uint8_t *jpeg_buffer,
         if (mqtt_service_is_running() && mqtt_service_is_connected()) {
             const uint32_t threshold = 1024u * 1024u;
             int rc = (jpeg_size < threshold)
-                ? mqtt_service_publish_image_with_ai(NULL, jpeg_buffer, jpeg_size, meta_in, NULL)
-                : mqtt_service_publish_image_chunked(NULL, jpeg_buffer, jpeg_size, meta_in, NULL, 100 * 1024);
+                ? mqtt_service_publish_image_with_ai(NULL, jpeg_buffer, jpeg_size, meta_in, ai_result)
+                : mqtt_service_publish_image_chunked(NULL, jpeg_buffer, jpeg_size, meta_in, ai_result, 100 * 1024);
             if (rc >= 0) {
                 uint32_t puback_timeout = 5000 + (jpeg_size / 10240) * 2000;
                 if (puback_timeout > 60000) puback_timeout = 60000;
@@ -2457,7 +2588,7 @@ static aicam_result_t direct_publish_capture(const uint8_t *jpeg_buffer,
             uint8_t *copy = (uint8_t *)buffer_calloc(1, jpeg_size);
             if (copy) {
                 memcpy(copy, jpeg_buffer, jpeg_size);
-                aicam_result_t pr = webhook_service_push_capture(copy, jpeg_size, meta_in, NULL);
+                aicam_result_t pr = webhook_service_push_capture(copy, jpeg_size, meta_in, ai_result);
                 if (pr == AICAM_OK) {
                     r = webhook_service_wait_pending(30000);
                 } else {
@@ -2474,6 +2605,7 @@ aicam_result_t upload_coordinator_enqueue_capture(
     const uint8_t *jpeg_buffer, uint32_t jpeg_size,
     const uint8_t *inference_jpeg, uint32_t inference_jpeg_size,
     const char *ai_result_json,
+    const mqtt_ai_result_t *ai_result,
     const mqtt_image_metadata_t *meta_in,
     aicam_capture_trigger_t trigger,
     wakeup_source_type_t wakeup_src)
@@ -2495,7 +2627,7 @@ aicam_result_t upload_coordinator_enqueue_capture(
 
     /* INSTANT + storage=NONE → in-memory upload only, no persistence needed. */
     if (mode == CAPTURE_MODE_INSTANT && g_up.cfg.storage == CAPTURE_STORE_NONE) {
-        return direct_publish_capture(jpeg_buffer, jpeg_size, meta_in);
+        return direct_publish_capture(jpeg_buffer, jpeg_size, meta_in, ai_result);
     }
 
     /* All persistent modes (LOCAL_ONLY / BATCH / SCHEDULED / INSTANT-with-storage)
@@ -2557,7 +2689,7 @@ aicam_result_t upload_coordinator_enqueue_capture(
             /* INSTANT = 即拍即传: JPEG still in RAM - attempt direct upload. */
             if (mode == CAPTURE_MODE_INSTANT) {
                 UPLOAD_LOG("storage full - INSTANT fallback to direct publish\r\n");
-                return direct_publish_capture(jpeg_buffer, jpeg_size, meta_in);
+                return direct_publish_capture(jpeg_buffer, jpeg_size, meta_in, ai_result);
             }
             return AICAM_ERROR_NO_MEMORY;
         }
@@ -2580,7 +2712,7 @@ aicam_result_t upload_coordinator_enqueue_capture(
          * records are worth retrying now. On failure the channel is down
          * and a sweep would just waste IO; leave pending/ untouched. */
         {
-            aicam_result_t r = upload_one_record(fs, id);
+            aicam_result_t r = upload_one_record(fs, id, ai_result);
             UPLOAD_LOG("INSTANT upload_one_record=%d\r\n", r);
             if (r == AICAM_OK) {
                 upload_coordinator_kick();

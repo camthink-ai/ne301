@@ -3559,13 +3559,29 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
         metadata.quality   = jpeg_enc_param.ImageQuality;
         metadata.trigger_type = trigger_type;
 
-        /* AI result -> JSON */
+        /* AI result -> JSON (for persistence) + mqtt_ai_result_t (for upload) */
         char *ai_json = NULL;
+        mqtt_ai_result_t mqtt_ai_result = {0};
+        mqtt_ai_result_t *ai_result_ptr = NULL;
         if (enable_ai && nn_result.is_valid) {
             cJSON *ai_json_root = nn_create_ai_result_json(&nn_result);
             if (ai_json_root) {
                 ai_json = cJSON_PrintUnformatted(ai_json_root);
                 cJSON_Delete(ai_json_root);
+            }
+            /* Build MQTT AI result struct for upload */
+            nn_model_info_t model_info = {0};
+            uint32_t inference_time_ms = 0;
+            if (quick_snapshot_is_init()) {
+                (void)quick_snapshot_wait_ai_info(&model_info);
+                (void)quick_snapshot_get_ai_inference_time_ms(&inference_time_ms);
+            } else {
+                (void)ai_service_get_model_info(&model_info);
+            }
+            if (mqtt_service_init_ai_result(&mqtt_ai_result, &nn_result,
+                                            model_info.name, model_info.version,
+                                            inference_time_ms) == AICAM_OK) {
+                ai_result_ptr = &mqtt_ai_result;
             }
         }
 
@@ -3593,6 +3609,7 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
             jpeg_buffer, (uint32_t)jpeg_size,
             inf_jpeg, inf_jpeg_size,
             ai_json,
+            ai_result_ptr,
             &metadata, trigger_type, ws);
 
         /* Free inference JPEG (owned by quick_snapshot/jpegc - use camera free) */

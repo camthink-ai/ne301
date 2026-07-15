@@ -63,7 +63,8 @@ aicam_result_t upload_coordinator_enqueue_capture(
     uint32_t jpeg_size,
     const uint8_t *inference_jpeg,        /* may be NULL */
     uint32_t inference_jpeg_size,
-    const char *ai_result_json,           /* may be NULL; copied */
+    const char *ai_result_json,           /* may be NULL; copied (for persistence) */
+    const mqtt_ai_result_t *ai_result,    /* may be NULL; for MQTT upload */
     const mqtt_image_metadata_t *meta_in, /* timestamp/trigger/size/etc */
     aicam_capture_trigger_t trigger,
     wakeup_source_type_t wakeup_src);
