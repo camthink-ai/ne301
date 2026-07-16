@@ -1301,6 +1301,8 @@ aicam_result_t communication_service_start(void)
     /* HaLow not compiled in - Cellular has no competitor, auto-start if configured */
     aicam_bool_t cellular_first = AICAM_TRUE;
 #endif
+#elif NETIF_WIFI_HALOW_IS_ENABLE
+    aicam_bool_t cellular_first = AICAM_FALSE;
 #endif
 
 #if NETIF_4G_CAT1_IS_ENABLE

@@ -65,17 +65,6 @@
     #define NETIF_USB_ECM_IS_CAT1_MODULE        (1)
 #endif
 
-#define NETIF_NAME_STR_FMT                  "%c%c%d"
-#define NETIF_NAME_PARAMETER(netif)          (netif)->name[0], (netif)->name[1], (netif)->num
-#define NETIF_NAME_LOCAL                    "lo"
-#define NETIF_NAME_WIFI_STA                 "wl"
-#define NETIF_NAME_WIFI_AP                  "ap"
-#define NETIF_NAME_WIFI_HALOW               "hw"
-#define NETIF_NAME_ETH_WAN                  "wn"
-#define NETIF_NAME_4G_CAT1                  "4g"
-#define NETIF_NAME_USB_ECM                  "ue"
-#define NETIF_DEFAULT_NETIF_NAME            NETIF_NAME_ETH_WAN
-
 #ifndef NETIF_WIFI_HALOW_IS_ENABLE
 #define NETIF_WIFI_HALOW_IS_ENABLE          (0)
 #endif
@@ -94,6 +83,21 @@
 #ifndef NETIF_WIFI_HALOW_SCAN_DEDUP_BY_FREQ_BW
 #define NETIF_WIFI_HALOW_SCAN_DEDUP_BY_FREQ_BW  (0)
 #endif
+#endif
+
+#define NETIF_NAME_STR_FMT                  "%c%c%d"
+#define NETIF_NAME_PARAMETER(netif)          (netif)->name[0], (netif)->name[1], (netif)->num
+#define NETIF_NAME_LOCAL                    "lo"
+#define NETIF_NAME_WIFI_STA                 "wl"
+#define NETIF_NAME_WIFI_AP                  "ap"
+#define NETIF_NAME_WIFI_HALOW               "hw"
+#define NETIF_NAME_ETH_WAN                  "wn"
+#define NETIF_NAME_4G_CAT1                  "4g"
+#define NETIF_NAME_USB_ECM                  "ue"
+#if NETIF_ETH_WAN_IS_ENABLE
+#define NETIF_DEFAULT_NETIF_NAME            NETIF_NAME_ETH_WAN
+#else
+#define NETIF_DEFAULT_NETIF_NAME            NETIF_NAME_WIFI_STA
 #endif
 
 #define NETIF_MAC_STR_FMT                   "%02x:%02x:%02x:%02x:%02x:%02x"
