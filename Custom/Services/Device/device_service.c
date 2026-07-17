@@ -2239,19 +2239,12 @@ aicam_result_t device_service_camera_capture(uint8_t **buffer, int *out_len,
     uint8_t *fb = NULL;
     uint8_t *input_frame_buffer = NULL;
     uint32_t pipe2_fb_len = 0;
-    aicam_bool_t light_on = AICAM_FALSE;
     pipe_params_t pipe_param;
     jpegc_params_t jpeg_param;
 
 
-    // 1. IR light control (driven by day/night effective mode)
-    {
-        uint8_t ir_bri = 0U;
-        device_service_day_night_capture_light(&light_on, &ir_bri);
-        if (light_on) {
-            device_service_light_control(AICAM_TRUE);
-        }
-    }
+    // 1. IR light control
+    // In operation mode, the infrared light will always remain on.
 
     // 2. get camera and jpeg config
     ret = device_ioctl(g_device_service.camera_device, CAM_CMD_GET_PIPE1_PARAM, (uint8_t *)&pipe_param, sizeof(pipe_params_t));
@@ -2361,11 +2354,6 @@ cleanup:
     {
         device_ioctl(g_device_service.camera_device, CAM_CMD_RETURN_PIPE2_BUFFER, input_frame_buffer, 0);
         input_frame_buffer = NULL;
-    }
-
-    if (light_on)
-    {
-        device_service_light_control(AICAM_FALSE);
     }
 
     return result;
