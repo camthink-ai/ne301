@@ -68,6 +68,7 @@ export interface PirConfigReq {
     ignore_time_s: number; // 0-15
     pulse_count: number; // 1-4
     window_time_s: number; // 0-3
+    disable_in_preview: boolean; // Disable PIR capture during preview (default: true)
   };
   timer_trigger?: {
     enable: boolean;
@@ -132,10 +133,8 @@ const deviceTool = {
   getRtspClientsReq: () => request.get('/api/v1/apps/rtsp/clients'),
   kickRtspClientReq: (id: string) => request.delete(`/api/v1/apps/rtsp/clients/${id}`),
 
-  getStreamTabPrefReq: () =>
-    request.get('/api/v1/device/preference/stream_tab'),
-  setStreamTabPrefReq: (data: { stream_tab: string }) =>
-    request.post('/api/v1/device/preference/stream_tab', data),
+  getStreamTabPrefReq: () => (request.get('/api/v1/device/preference/stream_tab')),
+  setStreamTabPrefReq: (data: { stream_tab: string }) => (request.post('/api/v1/device/preference/stream_tab', data)),
 
   // // PIR
   // getPirConfigReq: () => request.get('/api/v1/work-mode/triggers'),

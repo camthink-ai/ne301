@@ -344,6 +344,7 @@
 #define NVS_KEY_PIR_IGNORE_TIME     "pir_ignore"
 #define NVS_KEY_PIR_PULSE_COUNT     "pir_pulse"
 #define NVS_KEY_PIR_WINDOW_TIME     "pir_window"
+#define NVS_KEY_PIR_DISABLE_PREVIEW  "pir_dis_pv"
  // Remote Trigger
  #define NVS_KEY_REMOTE_TRIGGER_ENABLE "remote_trigger_enable"
  // IO (Indexed)

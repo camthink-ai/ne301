@@ -142,6 +142,10 @@ aicam_result_t json_config_save_work_mode_config_to_nvs(const work_mode_config_t
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save pir window time to NVS");
 
+    result = json_config_nvs_write_bool(NVS_KEY_PIR_DISABLE_PREVIEW, config->pir_trigger.disable_in_preview);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to save pir disable in preview to NVS");
+
     result = json_config_nvs_write_bool(NVS_KEY_TIMER_ENABLE, config->timer_trigger.enable);
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save timer capture enable to NVS");
@@ -2764,6 +2768,12 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
         config->work_mode_config.pir_trigger.window_time_s = temp_uint8;
     else
         json_config_nvs_write_uint8(NVS_KEY_PIR_WINDOW_TIME, config->work_mode_config.pir_trigger.window_time_s);
+
+    result = json_config_nvs_read_bool(NVS_KEY_PIR_DISABLE_PREVIEW, &temp_bool);
+    if (result == AICAM_OK)
+        config->work_mode_config.pir_trigger.disable_in_preview = temp_bool;
+    else
+        json_config_nvs_write_bool(NVS_KEY_PIR_DISABLE_PREVIEW, config->work_mode_config.pir_trigger.disable_in_preview);
 
     // Load IO trigger configuration (array of IO_TRIGGER_MAX triggers)
     for (int i = 0; i < IO_TRIGGER_MAX; i++)

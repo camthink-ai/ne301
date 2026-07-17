@@ -33,6 +33,7 @@ type TriggerConfigType = {
     ignore_time_s: number;
     pulse_count: number;
     window_time_s: number;
+    disable_in_preview: boolean;
   };
   timer_trigger: {
     enable: boolean;
@@ -95,6 +96,7 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
       ignore_time_s: 7,
       pulse_count: 1,
       window_time_s: 0,
+      disable_in_preview: true,
     },
     timer_trigger: {
       enable: false,
@@ -753,6 +755,52 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
                               {index}
                             </SelectItem>
                           ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex justify-between gap-2 flex-1 pr-0">
+                      <div className="flex items-center gap-2">
+                        <Label className="text-sm text-text-primary shrink-0">
+                          {' '}
+                          {i18n._('sys.device_tool.disable_pir_in_preview')}
+                        </Label>
+                        <Tooltip mbEnhance>
+                          <TooltipTrigger>
+                            <div className="w-4 flex justify-center items-center">
+                              <SvgIcon className="w-4 h-4" icon="info" />
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-80 text-pretty">
+                            <p>{i18n._('sys.device_tool.disable_pir_in_preview_note')}</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </div>
+                      <Select
+                        value={
+                          (triggerConfig.pir_trigger?.disable_in_preview ?? true)
+                            ? 'yes'
+                            : 'no'
+                        }
+                        onValueChange={value => setTriggerConfig({
+                          ...triggerConfig,
+                          pir_trigger: {
+                            ...triggerConfig.pir_trigger,
+                            disable_in_preview: value === 'yes',
+                          },
+                        })}
+                      >
+                        <SelectTrigger className="border-0 shadow-none focus-visible:ring-0 focus-visible:border-transparent">
+                          <SelectValue
+                            placeholder={i18n._('sys.device_tool.trigger_in')}
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="yes">
+                            {i18n._('common.yes')}
+                          </SelectItem>
+                          <SelectItem value="no">
+                            {i18n._('common.no')}
+                          </SelectItem>
                         </SelectContent>
                       </Select>
                     </div>

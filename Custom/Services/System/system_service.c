@@ -35,6 +35,7 @@
 #include "upload_coordinator.h"
 #include "wake_scheduler.h"
 #include "api_ota_module.h"
+#include "Services/Video/video_stream_hub.h"
  
  /* ==================== System Controller Implementation ==================== */
  
@@ -1592,6 +1593,13 @@ static void pir_value_change_callback(uint32_t pir_value)
     // Check if PIR trigger is enabled
     if (!controller->work_config.pir_trigger.enable) {
         LOG_SVC_DEBUG("PIR value changed but trigger is disabled, ignoring (value: %u)", pir_value);
+        return;
+    }
+
+    // Skip PIR runtime capture when preview is active (if configured)
+    if (controller->work_config.pir_trigger.disable_in_preview &&
+        video_hub_is_initialized() && video_hub_has_subscribers()) {
+        LOG_SVC_DEBUG("PIR trigger skipped: preview is active and disable_in_preview is enabled (value: %u)", pir_value);
         return;
     }
     

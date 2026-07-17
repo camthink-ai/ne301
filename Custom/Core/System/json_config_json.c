@@ -628,6 +628,7 @@ static void parse_work_mode(cJSON *json, work_mode_config_t *cfg)
         json_get_uint8(pir, "ignore_time_s", &cfg->pir_trigger.ignore_time_s);
         json_get_uint8(pir, "pulse_count", &cfg->pir_trigger.pulse_count);
         json_get_uint8(pir, "window_time_s", &cfg->pir_trigger.window_time_s);
+        json_get_bool(pir, "disable_in_preview", &cfg->pir_trigger.disable_in_preview);
     }
 
     cJSON *timer = cJSON_GetObjectItem(json, "timer_trigger");
@@ -1199,6 +1200,7 @@ static cJSON *serialize_work_mode(const work_mode_config_t *cfg)
     cJSON_AddNumberToObject(pir, "ignore_time_s", cfg->pir_trigger.ignore_time_s);
     cJSON_AddNumberToObject(pir, "pulse_count", cfg->pir_trigger.pulse_count);
     cJSON_AddNumberToObject(pir, "window_time_s", cfg->pir_trigger.window_time_s);
+    cJSON_AddBoolToObject(pir, "disable_in_preview", cfg->pir_trigger.disable_in_preview);
     cJSON_AddItemToObject(json, "pir_trigger", pir);
 
     cJSON *timer = cJSON_CreateObject();
