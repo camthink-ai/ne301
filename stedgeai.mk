@@ -47,6 +47,23 @@ ifndef MODEL_VERSION
   MODEL_VERSION := $(STEDGEAI_BIT).$(MODEL_VERSION_OVERRIDE)
 endif
 
+# -----------------------------------------------------------------------------
+# Align APP (and main VERSION major) with MODEL OTA prefix (STEDGEAI_BIT).
+# Example with STEDGEAI_VARIANT=4.0, MINOR=1 PATCH=0 BUILD=12:
+#   APP    -> 4.1.0.12
+#   MODEL  -> 4.0.0.0
+# Same leading digit ⇒ same STEdgeAI generation / mutual compatibility.
+# -----------------------------------------------------------------------------
+VERSION_MAJOR := $(STEDGEAI_BIT)
+VERSION := $(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_PATCH).$(VERSION_BUILD)
+ifneq ($(VERSION_SUFFIX),)
+  VERSION_WITH_SUFFIX := $(VERSION)_$(VERSION_SUFFIX)
+else
+  VERSION_WITH_SUFFIX := $(VERSION)
+endif
+# Empty APP_VERSION_OVERRIDE ⇒ follow aligned VERSION; non-empty keeps full override
+APP_VERSION := $(if $(APP_VERSION_OVERRIDE),$(APP_VERSION_OVERRIDE),$(VERSION))
+
 STEDGEAI_LIB_ROOT := ../$(STEDGEAI_LIB_DIR)
 
 STEDGEAI_C_SOURCES := \

@@ -21,7 +21,14 @@ Firmware and model packages **must use the same variant**. The vendored NPU runt
 | `4.0` (default) | NetworkRuntime1200 | v4.0.1 | `4.x.x.x` |
 | `3.0` | NetworkRuntime1100 | v3.0.0 | `3.x.x.x` |
 
-Model version is `$(STEDGEAI_BIT).$(MODEL_VERSION_OVERRIDE)` — see `version.mk` and `stedgeai.mk`.
+Model version is `$(STEDGEAI_BIT).$(MODEL_VERSION_OVERRIDE)`.  
+App / main `VERSION` major is also set to `$(STEDGEAI_BIT)` in `stedgeai.mk`, so App `4.x.x.x` and Model `4.x.x.x` share the same generation prefix.
+
+| `STEDGEAI_VARIANT` | App example | Model example |
+|--------------------|-------------|---------------|
+| `2.2` | `2.<minor>.<patch>.<build>` | `2.<MODEL_VERSION_OVERRIDE>` |
+| `3.0` | `3.<minor>.<patch>.<build>` | `3.<MODEL_VERSION_OVERRIDE>` |
+| `4.0` | `4.<minor>.<patch>.<build>` | `4.<MODEL_VERSION_OVERRIDE>` |
 
 ---
 
