@@ -1,3 +1,5 @@
+import browser from './utils/myBrowser.js';
+
 // Type definitions
 interface FrameData {
     data: ArrayBuffer;
@@ -45,25 +47,51 @@ class MsMediaSource {
 
     private isPlayback: boolean = false; // false: preview, true: playback
 
-    // Live preview latency tuning
-    private readonly LIVE_TARGET_LATENCY = 0.2;
-
-    private readonly LIVE_SYNC_COOLDOWN_MS = 150;
-
-    private lastLiveSyncMs = 0;
-
-    private lastPlaybackTime = 0;
-
-    private lastPlaybackCheckMs = 0;
-
-    private initSegmentAppended: boolean = false;
-
-    private boundOnVideoStall: (() => void) | null = null;
-
     // Buffer management optimization
-    private readonly MAX_FRAME_BUFFER_SIZE: number = 60;
+    private readonly MAX_FRAME_BUFFER_SIZE: number = 300; // Limit frame buffer size
 
     private readonly BUFFER_WINDOW_SIZE: number = 15; // Keep 15 seconds of buffer (Frigate strategy)
+
+    private readonly isSafari: boolean = browser.isBrowserSafari()
+        || /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+    // Removing buffered ranges too frequently can make WebKit re-anchor the
+    // playhead to an older keyframe. Keep a wider window on Safari.
+    private readonly safariBufferWindowSize: number = 45;
+
+    private readonly liveTargetLatency: number = this.isSafari ? 0.6 : 0.35;
+
+    private readonly liveSoftCatchUpLatency: number = this.isSafari ? 0.9 : 0.65;
+
+    private readonly liveHardCatchUpLatency: number = this.isSafari ? 1.5 : 2;
+
+    private readonly liveSyncCooldownMs: number = 2000;
+
+    private readonly stallRecoveryDelayMs: number = this.isSafari ? 3000 : 1200;
+
+    private readonly startupMinBufferedSeconds: number = this.isSafari ? 0.45 : 0.15;
+
+    private readonly startupMinFragments: number = this.isSafari ? 14 : 3;
+
+    private lastLiveSyncMs: number = 0;
+
+    private lastPlaybackTime: number = 0;
+
+    private lastPlaybackAdvanceMs: number = Date.now();
+
+    private lastPlayheadCorrectionMs: number = 0;
+
+    private hasStartedPlayback: boolean = false;
+
+    private playRequestPending: boolean = false;
+
+    private rebuildTimerId: number | null = null;
+
+    private readonly boundVideoErrorCallback = (event: Event) => this.videoErrorCallback(event);
+
+    private readonly boundVideoStallCallback = () => this.recoverLivePreview();
+
+    private readonly boundTimeUpdateCallback = () => this.handlePlaybackTimeUpdate();
 
     constructor(cb: CallbackFunction) {
         this.cb = cb;
@@ -79,73 +107,6 @@ class MsMediaSource {
 
     static get statusDestroy(): number { return 4; }
 
-    static get skipCount(): number { return 5; } // Frame skip catch-up count
-
-    private getLiveEdge(): number {
-        if (!this.sourceBuffer || this.sourceBuffer.buffered.length === 0) return 0;
-        const { buffered } = this.sourceBuffer;
-        return buffered.end(buffered.length - 1);
-    }
-
-    private syncLivePreview(liveEdge: number, bufferTime: number): void {
-        if (!this.videoElement || this.isPlayback) return;
-        if (!Number.isFinite(bufferTime) || bufferTime < 0 || liveEdge <= 0) return;
-
-        const now = Date.now();
-
-        // Hard catch-up when lag exceeds 1s (prevents multi-minute drift)
-        if (bufferTime > 1) {
-            if (now - this.lastLiveSyncMs >= this.LIVE_SYNC_COOLDOWN_MS) {
-                this.videoElement.currentTime = Math.max(0, liveEdge - this.LIVE_TARGET_LATENCY);
-                this.lastLiveSyncMs = now;
-                if (this.videoElement.paused) {
-                    this.videoElement.play().catch(() => {});
-                }
-            }
-            if (this.videoElement.playbackRate !== 1) {
-                this.videoElement.playbackRate = 1;
-            }
-            return;
-        }
-
-        if (bufferTime > 0.45) {
-            const rate = Math.min(1.15, 1 + (bufferTime - 0.45) * 0.15);
-            if (Math.abs(this.videoElement.playbackRate - rate) > 0.01) {
-                this.videoElement.playbackRate = rate;
-            }
-        } else if (this.videoElement.playbackRate !== 1) {
-            this.videoElement.playbackRate = 1;
-        }
-    }
-
-    /** Recover when video stalls but stream data is still arriving */
-    recoverIfNeeded(): void {
-        if (!this.videoElement || !this.sourceBuffer || this.isPlayback) return;
-
-        const liveEdge = this.getLiveEdge();
-        if (liveEdge <= 0) return;
-
-        const bufferTime = liveEdge - this.videoElement.currentTime;
-        const now = Date.now();
-        const timeSinceAdvance = now - this.lastPlaybackCheckMs;
-        const playbackStuck = timeSinceAdvance > 2000
-            && Math.abs(this.videoElement.currentTime - this.lastPlaybackTime) < 0.05;
-
-        if (bufferTime > 1 || playbackStuck || this.videoElement.paused) {
-            this.videoElement.currentTime = Math.max(0, liveEdge - this.LIVE_TARGET_LATENCY);
-            this.lastLiveSyncMs = now;
-            this.videoElement.play().catch(() => {});
-        }
-    }
-
-    private trackPlaybackAdvance(): void {
-        const t = this.videoElement?.currentTime ?? 0;
-        if (t !== this.lastPlaybackTime) {
-            this.lastPlaybackTime = t;
-            this.lastPlaybackCheckMs = Date.now();
-        }
-    }
-
     initMse(codec: string): boolean {
         // Unified selection of available MediaSource constructor (prefer ManagedMediaSource)
         const MediaSourceCtor = (window.ManagedMediaSource ?? window.MediaSource) as MediaSourceConstructor | undefined;
@@ -154,16 +115,15 @@ class MsMediaSource {
             return false;
         }
 
-        // if (!window.MediaSource.isTypeSupported(codec)) {
-        //     console.log(codec);
-        //     console.error("Unsupported MIME type or codec: ", codec);
-        //     return false;
-        // }
+        if (MediaSourceCtor.isTypeSupported && !MediaSourceCtor.isTypeSupported(codec)) {
+            console.error("Unsupported MIME type or codec: ", codec);
+            return false;
+        }
         this.mimeCodec = codec;
 
         try {
-            // create video
-            this.videoElement?.addEventListener("error", this.videoErrorCallback.bind(this));
+            this.videoElement?.removeEventListener("error", this.boundVideoErrorCallback);
+            this.videoElement?.addEventListener("error", this.boundVideoErrorCallback);
 
             // create mse
             this.mediaSource = new MediaSourceCtor();
@@ -175,9 +135,9 @@ class MsMediaSource {
 
             // mse event
             this.mediaSource.addEventListener("sourceopen", () => {
+                console.log("ms mse open.");
                 this.uninitSourceBuffer();
                 this.initSourceBuffer();
-                this.updateSourceBuffer();
             });
 
             this.mediaSource.addEventListener("sourceclose", () => {
@@ -237,22 +197,24 @@ class MsMediaSource {
                 return;
             }
 
-            // Mark as destroyed and notify external
+            // Preserve the <video> node before uninitMse() nulls this.videoElement
+            const video = this.videoElement;
+            const codec = this.mimeCodec;
+
             this.initFlag = MsMediaSource.statusDestroy;
             this.cb({ t: 'mseError' });
 
-            // Try to reinitialize MSE (preserve existing mimeCodec and videoElement)
-            const codec = this.mimeCodec;
-            // First completely clean up to avoid residual state
             this.uninitMse();
             this.initFlag = MsMediaSource.statusIdel;
-            if (codec && this.videoElement) {
-                // Slight delay to avoid immediate rebuild in the same event loop as error trigger
-                setTimeout(() => {
-                    // Double check videoElement still exists before reinitializing
-                    if (this.videoElement && this.initMse(codec)) {
+
+            if (codec && video) {
+                this.rebuildTimerId = window.setTimeout(() => {
+                    this.rebuildTimerId = null;
+                    // Re-bind the same video element; without this, MSE rebuilds orphaned
+                    // and the UI stays black while WS/FPS keep updating.
+                    this.setVideoElement(video);
+                    if (this.initMse(codec)) {
                         this.initFlag = MsMediaSource.statusNormal;
-                        // If there are buffered frames, continue driving playback
                         this.updateSourceBuffer();
                     } else {
                         this.initFlag = MsMediaSource.statusError;
@@ -282,41 +244,54 @@ class MsMediaSource {
 
         this.sourceBuffer = this.mediaSource.addSourceBuffer(this.mimeCodec);
         this.currentSegmentIndex = 0;
-        const curMode = this.sourceBuffer.mode;
-        if (curMode === 'segments') {
-            this.sourceBuffer.mode = 'sequence';
-        }
         
         this.sourceBuffer.addEventListener("updateend", () => {
             try {
                 if (this.sourceBuffer !== null && this.mediaSource?.readyState === 'open' && this.videoElement) {
                     const { buffered } = this.sourceBuffer;
+                    // Guard: no ranges available
                     if (buffered.length === 0) {
                         this.updateend = 1;
                         this.updateSourceBuffer();
                         return;
                     }
-
-                    const liveEdge = buffered.end(buffered.length - 1);
-                    const { currentTime } = this.videoElement;
+                    // Clamp currentSegmentIndex
+                    if (this.currentSegmentIndex >= buffered.length) {
+                        this.currentSegmentIndex = buffered.length - 1;
+                    }
+                    this.handleTimeUpdate();
+                    this.guardMonotonicPlayhead();
                     this.trackPlaybackAdvance();
-
-                    if (!this.isPlayback) {
-                        this.syncLivePreview(liveEdge, liveEdge - currentTime);
+                    this.ensurePlayheadInBufferedRange();
+                    this.syncLivePreview();
+                    if (this.isPlayback) {
+                        this.startPlaybackIfReady();
                     }
 
-                    // Preview: do not remove buffered ranges (removal can create gaps and freeze playback)
-                    if (this.isPlayback && !this.sourceBuffer.updating) {
+                    // Keep more history on Safari because WebKit may visibly
+                    // re-anchor playback when old ranges are removed.
+                    if (!this.sourceBuffer.updating && buffered.length > 0) {
                         const bufferEnd = buffered.end(buffered.length - 1);
                         const bufferStart = buffered.start(0);
-                        const removeEnd = bufferEnd - this.BUFFER_WINDOW_SIZE;
+                        const bufferWindowSize = this.isSafari
+                            ? this.safariBufferWindowSize
+                            : this.BUFFER_WINDOW_SIZE;
+                        const removeEnd = bufferEnd - bufferWindowSize;
+                        const keepBehind = this.isSafari ? 10 : 2;
+                        const { currentTime } = this.videoElement;
 
-                        if (removeEnd > bufferStart && currentTime > bufferStart) {
-                            const safeRemoveEnd = Math.min(removeEnd, currentTime - 1);
+                        // Remove only data safely behind the current playhead.
+                        if (removeEnd > bufferStart && currentTime > bufferStart + keepBehind) {
+                            const safeRemoveEnd = Math.min(removeEnd, currentTime - keepBehind);
                             if (safeRemoveEnd > bufferStart) {
                                 this.sourceBuffer.remove(bufferStart, safeRemoveEnd);
 
-                                if (this.mediaSource && 'setLiveSeekableRange' in this.mediaSource) {
+                                // WebKit can move currentTime when the explicit
+                                // seekable range start changes, so let Safari
+                                // derive it from SourceBuffer.buffered.
+                                if (!this.isSafari
+                                    && this.mediaSource
+                                    && 'setLiveSeekableRange' in this.mediaSource) {
                                     try {
                                         (this.mediaSource as any).setLiveSeekableRange(safeRemoveEnd, bufferEnd);
                                     } catch {
@@ -328,20 +303,190 @@ class MsMediaSource {
                     }
                 }
             } catch (error) {
-                console.error(error);
+                console.log(error);
             }
             this.updateend = 1;
-            this.updateSourceBuffer();
+            if (!this.sourceBuffer?.updating) {
+                this.updateSourceBuffer();
+            }
         });
 
         return 0;
     }
 
+    private getLiveEdge(): number {
+        if (!this.sourceBuffer || this.sourceBuffer.buffered.length === 0) return 0;
+        return this.sourceBuffer.buffered.end(this.sourceBuffer.buffered.length - 1);
+    }
+
+    private trackPlaybackAdvance(): void {
+        const currentTime = this.videoElement?.currentTime ?? 0;
+        if (currentTime > this.lastPlaybackTime + 0.01) {
+            this.lastPlaybackTime = currentTime;
+            this.lastPlaybackAdvanceMs = Date.now();
+        }
+    }
+
+    private isTimeBuffered(time: number, tolerance = 0.05): boolean {
+        if (!this.sourceBuffer) return false;
+        const { buffered } = this.sourceBuffer;
+        for (let i = 0; i < buffered.length; i += 1) {
+            if (time >= buffered.start(i) - tolerance && time <= buffered.end(i) + tolerance) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Safari may move currentTime backwards after SourceBuffer eviction or a
+     * keyframe re-anchor. Live preview is monotonic, so restore the previous
+     * high-water mark when it is still buffered.
+     */
+    private guardMonotonicPlayhead(): void {
+        if (!this.isSafari || this.isPlayback || !this.videoElement) return;
+
+        const now = Date.now();
+        const { currentTime } = this.videoElement;
+        const movedBackwards = this.lastPlaybackTime > 0
+            && currentTime < this.lastPlaybackTime - 0.12;
+
+        if (!movedBackwards
+            || !this.isTimeBuffered(this.lastPlaybackTime)
+            || now - this.lastPlayheadCorrectionMs < 250) {
+            return;
+        }
+
+        this.videoElement.currentTime = this.lastPlaybackTime;
+        this.lastPlayheadCorrectionMs = now;
+        this.lastPlaybackAdvanceMs = now;
+    }
+
+    private handlePlaybackTimeUpdate(): void {
+        this.guardMonotonicPlayhead();
+        this.trackPlaybackAdvance();
+    }
+
+    private getBufferedDuration(): number {
+        if (!this.sourceBuffer) return 0;
+        const { buffered } = this.sourceBuffer;
+        let duration = 0;
+        for (let i = 0; i < buffered.length; i += 1) {
+            duration += buffered.end(i) - buffered.start(i);
+        }
+        return duration;
+    }
+
+    private startPlaybackIfReady(): void {
+        if (!this.videoElement || !this.sourceBuffer || this.playRequestPending) return;
+
+        const { buffered } = this.sourceBuffer;
+        if (buffered.length === 0) return;
+
+        if (!this.isPlayback
+            && !this.hasStartedPlayback
+            && this.getBufferedDuration() < this.startupMinBufferedSeconds) {
+            return;
+        }
+
+        if (!this.videoElement.paused) {
+            this.hasStartedPlayback = true;
+            return;
+        }
+
+        this.videoElement.style.display = "";
+        this.playRequestPending = true;
+        this.videoElement.play()
+            .then(() => {
+                if (!this.hasStartedPlayback) {
+                    this.hasStartedPlayback = true;
+                    this.cb({ t: 'startPlay' });
+                }
+            })
+            .catch(() => {
+                // Autoplay can be rejected until the page receives user interaction.
+            })
+            .finally(() => {
+                this.playRequestPending = false;
+            });
+    }
+
+    private syncLivePreview(forceRecovery = false): void {
+        if (!this.videoElement || !this.sourceBuffer || this.isPlayback) return;
+
+        const liveEdge = this.getLiveEdge();
+        if (liveEdge <= 0) return;
+
+        const lag = liveEdge - this.videoElement.currentTime;
+        const now = Date.now();
+        const stalled = now - this.lastPlaybackAdvanceMs > this.stallRecoveryDelayMs;
+        // A regular Safari seek can decode from the preceding keyframe and look
+        // like a rewind. Seek on Safari only as an actual stall recovery.
+        const shouldHardSync = this.isSafari
+            ? forceRecovery && stalled && lag > this.liveHardCatchUpLatency
+            : lag > this.liveHardCatchUpLatency
+                || (forceRecovery && stalled && lag > this.liveTargetLatency);
+
+        if (shouldHardSync && now - this.lastLiveSyncMs >= this.liveSyncCooldownMs) {
+            const target = Math.max(
+                this.videoElement.currentTime,
+                liveEdge - this.liveTargetLatency,
+            );
+            if (target > this.videoElement.currentTime + 0.05) {
+                this.videoElement.currentTime = target;
+                this.lastLiveSyncMs = now;
+            }
+        }
+
+        if (this.isSafari) {
+            if (this.videoElement.playbackRate !== 1) {
+                this.videoElement.playbackRate = 1;
+            }
+        } else if (lag > this.liveSoftCatchUpLatency && lag <= this.liveHardCatchUpLatency) {
+            this.videoElement.playbackRate = 1.05;
+        } else if (lag <= this.liveTargetLatency && this.videoElement.playbackRate !== 1) {
+            this.videoElement.playbackRate = 1;
+        }
+
+        this.startPlaybackIfReady();
+    }
+
+    private recoverLivePreview(): void {
+        this.syncLivePreview(true);
+    }
+
+    /**
+     * Move forward into the next buffered range when the playhead is in a real
+     * gap. Being close to the live edge is valid and must never trigger a rewind.
+     */
+    private ensurePlayheadInBufferedRange(): void {
+        if (!this.videoElement || !this.sourceBuffer) return;
+        const { buffered } = this.sourceBuffer;
+        if (buffered.length === 0) return;
+
+        const t = this.videoElement.currentTime;
+        const epsilon = 0.05;
+        for (let i = 0; i < buffered.length; i += 1) {
+            const start = buffered.start(i);
+            const end = buffered.end(i);
+            if (t >= start - epsilon && t <= end + epsilon) {
+                return;
+            }
+            if (t < start - epsilon) {
+                this.videoElement.currentTime = start + 0.01;
+                return;
+            }
+        }
+    }
+
     handleTimeUpdate(): void {
+        // Live preview uses a continuous MSE timeline — segment jumping here
+        // creates gaps and black frames on Safari. Only relevant for VOD-style ranges.
+        if (!this.isPlayback) return;
         if (!this.sourceBuffer || !this.videoElement) return;
         
         const { buffered } = this.sourceBuffer;
-        if (buffered.length === 0 || this.currentSegmentIndex === buffered.length - 1 || this.isPlayback) {
+        if (buffered.length === 0 || this.currentSegmentIndex === buffered.length - 1) {
             return;
         }
         if (buffered.length && this.currentSegmentIndex >= buffered.length) {
@@ -352,7 +497,6 @@ class MsMediaSource {
         const currentEnd = buffered.end(this.currentSegmentIndex);
         const nextStart = buffered.start(nextSegmentIndex);
 
-        // Playback mode only: advance across buffered segments
         this.currentSegmentIndex += 1;
         this.videoElement.currentTime = nextStart;
         this.sourceBuffer.remove(0, currentEnd);
@@ -375,24 +519,42 @@ class MsMediaSource {
             return;
         }
 
-        const len = this.frameBuffer.length;
-        if (len === 0) {
+        const queuedLength = this.frameBuffer.length;
+        if (queuedLength === 0) {
             return;
         }
 
-        // Live preview: one fMP4 fragment per append to keep MSE timeline in sync
-        const batchSize = this.isPlayback ? len : 1;
+        // WebKit is prone to entering `waiting` when playback starts after only
+        // one or two fMP4 fragments. Aggregate a short first batch so the first
+        // play() call already has a decodable safety margin.
+        if (!this.isPlayback
+            && !this.hasStartedPlayback
+            && this.sourceBuffer.buffered.length === 0
+            && queuedLength < this.startupMinFragments) {
+            return;
+        }
+
+        // Keep appends small and predictable. Large burst appends are expensive
+        // on Safari and make latency corrections much more visible.
+        let batchSize: number;
+        if (this.isPlayback) {
+            batchSize = queuedLength;
+        } else if (!this.hasStartedPlayback) {
+            batchSize = Math.min(queuedLength, this.startupMinFragments + 4);
+        } else {
+            batchSize = Math.min(queuedLength, queuedLength > 12 ? 6 : 3);
+        }
         const batch = this.frameBuffer.splice(0, batchSize);
 
         let totalSize = 0;
-        for (let i = 0; i < batch.length; i += 1) {
+        for (let i = 0; i < batch.length; i++) {
             totalSize += batch[i].data.byteLength;
         }
 
         const segmentBuffer = new Uint8Array(totalSize);
         let offset = 0;
 
-        for (let i = 0; i < batch.length; i += 1) {
+        for (let i = 0; i < batch.length; i++) {
             const frameData = new Uint8Array(batch[i].data);
             segmentBuffer.set(frameData, offset);
             offset += frameData.byteLength;
@@ -401,22 +563,30 @@ class MsMediaSource {
         try {
             this.sourceBuffer.appendBuffer(segmentBuffer);
             this.updateend = 0;
-            if (!this.isPlayback) {
-                this.initSegmentAppended = true;
-            }
-            if (this.videoElement?.paused) {
-                this.videoElement.style.display = "";
-                this.videoElement.play();
-                this.cb({
-                    t: 'startPlay',
-                });
-            }
         } catch (e) {
             console.error(`appending error: [update=${this.sourceBuffer.updating}, updateend=${this.updateend}, length=${batch.length}, buffered.length=${this.sourceBuffer.buffered.length}]==>${e}`);
-            this.initFlag = MsMediaSource.statusDestroy;
+            const video = this.videoElement;
+            const savedCodec = this.mimeCodec;
             this.cb({
                 t: 'mseError',
             });
+            // Rebuild MSE attached to the same <video>; otherwise append failures leave a black screen
+            if (video && savedCodec) {
+                this.uninitMse();
+                this.initFlag = MsMediaSource.statusIdel;
+                this.setVideoElement(video);
+                this.rebuildTimerId = window.setTimeout(() => {
+                    this.rebuildTimerId = null;
+                    if (this.videoElement && this.initMse(savedCodec)) {
+                        this.initFlag = MsMediaSource.statusNormal;
+                        this.updateSourceBuffer();
+                    } else {
+                        this.initFlag = MsMediaSource.statusError;
+                    }
+                }, 300);
+            } else {
+                this.initFlag = MsMediaSource.statusDestroy;
+            }
         }
     }
 
@@ -433,25 +603,14 @@ class MsMediaSource {
             }
         }
 
-        if (!this.isPlayback) {
-            this.frameBuffer.push(objData);
-            // Only drop stale moofs after init segment is in MSE
-            if (
-                this.initSegmentAppended
-                && this.sourceBuffer !== null
-                && this.updateend === 1
-                && this.frameBuffer.length > 12
-            ) {
-                this.frameBuffer.splice(0, this.frameBuffer.length - 6);
-            }
-        } else if (this.frameBuffer.length >= this.MAX_FRAME_BUFFER_SIZE) {
+        // Buffer size limit: prevent memory overflow
+        if (this.frameBuffer.length >= this.MAX_FRAME_BUFFER_SIZE) {
+            // Drop oldest frames if buffer is full (backpressure)
             console.warn(`Frame buffer full (${this.frameBuffer.length}), dropping oldest frames`);
-            this.frameBuffer.splice(0, Math.floor(this.MAX_FRAME_BUFFER_SIZE * 0.3));
-            this.frameBuffer.push(objData);
-        } else {
-            this.frameBuffer.push(objData);
+            this.frameBuffer.splice(0, Math.floor(this.MAX_FRAME_BUFFER_SIZE * 0.3)); // Drop 30%
         }
 
+        this.frameBuffer.push(objData);
         if (snapshotFlag === 0) {
             this.updateSourceBuffer();
         }
@@ -481,14 +640,19 @@ class MsMediaSource {
     }
 
     setVideoElement(video: HTMLVideoElement): void {
-        if (this.videoElement && this.boundOnVideoStall) {
-            this.videoElement.removeEventListener('waiting', this.boundOnVideoStall);
-            this.videoElement.removeEventListener('stalled', this.boundOnVideoStall);
+        if (this.videoElement && this.videoElement !== video) {
+            this.videoElement.removeEventListener('waiting', this.boundVideoStallCallback);
+            this.videoElement.removeEventListener('stalled', this.boundVideoStallCallback);
+            this.videoElement.removeEventListener('timeupdate', this.boundTimeUpdateCallback);
+            this.videoElement.removeEventListener('error', this.boundVideoErrorCallback);
         }
         this.videoElement = video;
-        this.boundOnVideoStall = () => this.recoverIfNeeded();
-        video.addEventListener('waiting', this.boundOnVideoStall);
-        video.addEventListener('stalled', this.boundOnVideoStall);
+        video.removeEventListener('waiting', this.boundVideoStallCallback);
+        video.removeEventListener('stalled', this.boundVideoStallCallback);
+        video.removeEventListener('timeupdate', this.boundTimeUpdateCallback);
+        video.addEventListener('waiting', this.boundVideoStallCallback);
+        video.addEventListener('stalled', this.boundVideoStallCallback);
+        video.addEventListener('timeupdate', this.boundTimeUpdateCallback);
     }
 
     setPlayMode(playback: boolean): void {
@@ -496,10 +660,15 @@ class MsMediaSource {
     }
 
     clearBuffer(): void {
+        // Clear frame buffer to stop processing new frames
         this.frameBuffer = [];
         this.lastLiveSyncMs = 0;
         this.lastPlaybackTime = 0;
-        this.lastPlaybackCheckMs = 0;
+        this.lastPlaybackAdvanceMs = Date.now();
+        this.lastPlayheadCorrectionMs = 0;
+        this.hasStartedPlayback = false;
+        this.playRequestPending = false;
+        // Clear source buffer if it exists and is not updating
         if (this.sourceBuffer && !this.sourceBuffer.updating && this.mediaSource && this.mediaSource.readyState === 'open') {
             try {
                 const { buffered } = this.sourceBuffer;
@@ -514,24 +683,16 @@ class MsMediaSource {
         this.currentSegmentIndex = 0;
     }
 
-    resetLivePreview(video: HTMLVideoElement): void {
-        this.initSegmentAppended = false;
-        this.clearBuffer();
-        if (this.mediaSource || this.initFlag !== MsMediaSource.statusIdel) {
-            this.uninitMse();
-        }
-        this.setVideoElement(video);
-        this.initFlag = MsMediaSource.statusIdel;
-    }
-
     uninitMse(): void {
+        if (this.rebuildTimerId !== null) {
+            window.clearTimeout(this.rebuildTimerId);
+            this.rebuildTimerId = null;
+        }
         if (this.videoElement !== null) {
-            if (this.boundOnVideoStall) {
-                this.videoElement.removeEventListener('waiting', this.boundOnVideoStall);
-                this.videoElement.removeEventListener('stalled', this.boundOnVideoStall);
-                this.boundOnVideoStall = null;
-            }
-            this.videoElement.removeEventListener("error", this.videoErrorCallback);
+            this.videoElement.removeEventListener("error", this.boundVideoErrorCallback);
+            this.videoElement.removeEventListener('waiting', this.boundVideoStallCallback);
+            this.videoElement.removeEventListener('stalled', this.boundVideoStallCallback);
+            this.videoElement.removeEventListener('timeupdate', this.boundTimeUpdateCallback);
             window.URL.revokeObjectURL(this.videoElement.src);
             this.videoElement.src = "";
         }
@@ -544,6 +705,12 @@ class MsMediaSource {
         this.updateend = 1;
         this.mimeCodec = "";
         this.initFlag = MsMediaSource.statusIdel;
+        this.lastLiveSyncMs = 0;
+        this.lastPlaybackTime = 0;
+        this.lastPlaybackAdvanceMs = Date.now();
+        this.lastPlayheadCorrectionMs = 0;
+        this.hasStartedPlayback = false;
+        this.playRequestPending = false;
     }
 }
 

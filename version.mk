@@ -21,6 +21,9 @@
 # =============================================================================
 
 # Main version number definition (manually update for releases)
+# NOTE: VERSION_MAJOR is overridden in stedgeai.mk to $(STEDGEAI_BIT) so that
+# APP and MODEL share the same major prefix (2/3/4 = STEdgeAI generation).
+# Keep MINOR/PATCH/BUILD here as the release line within that generation.
 VERSION_MAJOR  := 2
 VERSION_MINOR  := 3
 VERSION_PATCH  := 0
@@ -72,9 +75,10 @@ endif
 # Set component-specific versions (leave empty to use main version)
 # Format: MAJOR.MINOR.PATCH.BUILD or empty
 FSBL_VERSION_OVERRIDE    := 1.0.3.0
-APP_VERSION_OVERRIDE     := $(VERSION)
-WEB_VERSION_OVERRIDE     := 1.5.0.0
+APP_VERSION_OVERRIDE     := 
+WEB_VERSION_OVERRIDE     := 1.5.0.1
 # Model OTA: $(STEDGEAI_BIT).$(MODEL_VERSION_OVERRIDE) — BIT auto in stedgeai.mk (2.2->2, 3.0->3, 4.0->4)
+# APP major is also set to STEDGEAI_BIT in stedgeai.mk (aligned with MODEL prefix)
 MODEL_VERSION_OVERRIDE   := 0.0.0
 WAKECORE_VERSION_OVERRIDE := 0.2.7.5
 

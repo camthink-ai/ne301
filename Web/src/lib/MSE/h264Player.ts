@@ -167,6 +167,10 @@ export default class H264Player {
 
     public bandwidth: number = 0; // kBps
 
+    private progressHandler: (() => void) | null = null;
+
+    private statsIntervalId: number | null = null;
+
     // H264 raw stream capture
     private captureActive: boolean = false;
 
@@ -252,14 +256,15 @@ export default class H264Player {
                         this.lastPacketSec = nowSec;
                         this.packetCount = 0;
                     }
+                    this.packetCount++;
 
                     if (msg.payload instanceof ArrayBuffer) {
+                        // Track total bytes for bandwidth calculation
                         this.totalBytesLoaded += msg.payload.byteLength;
 
                         const frameData = this.dealVideoData(msg.payload);
                         if (frameData) {
-                            this.packetCount++;
-                            this.decoderWorker?.postMessage(frameData);
+                            this.decoderWorker?.postMessage(frameData, [frameData.data.buffer]);
                         }
                     }
                     break;
@@ -315,6 +320,7 @@ export default class H264Player {
         this.videoPlayer = new MsMediaSource((msg: CallbackEvent) => {
             this.mediaSrcCallback(msg);
         });
+        this.videoPlayer.setPlayMode(this.isPlayback);
         this.videoPlayer.setVideoElement(this.videoElement);
         this.setupProgressHandler();
         return this;
@@ -353,6 +359,7 @@ export default class H264Player {
     }
 
     destroy(): void {
+        this.teardownProgressHandler();
         this.stopPlay();
         if (this.webSocketWorker) {
             this.wsDisconnect();
@@ -405,64 +412,43 @@ export default class H264Player {
     }
     
     /**
-     * Restart video stream after model upload / device pipeline reset
-     */
-    async hardRestart(): Promise<void> {
-        if (!this.wsUrl || !this.videoElement) return;
-
-        this.firstFrame = 0;
-        this.frameIndex = 0;
-        this.lastVideoTime = 0;
-        this.lastSec = 0;
-        this.videoFrameCnt = 0;
-        this.packetCount = 0;
-        this.packetsPerSecond = 0;
-        this.lastPacketSec = 0;
-        this.wsRetryCount = 3;
-
-        if (this.webSocketWorker) {
-            this.wsDisconnect();
-            await sleep(300);
-            try {
-                this.webSocketWorker.terminate();
-            } catch {
-                // ignore
-            }
-            this.webSocketWorker = null;
-        }
-
-        if (this.decoderWorker) {
-            try {
-                this.decoderWorker.postMessage({ cmd: 'stop' });
-            } catch {
-                // ignore
-            }
-            await sleep(100);
-            try {
-                this.decoderWorker.terminate();
-            } catch {
-                // ignore
-            }
-            this.decoderWorker = null;
-        }
-
-        const video = this.videoElement;
-        if (this.videoPlayer) {
-            this.videoPlayer.resetLivePreview(video);
-        }
-
-        this.isConnected = false;
-        this.isStarted = false;
-        await this.start(this.wsUrl);
-    }
-
-    /**
      * Restart video stream
      * - init websocket connection
      * - close mse buffer and feed stream to mse
      */
     async reStart(): Promise<void> {
-        await this.hardRestart();
+        if (!this.wsUrl || !this.videoElement) return;
+
+        // Disconnect if already connected
+        if (this.isConnected && this.webSocketWorker) {
+            this.wsDisconnect();
+            await sleep(500);
+        }
+
+        // Initialize workers (idempotent - will create missing ones and setup handlers)
+        this.initWorkers();
+
+        // Ensure videoPlayer exists and is initialized
+        if (!this.videoPlayer) {
+            this.creatVideoPlayer();
+        }
+
+        if (this.videoPlayer && this.videoElement) {
+            this.videoPlayer.setVideoElement(this.videoElement);
+        }
+
+        // Clear MSE buffer before restarting
+        this.videoPlayer?.clearBuffer();
+
+        // Reconnect websocket - this will start feeding data to the stream
+        this.wsConnect(this.wsUrl);
+
+        // Reinitialize decoder worker to prepare for new stream
+        this.decoderWorker?.postMessage({ type: 'init' });
+
+        // Reset state
+        this.isStarted = true;
+        this.isConnected = true;
     }
 
     videoMsgCallback(event: MessageEvent): void {
@@ -477,6 +463,7 @@ export default class H264Player {
         this.videoPlayer = new MsMediaSource((msg: CallbackEvent) => {
             this.mediaSrcCallback(msg);
         });
+        this.videoPlayer.setPlayMode(this.isPlayback);
     }
 
     initDecodeWorker(): void {
@@ -492,46 +479,37 @@ export default class H264Player {
             return false;
         }
 
-        // Timestamp at bytes 12-15 in WS frame header (big-endian seconds)
-        let timestamp = 0;
-        try {
-            timestamp = new DataView(frameData).getUint32(12, false);
-            this.currentTime = timestamp;
-        } catch (e) {
-            console.error('Error getting timestamp from offset 8:', e);
-        }
-
-        if (timestamp === 0) {
-            timestamp = Math.floor(Date.now() / 1000);
-            this.currentTime = timestamp;
-        }
+        const headerView = new DataView(frameData, 0, headSize);
+        const timestampHigh = headerView.getUint32(8, false);
+        const timestampLow = headerView.getUint32(12, false);
+        const timestamp = timestampHigh * 0x100000000 + timestampLow;
+        this.currentTime = timestamp || Math.floor(Date.now() / 1000);
 
         const h264Data = new Uint8Array(frameData, headSize);
         if (!H264Player.checkFrameData(h264Data)) {
             return false;
         }
 
-        let duration = 0;
-        const timeUsec = Date.now() * 1000;
-        const nowSec = (timeUsec / 1000) | 0;
+        const nowMs = Date.now();
+        const nowSec = Math.floor(nowMs / 1000);
         if (this.lastSec !== nowSec) {
             this.lastSec = nowSec;
             this.videoFrameCnt = 0;
         }
         this.videoFrameCnt++;
 
+        let duration: number;
         if (this.firstFrame === 0) {
             this.firstFrame = 1;
             duration = previewFrameMs;
         } else if (!this.isPlayback) {
-            // Fixed frame interval keeps MSE timeline stable under network jitter
+            // A stable media timeline is more important than network-arrival jitter.
             duration = previewFrameMs;
         } else if (this.direction === 0) {
             if (this.playSpeed >= 4 || this.playSpeed <= 0.125) {
                 duration = specialDuration * 1000;
             } else {
-                duration = Math.round((timeUsec - this.lastVideoTime) / 1000);
-                duration = Math.round(duration / this.playSpeed);
+                duration = Math.round((nowMs - this.lastVideoTime) / this.playSpeed);
                 if (duration <= 0 || duration > maxFrameMs) {
                     duration = maxFrameMs;
                 }
@@ -541,7 +519,7 @@ export default class H264Player {
         }
 
         this.frameIndex++;
-        this.lastVideoTime = timeUsec;
+        this.lastVideoTime = nowMs;
 
         if (this.captureActive) {
             this.appendH264Capture(frameData);
@@ -635,16 +613,13 @@ export default class H264Player {
         const len = h264Data.byteLength;
         if (len < 4) return false;
 
-        // Annex-B: 00 00 01 or 00 00 00 01
-        if (h264Data[0] === 0 && h264Data[1] === 0) {
-            if (h264Data[2] === 1) return true;
-            if (len >= 4 && h264Data[2] === 0 && h264Data[3] === 1) return true;
-        }
-
-        // Fallback: non-empty payload
-        const scanLen = Math.min(len, 64);
-        for (let i = 0; i < scanLen; i += 1) {
-            if (h264Data[i] !== 0) return true;
+        // Accept Annex-B payloads with either a 3-byte or 4-byte start code.
+        const scanLength = Math.min(len - 3, 64);
+        for (let i = 0; i < scanLength; i += 1) {
+            if (h264Data[i] === 0 && h264Data[i + 1] === 0) {
+                if (h264Data[i + 2] === 1) return true;
+                if (h264Data[i + 2] === 0 && h264Data[i + 3] === 1) return true;
+            }
         }
         return false;
     }
@@ -748,6 +723,7 @@ export default class H264Player {
 
     setPlayMode(opt: boolean): void {
         this.isPlayback = opt;
+        this.videoPlayer?.setPlayMode(opt);
     }
 
     /**
@@ -848,18 +824,25 @@ export default class H264Player {
     private setupProgressHandler(): void {
         if (!this.videoElement) return;
 
-        this.videoElement.addEventListener('progress', () => {
-            this.onProgress();
-        });
+        this.teardownProgressHandler();
+        this.progressHandler = () => this.onProgress();
+        this.videoElement.addEventListener('progress', this.progressHandler);
 
-        // Also update stats and recover from playback stall
-        setInterval(() => {
+        this.statsIntervalId = window.setInterval(() => {
             this.calculateBandwidth();
             this.latency = this.calculateLatency();
-            if (!this.isPlayback) {
-                this.videoPlayer?.recoverIfNeeded();
-            }
         }, 1000);
+    }
+
+    private teardownProgressHandler(): void {
+        if (this.videoElement && this.progressHandler) {
+            this.videoElement.removeEventListener('progress', this.progressHandler);
+        }
+        this.progressHandler = null;
+        if (this.statsIntervalId !== null) {
+            window.clearInterval(this.statsIntervalId);
+            this.statsIntervalId = null;
+        }
     }
 
     /**
@@ -868,7 +851,7 @@ export default class H264Player {
     private onProgress(): void {
         if (!this.videoElement) return;
 
-        // Live preview: media.ts handles latency via buffer jump; avoid competing playbackRate changes
+        // Live preview latency is controlled exclusively by MsMediaSource.
         if (!this.isPlayback) {
             this.latency = this.calculateLatency();
             return;
@@ -936,4 +919,4 @@ export default class H264Player {
     // setPlayPaused(opt: number): void {
     //     this.isPause = opt;
     // }
-} 
+}
