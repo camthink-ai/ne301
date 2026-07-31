@@ -214,6 +214,19 @@ export default function CaptureConfig() {
                 </SelectContent>
               </Select>
             </div>
+
+            {/* flash record-cap warning — amber alert box below storage selector */}
+            {(storage === 'flash' || storage === 'auto') && cfg?.flash_max_records > 0 && (
+              <div className="rounded bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+                {storage === 'auto'
+                  ? (cfg.policy === 'wrap'
+                    ? i18n._('sys.capture_settings.flash_limit_auto_wrap').replace('{max}', String(cfg.flash_max_records))
+                    : i18n._('sys.capture_settings.flash_limit_auto_stop').replace('{max}', String(cfg.flash_max_records)))
+                  : (cfg.policy === 'wrap'
+                    ? i18n._('sys.capture_settings.flash_limit_flash_wrap').replace('{max}', String(cfg.flash_max_records))
+                    : i18n._('sys.capture_settings.flash_limit_flash_stop').replace('{max}', String(cfg.flash_max_records)))}
+              </div>
+            )}
             <Separator />
 
             {/* policy + capture_storage_ai (only when storage != none) */}

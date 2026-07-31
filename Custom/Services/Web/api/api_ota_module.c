@@ -21,7 +21,6 @@
 #include "buffer_mgr.h"
 #include "drtc.h"
 #include "storage.h"
-#include "version.h"
 #include "nn.h"
 #include "cmsis_os2.h"
 #include "mqtt_service.h"

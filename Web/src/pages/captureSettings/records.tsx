@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLingui } from '@lingui/react';
 import { Separator } from '@/components/ui/separator';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 import captureSettings, {
   type RecordInfo, type RecordState, type QueueStatus,
@@ -279,16 +278,16 @@ to: appliedTo,
       {/* Time filter bar */}
       <div className="flex flex-wrap gap-2 items-center text-xs">
         <label className="text-gray-500">{i18n._('sys.capture_settings.filter_from')}:</label>
-        <Input
+        <input
           type="datetime-local"
-          className="w-48 h-7 text-xs"
+          className="inline-block w-48 h-7 text-xs rounded border border-gray-300 bg-gray-100 px-2 py-0.5"
           value={filterFrom}
           onChange={(e: any) => setFilterFrom(e.target.value)}
         />
         <label className="text-gray-500 ml-2">{i18n._('sys.capture_settings.filter_to')}:</label>
-        <Input
+        <input
           type="datetime-local"
-          className="w-48 h-7 text-xs"
+          className="inline-block w-48 h-7 text-xs rounded border border-gray-300 bg-gray-100 px-2 py-0.5"
           value={filterTo}
           onChange={(e: any) => setFilterTo(e.target.value)}
         />

@@ -691,8 +691,8 @@ aicam_result_t service_start(void)
         communication_type_t req = upload_coordinator_get_required_comm_type();
         if (req != COMM_TYPE_NONE) {
             communication_service_set_required_type(req);
-            printf("[BOOT] Wake-capture using single netif: %s\r\n",
-                   communication_type_to_string(req));
+            // printf("[BOOT] Wake-capture using single netif: %s\r\n",
+            //        communication_type_to_string(req));
         }
     }
 
@@ -1109,17 +1109,17 @@ aicam_result_t service_wait_for_ready(uint32_t flags, aicam_bool_t wait_all, uin
     //service_wait_for_ready is called repeatedly (upload channel wait, direct
     //publish, netif ready, ...) and re-logging the same not-ready bits every
     //call spams the console.
-    static uint32_t s_reported_not_ready = 0;
-    for (uint32_t i = 0; i < 32; i++) {
-        uint32_t bit = (1 << i);
-        if (!(flags & bit)) continue;
-        if (osEventFlagsGet(g_service_ready_flags) & bit) {
-            s_reported_not_ready &= ~bit;   /* ready now — allow re-report if it drops later */
-        } else if (!(s_reported_not_ready & bit)) {
-            LOG_SVC_WARN("Service %d is not ready", i);
-            s_reported_not_ready |= bit;
-        }
-    }
+    // static uint32_t s_reported_not_ready = 0;
+    // for (uint32_t i = 0; i < 32; i++) {
+    //     uint32_t bit = (1 << i);
+    //     if (!(flags & bit)) continue;
+    //     if (osEventFlagsGet(g_service_ready_flags) & bit) {
+    //         s_reported_not_ready &= ~bit;   /* ready now — allow re-report if it drops later */
+    //     } else if (!(s_reported_not_ready & bit)) {
+    //         LOG_SVC_WARN("Service %d is not ready", i);
+    //         s_reported_not_ready |= bit;
+    //     }
+    // }
     
     // Use osFlagsNoClear to keep flags set after wait (service ready state is persistent)
     uint32_t option = (wait_all ? osFlagsWaitAll : osFlagsWaitAny) | osFlagsNoClear;

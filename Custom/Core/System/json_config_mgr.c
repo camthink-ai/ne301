@@ -111,7 +111,7 @@
              .weekdays = {0}
          },
         .pir_trigger = {
-            .enable = AICAM_TRUE,
+            .enable = AICAM_FALSE,
             .pin_number = 2,
             .trigger_type = AICAM_TRIGGER_TYPE_RISING,
             .sensitivity_level = 30,    // Default sensitivity level

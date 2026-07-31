@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 import storageManagement from '@/services/api/storageManagement';
 import fileManagement, { type FileEntry, type FsType } from '@/services/api/fileManagement';
+import loginApis from '@/services/api/login';
 import FormatFlashDialog from '@/components/format-flash-dialog';
 import StorageManagementSkeleton from './skeleton';
 
@@ -123,6 +124,14 @@ function FileBrowserModal({ fsType, onClose, availableMB, onStorageChange }: { f
 
   // kebab menu
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
+
+  // format flash (from within file browser)
+  const [formatDialogOpen, setFormatDialogOpen] = useState(false);
+  const [formatPassword, setFormatPassword] = useState('');
+  const [formatPasswordVisible, setFormatPasswordVisible] = useState(false);
+  const [formatVerifying, setFormatVerifying] = useState(false);
+  const [formatPasswordError, setFormatPasswordError] = useState('');
+  const [formatting, setFormatting] = useState(false);
 
   const t = (key: string) => i18n._(`sys.file_browsing.${key}`);
 
@@ -384,6 +393,47 @@ file,
     } catch { toast.error(t('create_failed')); } finally { setCreating(false); }
   };
 
+  // format flash with password verification
+  const handleFormatClick = () => {
+    setFormatPassword('');
+    setFormatPasswordError('');
+    setFormatDialogOpen(true);
+  };
+
+  const handleFormatVerify = async () => {
+    if (!formatPassword.trim()) return;
+    setFormatVerifying(true);
+    setFormatPasswordError('');
+    try {
+      await loginApis.verifyPassword(formatPassword.trim());
+      // password correct — close dialog and start formatting
+      setFormatDialogOpen(false);
+      setFormatPassword('');
+      setFormatting(true);
+      try {
+        await storageManagement.formatFlash();
+        toast.success(t('format_success'));
+        onStorageChange();
+        onClose(); // close file browser after format
+      } catch {
+        toast.error(t('format_failed'));
+      } finally {
+        setFormatting(false);
+      }
+    } catch {
+      setFormatPasswordError(t('format_wrong_password'));
+    } finally {
+      setFormatVerifying(false);
+    }
+  };
+
+  const handleFormatDialogClose = () => {
+    if (formatVerifying || formatting) return;
+    setFormatDialogOpen(false);
+    setFormatPassword('');
+    setFormatPasswordError('');
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="bg-white rounded-lg shadow-2xl w-[95vw] max-w-4xl max-h-[90vh] flex flex-col mx-4">
@@ -459,6 +509,16 @@ file,
             </Button>
           )}
           <div className="flex-1" />
+          {fsType === 'flash' && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleFormatClick}
+              title={t('format_flash')}
+            >
+              ⚡ {t('format_flash')}
+            </Button>
+          )}
           {(loading || uploading || downloadProgress) && (
             <div className="flex items-center gap-2">
               {(uploading || downloadProgress) ? (
@@ -854,6 +914,70 @@ file,
                   {batchDeleting ? '⏳' : '🗑'} {t('delete_confirm_btn')}
                 </Button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Format Password Confirmation Dialog ── */}
+        {formatDialogOpen && (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40">
+            <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-sm mx-4 space-y-4">
+              <h3 className="text-lg font-bold">⚠ {t('format_confirm_title')}</h3>
+              <p className="text-sm text-gray-600 leading-relaxed">
+                {t('format_confirm_msg')}
+              </p>
+              <div>
+                <Label className="text-xs text-gray-500 mb-1.5">
+                  {t('format_password_placeholder')}
+                </Label>
+                <div className="relative mt-1.5">
+                  <Input
+                    type={formatPasswordVisible ? 'text' : 'password'}
+                    placeholder={t('format_password_placeholder')}
+                    value={formatPassword}
+                    onInput={(e) => { setFormatPassword((e.target as HTMLInputElement).value); setFormatPasswordError(''); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleFormatVerify(); }}
+                    disabled={formatVerifying}
+                    className={formatPasswordError ? 'border-red-500' : ''}
+                  />
+                  <button
+                    type="button"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-sm"
+                    onClick={() => setFormatPasswordVisible(!formatPasswordVisible)}
+                  >{formatPasswordVisible ? '🙈' : '👁'}
+                  </button>
+                </div>
+                {formatPasswordError && (
+                  <p className="text-sm text-red-500 mt-1">{formatPasswordError}</p>
+                )}
+              </div>
+              <div className="flex gap-2 justify-end pt-1">
+                <Button variant="outline" onClick={handleFormatDialogClose} disabled={formatVerifying}>
+                  {t('cancel')}
+                </Button>
+                <Button
+                  variant="destructive"
+                  disabled={!formatPassword.trim() || formatVerifying}
+                  onClick={handleFormatVerify}
+                >
+                  {formatVerifying ? '⏳' : '⚡'} {t('format_confirm_btn')}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Full-screen Formatting Wait Overlay ── */}
+        {formatting && (
+          <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60">
+            <div className="bg-white rounded-lg shadow-2xl p-8 mx-4 text-center space-y-4 max-w-sm w-full">
+              <div className="flex justify-center">
+                <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-800">⏳ {t('formatting')}</h3>
+              <p className="text-sm text-gray-500 leading-relaxed">
+                {t('formatting_msg')}
+              </p>
             </div>
           </div>
         )}

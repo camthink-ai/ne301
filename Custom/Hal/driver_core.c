@@ -88,7 +88,7 @@ bool driver_core_init(void)
     // cat1_register();
 
     system_top_register();
-#if !NETIF_USB_ECM_IS_ENABLE && !NETIF_WIFI_HALOW_IS_ENABLE && !NETIF_4G_CAT1_IS_ENABLE
+#if !NETIF_WIFI_HALOW_IS_ENABLE
     i2c_tool_register();
     codec_register();
     tft_st7789vw_register_commands();

@@ -417,7 +417,7 @@ void device_service_update_device_mac_address()
     netif_info_t netif_info;
     aicam_result_t result = nm_get_netif_info(NETIF_NAME_WIFI_AP, &netif_info);
     if (result == AICAM_OK) {
-        printf("IF_MAC: "NETIF_MAC_STR_FMT"\r\n", NETIF_MAC_PARAMETER(netif_info.if_mac));
+        // printf("IF_MAC: "NETIF_MAC_STR_FMT"\r\n", NETIF_MAC_PARAMETER(netif_info.if_mac));
         snprintf(g_device_service.device_info.mac_address, sizeof(g_device_service.device_info.mac_address), 
                 NETIF_MAC_STR_FMT,
                 NETIF_MAC_PARAMETER(netif_info.if_mac));

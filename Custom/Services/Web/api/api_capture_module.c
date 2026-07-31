@@ -142,6 +142,9 @@ static aicam_result_t upload_config_get(http_handler_context_t *ctx)
     }
     cJSON_AddNumberToObject(resp, "keep_sent_hours", cfg.keep_sent_hours);
     cJSON_AddNumberToObject(resp, "max_pending_records", cfg.max_pending_records);
+    /* FLASH_MAX_RECORDS is a compile-time constant, not user-configurable.
+     * Exposed so the web UI can display it next to the storage selector. */
+    cJSON_AddNumberToObject(resp, "flash_max_records", FLASH_MAX_RECORDS);
     /* upload_network: "default" = COMM_TYPE_NONE (use system comm-pref), else
      * the comm type string (wifi/halow/cellular/poe). */
     cJSON_AddStringToObject(resp, "upload_network",

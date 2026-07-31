@@ -11,7 +11,7 @@
  #include "cJSON.h"           // Include the cJSON library
  #include "debug.h"
  #include "system_service.h"
- #include "version.h"         // For FW_VERSION_STRING
+
  #include "storage.h"         // For NVS access
  #include <string.h>
  #include <stdlib.h>

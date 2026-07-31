@@ -75,10 +75,10 @@
  * a single wake's upload time (low-power budget). */
 #define FLUSH_PER_RECORD_MS    3000u   /* publish + ack estimate per record    */
 #define FLUSH_BASE_MS          3000u   /* channel wait + overhead              */
-#define FLUSH_MAX_BUDGET_MS    60000u  /* hard cap on one flush pass           */
+#define FLUSH_MAX_BUDGET_MS    30000u  /* hard cap on one flush pass           */
 #define FLUSH_ACK_TIMEOUT_MS   3000u   /* per-ack wait in the sliding window   */
 #define FLUSH_WINDOW_MAX       16u     /* cap on in-flight parallel publishes  */
-#define CLEANUP_MAX_MS         5000u   /* bound cleanup_for_space (full-FS removes are slow) */
+#define CLEANUP_MAX_MS         10000u   /* bound cleanup_for_space (full-FS removes are slow) */
 
 #define CAPTURES_ROOT           "/captures"
 #define CAPTURES_DIR_DATA       CAPTURES_ROOT "/data"
@@ -233,8 +233,10 @@ static aicam_result_t upload_one_record(FS_Type_t fs, const char *id,
 static aicam_result_t load_ai_result_from_disk(FS_Type_t fs, const char *id,
                                                mqtt_ai_result_t *out);
 static aicam_result_t cleanup_for_space(FS_Type_t fs, uint64_t need_bytes);
+static aicam_result_t cleanup_for_count(FS_Type_t fs, uint32_t excess);
 static aicam_result_t purge_old_sent(FS_Type_t fs);
 static uint32_t      count_state(FS_Type_t fs, record_state_t state);
+static uint32_t      count_all_records(FS_Type_t fs);
 static void          manifest_counts_all(FS_Type_t fs, uint32_t counts[4]);
 static aicam_result_t get_storage_free_bytes(FS_Type_t fs, uint64_t *out_free, uint64_t *out_total);
 static aicam_result_t wait_for_upload_channel(uint32_t timeout_ms);
@@ -825,6 +827,14 @@ static aicam_result_t delete_record_files(FS_Type_t fs, const char *id, record_s
      * still list the record as PENDING pointing at gone files (stale). Leave it
      * for the next cleanup to retry.
      *
+     * HOWEVER: on a completely full LittleFS, even metadata operations (appending
+     * to the .idx file) fail because COW needs a free erase block. This creates a
+     * deadlock: to free space we must tombstone+delete, but to tombstone we need
+     * free space. Fall back to delete-first-then-tombstone when the tombstone
+     * fails: removing files frees blocks so the retried tombstone can succeed.
+     * The stale-index risk is mitigated by record_self_heal_if_missing(), which
+     * tombstones stale PENDING entries found during flush passes.
+     *
      * If a remove FAILS (file present but remove returns non-zero), the FS is
      * likely corrupt - abort the remaining removes and return an error so the
      * caller stops the whole cleanup (no point deleting more on a broken FS).
@@ -833,9 +843,11 @@ static aicam_result_t delete_record_files(FS_Type_t fs, const char *id, record_s
      * blocks freed; littlefs per-file overhead is extra). */
     (void)state;
     LOG_SVC_INFO("upload: delete_record_files id=%s reason=%s", id, reason ? reason : "?");
+
+    aicam_bool_t tombstone_first = AICAM_TRUE;
     if (manifest_append(fs, id, IDX_STATE_DELETED, 0, 0) != AICAM_OK) {
-        LOG_SVC_ERROR("delete_record_files: tombstone failed id=%s - leaving files", id);
-        return AICAM_ERROR;
+        LOG_SVC_WARN("delete_record_files: tombstone failed id=%s - falling back to delete-first", id);
+        tombstone_first = AICAM_FALSE;
     }
     g_count_cache_dirty = true;
 
@@ -843,13 +855,67 @@ static aicam_result_t delete_record_files(FS_Type_t fs, const char *id, record_s
     char path[128];
 
     path_for_meta(path, sizeof(path), id);
-    if (stat_and_remove(fs, path, &freed) != 0) { if (out_freed) *out_freed = freed; return AICAM_ERROR; }
+    if (stat_and_remove(fs, path, &freed) != 0) {
+        if (out_freed) *out_freed = freed;
+        if (!tombstone_first) {
+            /* We already deleted some files before the remove failure. Try to
+             * tombstone now so the partial cleanup isn't wasted. */
+            (void)manifest_append(fs, id, IDX_STATE_DELETED, 0, 0);
+        }
+        return AICAM_ERROR;
+    }
     path_for_data(path, sizeof(path), id, 'p');
-    if (stat_and_remove(fs, path, &freed) != 0) { if (out_freed) *out_freed = freed; return AICAM_ERROR; }
+    if (stat_and_remove(fs, path, &freed) != 0) {
+        if (out_freed) *out_freed = freed;
+        if (!tombstone_first) { (void)manifest_append(fs, id, IDX_STATE_DELETED, 0, 0); }
+        return AICAM_ERROR;
+    }
     path_for_data(path, sizeof(path), id, 'i');
-    if (stat_and_remove(fs, path, &freed) != 0) { if (out_freed) *out_freed = freed; return AICAM_ERROR; }
+    if (stat_and_remove(fs, path, &freed) != 0) {
+        if (out_freed) *out_freed = freed;
+        if (!tombstone_first) { (void)manifest_append(fs, id, IDX_STATE_DELETED, 0, 0); }
+        return AICAM_ERROR;
+    }
     path_for_data(path, sizeof(path), id, 'a');
-    if (stat_and_remove(fs, path, &freed) != 0) { if (out_freed) *out_freed = freed; return AICAM_ERROR; }
+    if (stat_and_remove(fs, path, &freed) != 0) {
+        if (out_freed) *out_freed = freed;
+        if (!tombstone_first) { (void)manifest_append(fs, id, IDX_STATE_DELETED, 0, 0); }
+        return AICAM_ERROR;
+    }
+
+    /* If we deleted files first (tombstone was deferred), append the tombstone
+     * now that blocks have been freed. Best-effort: if this fails, the record
+     * files are gone, and record_self_heal_if_missing() will tombstone the
+     * stale PENDING entry during the next flush pass. */
+    if (!tombstone_first) {
+        if (manifest_append(fs, id, IDX_STATE_DELETED, 0, 0) != AICAM_OK) {
+            LOG_SVC_WARN("delete_record_files: deferred tombstone failed id=%s - will self-heal on next flush", id);
+        }
+    }
+
+    /* Best-effort: remove the now-possibly-empty parent hour/date directories.
+     * lfs_remove on a directory fails with LFS_ERR_NOTEMPTY if it still has
+     * entries, so no opendir/readdir scan is needed — just try and ignore. */
+    {
+        char date[16], hour[8];
+        date_dir_from_id(id, date, sizeof(date));
+        hour_dir_from_id(id, hour, sizeof(hour));
+        char dpath[128];
+
+        /* meta/<date>/<hour>/ */
+        snprintf(dpath, sizeof(dpath), "%s/%s/%s", CAPTURES_DIR_META, date, hour);
+        if (disk_file_remove(fs, dpath) == 0) {
+            /* hour dir was empty → try date dir */
+            snprintf(dpath, sizeof(dpath), "%s/%s", CAPTURES_DIR_META, date);
+            (void)disk_file_remove(fs, dpath);
+        }
+        /* data/<date>/<hour>/ */
+        snprintf(dpath, sizeof(dpath), "%s/%s/%s", CAPTURES_DIR_DATA, date, hour);
+        if (disk_file_remove(fs, dpath) == 0) {
+            snprintf(dpath, sizeof(dpath), "%s/%s", CAPTURES_DIR_DATA, date);
+            (void)disk_file_remove(fs, dpath);
+        }
+    }
 
     if (out_freed) *out_freed = freed;
     return AICAM_OK;
@@ -1119,6 +1185,27 @@ static uint32_t count_state(FS_Type_t fs, record_state_t state)
     return n;
 }
 
+/* Total records across all states from the RAM cache if fresh, otherwise a
+ * single manifest sweep. Used by the FLASH_MAX_RECORDS cap check before each
+ * capture write - this is O(days) manifest reads, not O(records) opendir. */
+static uint32_t count_all_records(FS_Type_t fs)
+{
+    if (fs == FS_MAX) return 0;
+    if (!g_count_cache_dirty) {
+        return g_count_cache[RECORD_STATE_PENDING]
+             + g_count_cache[RECORD_STATE_SENT]
+             + g_count_cache[RECORD_STATE_FAILED]
+             + g_count_cache[RECORD_STATE_LOCAL];
+    }
+    /* Cache cold - one sweep, then all callers benefit. */
+    manifest_counts_all(fs, g_count_cache);
+    g_count_cache_dirty = false;
+    return g_count_cache[RECORD_STATE_PENDING]
+         + g_count_cache[RECORD_STATE_SENT]
+         + g_count_cache[RECORD_STATE_FAILED]
+         + g_count_cache[RECORD_STATE_LOCAL];
+}
+
 /* Fill counts for all 4 states in a single manifest sweep (get_status). */
 static void manifest_counts_all(FS_Type_t fs, uint32_t counts[4])
 {
@@ -1223,52 +1310,39 @@ static aicam_result_t rebuild_index(FS_Type_t fs)
     return AICAM_OK;
 }
 
-/* One-time migration: the id field used to be 20 bytes, which truncated the
- * last seq digit of "cap_<ts>_<seq>" ids - every .idx entry pointed at a
- * non-existent file. Now it's 24 bytes (36-byte entries). Old 32-byte .idx
- * files are unreadable correctly (and 3168 is divisible by both 32 and 36, so
- * a size-modulo check can't detect them). Use a sentinel: if absent, delete
- * all *.idx so rebuild_index recreates them from the .json files (which always
- * held the correct full ids). Runs once. */
-static void migrate_idx_format_if_needed(FS_Type_t fs)
-{
-    if (fs == FS_MAX) return;
-    char spath[64];
-    snprintf(spath, sizeof(spath), "%s/.v36", CAPTURES_DIR_INDEX);
-    struct stat st = {0};
-    if (disk_file_stat(fs, spath, &st) == 0) return;  /* already migrated */
-
-    LOG_SVC_INFO("upload: migrating index format (old 32B → 36B entries)");
-    void *dd = disk_file_opendir(fs, CAPTURES_DIR_INDEX);
-    if (dd) {
-        dir_entry_t e;
-        while (disk_file_readdir(fs, dd, (char *)&e) > 0) {
-            const char *name = e.name;
-            if (name[0] == '.') continue;
-            size_t nlen = strlen(name);
-            if (nlen > 4 && strcmp(name + nlen - 4, ".idx") == 0) {
-                char path[288];
-                snprintf(path, sizeof(path), "%s/%s", CAPTURES_DIR_INDEX, name);
-                (void)disk_file_remove(fs, path);
-            }
-        }
-        disk_file_closedir(fs, dd);
-    }
-    /* Create the sentinel so this never runs again. */
-    void *fd = disk_file_fopen(fs, spath, "w");
-    if (fd) { (void)disk_file_fwrite(fs, fd, (const uint8_t *)"v36", 3); disk_file_fclose(fs, fd); }
-}
-
 /* At init: if /captures/index has no .idx files but /captures/meta has records,
  * the manifest is missing - rebuild it once. Cheap when both are empty (fresh
- * volume): two opendirs that return immediately. */
+ * volume): two opendirs that return immediately.
+ *
+ * IMPORTANT: only trigger rebuild when opendir succeeds but genuinely finds
+ * zero .idx files. If opendir itself fails (returns NULL) or readdir errors
+ * out, the FS is likely under stress (full, fragmented, GC spinning) -
+ * assuming the index is empty would trigger a costly O(records) JSON scan
+ * rebuild. Skip rebuild in that case; the worst case is a stale count cache
+ * until the next wake when the FS has settled. */
 static void rebuild_index_if_needed(FS_Type_t fs)
 {
     if (fs == FS_MAX) return;
-    migrate_idx_format_if_needed(fs);
-    int idx_count = 0;
-    void *dd = disk_file_opendir(fs, CAPTURES_DIR_INDEX);
-    if (dd) {
+
+    /* Check index/ directory health before counting. */
+    struct stat st_idx = {0};
+    if (disk_file_stat(fs, CAPTURES_DIR_INDEX, &st_idx) != 0) {
+        /* Directory doesn't exist yet (ensure_dirs failed at init, e.g. FS
+         * full). Don't rebuild - manifest_append would fail writing to a
+         * non-existent directory. The dir will be created on the next
+         * successful ensure_dirs run, and rebuild can happen on a later boot
+         * if the index is still genuinely missing. */
+        LOG_SVC_WARN("upload: index dir missing - skipping rebuild (will retry next boot)");
+        return;
+    } else {
+        int idx_count = 0;
+        void *dd = disk_file_opendir(fs, CAPTURES_DIR_INDEX);
+        if (!dd) {
+            /* opendir failed on an existing directory - FS under stress.
+             * Do NOT assume the index is empty; skip rebuild. */
+            LOG_SVC_WARN("upload: opendir index/ failed - skipping rebuild check");
+            return;
+        }
         dir_entry_t e;
         while (disk_file_readdir(fs, dd, (char *)&e) > 0) {
             const char *name = e.name;
@@ -1280,19 +1354,19 @@ static void rebuild_index_if_needed(FS_Type_t fs)
             }
         }
         disk_file_closedir(fs, dd);
+        if (idx_count > 0) return;  /* manifest present - trust it */
     }
-    if (idx_count > 0) return;  /* manifest present - trust it */
 
     int meta_count = 0;
-    dd = disk_file_opendir(fs, CAPTURES_DIR_META);
-    if (dd) {
+    void *dd2 = disk_file_opendir(fs, CAPTURES_DIR_META);
+    if (dd2) {
         dir_entry_t e;
-        while (disk_file_readdir(fs, dd, (char *)&e) > 0) {
+        while (disk_file_readdir(fs, dd2, (char *)&e) > 0) {
             if (e.name[0] == '.') continue;
             meta_count++;
             if (meta_count > 0) break;
         }
-        disk_file_closedir(fs, dd);
+        disk_file_closedir(fs, dd2);
     }
     if (meta_count == 0) return;  /* fresh volume - nothing to rebuild */
 
@@ -1309,6 +1383,7 @@ typedef struct {
     uint64_t freed_so_far;
     aicam_bool_t enough;
     aicam_bool_t delete_failed;  /* a remove failed mid-way → FS likely corrupt */
+    aicam_bool_t deadline_hit;   /* time budget exhausted before reaching target */
     uint64_t deadline_ms;   /* rtc uptime ms; stop deleting past this */
 } cleanup_ctx_t;
 
@@ -1319,6 +1394,7 @@ static aicam_result_t cleanup_visitor(FS_Type_t fs, const char *id, void *user)
     /* On a full littlefs each remove can trigger compaction (~seconds), so
      * deleting many records to free space can hang the wake. Bound it. */
     if (ctx->deadline_ms && rtc_get_uptime_ms() >= ctx->deadline_ms) {
+        ctx->deadline_hit = AICAM_TRUE;
         return AICAM_ERROR; /* stop iteration - out of budget */
     }
 
@@ -1369,7 +1445,77 @@ static aicam_result_t cleanup_for_space(FS_Type_t fs, uint64_t need_bytes)
         LOG_SVC_ERROR("cleanup_for_space: delete failed - FS may be corrupt, aborting");
         return AICAM_ERROR;
     }
-    return ctx.enough ? AICAM_OK : AICAM_ERROR;
+    if (!ctx.enough) {
+        /* Target not met. If the deadline expired without freeing anything, the
+         * FS is critically full (even deletes need free blocks for COW) - retry
+         * will just fail again. If some progress was made, tell the caller to
+         * retry: the partial free may be enough for the current capture, or a
+         * subsequent cleanup-for-space call can continue deleting. */
+        if (ctx.freed_so_far == 0) {
+            UPLOAD_LOG("cleanup_for_space: no progress - FS critically full\r\n");
+            return AICAM_ERROR;
+        }
+        UPLOAD_LOG("cleanup_for_space: partial progress (%lu bytes freed of %lu target)\r\n",
+               (unsigned long)ctx.freed_so_far, (unsigned long)ctx.target_freed);
+    }
+    return AICAM_OK;
+}
+
+/* Count-based cleanup for the FLASH_MAX_RECORDS cap. Same state priority as
+ * cleanup_for_space (sent→local→failed→pending), oldest first. Deletes
+ * `excess` records (at minimum) to bring the total below the cap. Each delete
+ * is bounded by the per-record cleanup_deadline; the total pass is bounded by
+ * CLEANUP_MAX_MS. Returns AICAM_OK if at least one record was deleted,
+ * AICAM_ERROR if no progress was made (FS critically full or corrupt). */
+typedef struct {
+    FS_Type_t fs;
+    record_state_t state;
+    uint32_t target_deleted;
+    uint32_t deleted;
+    aicam_bool_t enough;
+    aicam_bool_t delete_failed;
+    uint64_t deadline_ms;
+} count_cleanup_ctx_t;
+
+static aicam_result_t count_cleanup_visitor(FS_Type_t fs, const char *id, void *user)
+{
+    count_cleanup_ctx_t *ctx = (count_cleanup_ctx_t *)user;
+    if (ctx->enough) return AICAM_ERROR;
+    if (ctx->deadline_ms && rtc_get_uptime_ms() >= ctx->deadline_ms)
+        return AICAM_ERROR;
+
+    if (delete_record_files(fs, id, ctx->state, "count_cap", NULL) != AICAM_OK) {
+        ctx->delete_failed = AICAM_TRUE;
+        return AICAM_ERROR;
+    }
+    ctx->deleted++;
+    if (ctx->deleted >= ctx->target_deleted) ctx->enough = AICAM_TRUE;
+    return AICAM_OK;
+}
+
+static aicam_result_t cleanup_for_count(FS_Type_t fs, uint32_t excess)
+{
+    const record_state_t order[] = {
+        RECORD_STATE_SENT, RECORD_STATE_LOCAL, RECORD_STATE_FAILED, RECORD_STATE_PENDING
+    };
+    count_cleanup_ctx_t ctx = { .fs = fs, .target_deleted = excess,
+                                .deadline_ms = rtc_get_uptime_ms() + CLEANUP_MAX_MS };
+    for (size_t i = 0; i < sizeof(order) / sizeof(order[0]); i++) {
+        ctx.state = order[i];
+        iterate_records(fs, order[i], 0, 0,
+                        0, UINT64_MAX, AICAM_FALSE,
+                        count_cleanup_visitor, &ctx);
+        if (ctx.enough) break;
+        if (ctx.delete_failed) break;
+    }
+    if (ctx.delete_failed) {
+        LOG_SVC_ERROR("cleanup_for_count: delete failed - FS may be corrupt, aborting");
+        return AICAM_ERROR;
+    }
+    if (ctx.deleted == 0) return AICAM_ERROR;
+    LOG_SVC_INFO("upload: count cap deleted %lu records (target %lu)",
+                 (unsigned long)ctx.deleted, (unsigned long)ctx.target_deleted);
+    return AICAM_OK;
 }
 
 /* Drop sent records older than keep_sent_hours. */
@@ -2662,6 +2808,49 @@ aicam_result_t upload_coordinator_enqueue_capture(
     if (g_up.storage_full && g_up.cfg.policy == STORAGE_POLICY_WRAP) {
         UPLOAD_LOG("storage_full flag set - proactive cleanup before write\r\n");
         (void)cleanup_for_space(fs, need + CLEANUP_HEADROOM_BYTES);
+    }
+    /* Storage already full + STOP policy: persisting will fail (and hangs on
+     * lfs_file_write, 10-30s). For INSTANT, skip the doomed write and upload
+     * direct from RAM. Other modes: reject now instead of after the hang. */
+    if (g_up.storage_full && g_up.cfg.policy == STORAGE_POLICY_STOP) {
+        if (mode == CAPTURE_MODE_INSTANT) {
+            UPLOAD_LOG("storage_full + STOP - INSTANT fast-path, direct publish\r\n");
+            return direct_publish_capture(jpeg_buffer, jpeg_size, meta_in, ai_result);
+        }
+        return AICAM_ERROR_NO_MEMORY;
+    }
+
+    /* FLASH record-count cap. LittleFS directory operations (opendir/readdir)
+     * degrade sharply beyond a few hundred files per directory; even with the
+     * date-partitioned layout a total record count above FLASH_MAX_RECORDS
+     * makes index rebuild and counting impractically slow. SD storage has no
+     * such limitation (FAT/exFAT handles large directories efficiently). */
+    if (fs == FS_FLASH) {
+        uint32_t total = count_all_records(fs);
+        if (total >= FLASH_MAX_RECORDS) {
+            LOG_SVC_WARN("upload: flash record cap reached (%lu/%u)",
+                         (unsigned long)total, FLASH_MAX_RECORDS);
+            if (g_up.cfg.policy == STORAGE_POLICY_WRAP) {
+                uint32_t excess = total - FLASH_MAX_RECORDS + 1;
+                if (cleanup_for_count(fs, excess) != AICAM_OK) {
+                    LOG_SVC_ERROR("upload: count cap cleanup failed");
+                    storage_full_set(AICAM_TRUE);
+                    if (mode == CAPTURE_MODE_INSTANT) {
+                        return direct_publish_capture(jpeg_buffer, jpeg_size, meta_in, ai_result);
+                    }
+                    return AICAM_ERROR_NO_MEMORY;
+                }
+            } else {
+                /* STORAGE_POLICY_STOP: reject, do not wrap. */
+                storage_full_set(AICAM_TRUE);
+                /* INSTANT = 即拍即传: JPEG still in RAM - upload direct
+                 * even when count cap is reached and policy is STOP. */
+                if (mode == CAPTURE_MODE_INSTANT) {
+                    return direct_publish_capture(jpeg_buffer, jpeg_size, meta_in, ai_result);
+                }
+                return AICAM_ERROR_NO_MEMORY;
+            }
+        }
     }
 
     /* Try to persist. On failure (likely FS full), do WRAP cleanup + retry

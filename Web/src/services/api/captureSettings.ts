@@ -19,6 +19,8 @@ export interface CaptureUploadConfig {
   max_pending_records: number;
   /** 'default' = use system comm-pref (init all netifs); else a specific netif */
   upload_network: 'default' | 'wifi' | 'halow' | 'cellular' | 'poe';
+  /** Compile-time flash record cap (0 = no limit / SD). Exposed for UI display. */
+  flash_max_records: number;
 }
 
 export type RecordState = 'pending' | 'sent' | 'failed' | 'local';

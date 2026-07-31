@@ -71,7 +71,7 @@ def parse_version_mk(version_mk_path):
         print(f"Warning: {version_mk_path} not found, using defaults")
         return version
     
-    with open(version_mk_path, 'r') as f:
+    with open(version_mk_path, 'r', encoding='utf-8') as f:
         content = f.read()
     
     # Parse main VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH, VERSION_SUFFIX
@@ -121,6 +121,23 @@ def parse_version_mk(version_mk_path):
         version['expected_wifi'] = wifi_match.group(1).strip()
 
     return version
+
+def write_if_changed(output_path, content):
+    """Write content to file only if it differs from existing content.
+    Returns True if file was updated, False if unchanged.
+    This preserves file timestamps when nothing changed, avoiding
+    unnecessary rebuilds in Make-based incremental builds.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    if os.path.exists(output_path):
+        with open(output_path, 'r', encoding='utf-8') as f:
+            if f.read() == content:
+                return False  # unchanged — skip write
+
+    with open(output_path, 'w', newline='\n', encoding='utf-8') as f:
+        f.write(content)
+    return True  # updated
 
 def generate_version_header(output_path, version, build_override=None):
     """Generate version.h file"""
@@ -196,13 +213,12 @@ def generate_version_header(output_path, version, build_override=None):
 #endif /* VERSION_H */
 '''
     
-    # Ensure directory exists
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    
-    with open(output_path, 'w', newline='\n') as f:
-        f.write(header_content)
-    
-    print(f"Version header generated: {version_string}")
+    # Only write if content changed (avoids unnecessary rebuilds)
+    updated = write_if_changed(output_path, header_content)
+    if updated:
+        print(f"Version header generated: {version_string}")
+    else:
+        print(f"Version header unchanged: {version_string}")
     print(f"  Output: {output_path}")
     print(f"  Git: {git_commit}{git_dirty} ({git_branch})")
     
@@ -210,22 +226,28 @@ def generate_version_header(output_path, version, build_override=None):
 
 def generate_fsbl_version_header(output_path, version_string):
     """Generate fsbl_version.h file"""
-    header_content = f'''
+    header_content = f'''\
 #ifndef FSBL_VERSION_H
 #define FSBL_VERSION_H
 
 #define FSBL_VERSION_STRING "{version_string}"
 #endif
 '''
+    if write_if_changed(output_path, header_content):
+        print(f"  Output: {output_path}")
+    return 0
 
-    # Ensure directory exists
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    
-    with open(output_path, 'w', newline='\n') as f:
-        f.write(header_content)
-    
-    print(f"FSBL version header generated: {version_string}")
-    print(f"  Output: {output_path}")
+def generate_stedgeai_version_header(output_path, version_string):
+    """Generate stedgeai_version.h file"""
+    header_content = f'''\
+#ifndef STEDGEAI_VERSION_H
+#define STEDGEAI_VERSION_H
+
+#define MODEL_STEDGEAI_VERSION_SUPPORTED "{version_string}"
+#endif
+'''
+    if write_if_changed(output_path, header_content):
+        print(f"  STEdgeAI: {version_string} -> {output_path}")
     return 0
 
 def main():
@@ -242,6 +264,10 @@ def main():
                         help='FSBL version string (from Makefile)')
     parser.add_argument('--fsbl-output', default='FSBL/Core/Inc/fsbl_version.h',
                         help='Output FSBL version header file path')
+    parser.add_argument('--stedgeai-version', default=None,
+                        help='STEdgeAI version string (from Makefile)')
+    parser.add_argument('--stedgeai-output', default='Custom/Hal/stedgeai_version.h',
+                        help='Output STEdgeAI version header file path')
     
     args = parser.parse_args()
     
@@ -252,15 +278,19 @@ def main():
     version_mk_path = project_root / args.input
     output_path = project_root / args.output
     fsbl_output_path = project_root / args.fsbl_output
+    stedgeai_output_path = project_root / args.stedgeai_output
 
     version = parse_version_mk(str(version_mk_path))
-    
+
     # Add WakeCore version from command line
-        
+
     if args.fsbl_version:
         version['fsbl_version'] = args.fsbl_version
 
     generate_fsbl_version_header(str(fsbl_output_path), version['fsbl_version'])
+
+    if args.stedgeai_version:
+        generate_stedgeai_version_header(str(stedgeai_output_path), args.stedgeai_version)
 
     return generate_version_header(str(output_path), version, args.build)
 

@@ -32,6 +32,12 @@
 
 #include <stdint.h>
 
+/* Hard cap on total records when storing on flash (LittleFS). Exceeding this
+ * triggers count-based cleanup (WRAP) or rejection (STOP). SD has no limit.
+ * Exposed in the header so the web API can surface it in the upload-config
+ * response for the UI. */
+#define FLASH_MAX_RECORDS       512u
+
 #ifdef __cplusplus
 extern "C" {
 #endif

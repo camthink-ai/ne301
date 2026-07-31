@@ -212,7 +212,7 @@ static aicam_result_t mqtt_client_init_si91x(const ms_mqtt_config_t *config)
 static aicam_result_t mqtt_client_start_ms(void)
 {
     int result = ms_mqtt_client_start(g_mqtt_service.mqtt_client.ms_client);
-    printf("mqtt start time: %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
+    printf("MQ_START: %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
     if (result != 0) {
         LOG_SVC_ERROR("Failed to start MS MQTT client: %d", result);
         return AICAM_ERROR;
@@ -618,7 +618,7 @@ static void mqtt_client_event_handler(ms_mqtt_event_data_t *event_data, void *us
             g_mqtt_service.stats.current_connections = 1;
             LOG_SVC_DEBUG("MQTT connected to broker");
 
-            printf("mqtt connected time: %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
+            printf("MQ_CNT: %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
             
             // Set MQTT network connected flag
             service_set_mqtt_net_connected(AICAM_TRUE);

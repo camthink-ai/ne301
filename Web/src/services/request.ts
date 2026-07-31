@@ -14,6 +14,7 @@ const longTimeTaskList = [
   '/api/v1/files/upload',
   '/api/v1/files/download',
   '/api/v1/files/list',       // may be slow after upload (LittleFS metadata flush)
+  '/api/v1/device/storage/format',  // lfs_format + lfs_mount on full flash
 ]
 
 const debouncedTimeoutError = debounce(2000, (message: string) => {

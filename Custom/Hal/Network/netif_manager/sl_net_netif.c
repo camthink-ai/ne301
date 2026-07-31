@@ -1083,7 +1083,7 @@ int sl_net_client_netif_up(void)
     if (netif_is_link_up(wl0)) return SL_STATUS_OK;
     status = sl_net_up(SL_NET_WIFI_CLIENT_INTERFACE, SL_NET_DEFAULT_WIFI_CLIENT_PROFILE_ID);
     if (status != SL_STATUS_OK) {
-        LOG_DRV_ERROR("Failed to bring Wi-Fi client interface up: 0x%lX\r\n", status);
+        // LOG_DRV_ERROR("Failed to bring Wi-Fi client interface up: 0x%lX\r\n", status);
         return status;
     }
     return status;
@@ -1136,7 +1136,7 @@ int sl_net_client_netif_down(void)
     if (!netif_is_link_up(wl0)) return SL_STATUS_OK;
     status = sl_net_down(SL_NET_WIFI_CLIENT_INTERFACE);
     if (status != SL_STATUS_OK) {
-        LOG_DRV_ERROR("Failed to bring Wi-Fi client interface down: 0x%lX\r\n", status);
+        // LOG_DRV_ERROR("Failed to bring Wi-Fi client interface down: 0x%lX\r\n", status);
         return status;
     }
     return status;

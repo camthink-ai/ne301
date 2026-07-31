@@ -17,6 +17,7 @@
 #include "common_utils.h"
 #include "pwr.h"
 #include "sd_file.h"
+#include "drtc.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -363,7 +364,7 @@ static void qs_snapshot_thread(void *argument)
         osThreadExit();
         return;
     }
-    printf("[QS]end1, %lu ms\r\n", HAL_GetTick());
+    // printf("[QS]end1, %lu ms\r\n", HAL_GetTick());
 
     if (need_ai) {
         camera_buffer_with_frame_id_t pipe2 = {0};
@@ -385,8 +386,9 @@ static void qs_snapshot_thread(void *argument)
             osThreadExit();
             return;
         }
-        printf("[QS]end2, %lu ms\r\n", HAL_GetTick());
+        // printf("[QS]end2, %lu ms\r\n", HAL_GetTick());
     }
+    printf("SNAP: %lu ms\r\n", HAL_GetTick());
 
     /* turn IR light off after capture */
     qs_light_set(AICAM_FALSE, 0);

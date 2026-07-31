@@ -4,6 +4,7 @@
  */
 
 #include "core_init.h"
+#include "version.h"
 #include "cmsis_os2.h"
 #include <stdio.h>
 #include <string.h>
@@ -252,7 +253,7 @@ aicam_result_t core_system_get_version(char* version, size_t size)
         return AICAM_ERROR_INVALID_PARAM;
     }
     
-    snprintf(version, size, CORE_SYSTEM_VERSION_STRING);
+    snprintf(version, size, FW_VERSION_STRING);
     
     return AICAM_OK;
 }

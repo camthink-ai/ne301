@@ -1037,7 +1037,7 @@ aicam_result_t communication_service_init(void *config)
         .if_name = NETIF_NAME_WIFI_AP,
         .state = NETIF_INIT_STATE_IDLE,
         .priority = NETIF_INIT_PRIORITY_HIGH,      // High priority
-        .auto_up = AICAM_TRUE,                     // Auto bring up after init
+        .auto_up = AICAM_FALSE,                     // Auto bring up after init
         .async = AICAM_TRUE,                       // Asynchronous initialization
         .callback = on_wifi_ap_ready
     };
@@ -6029,8 +6029,8 @@ aicam_result_t communication_delete_known_network(const char *ssid, const char *
 static void on_wifi_ap_ready(const char *if_name, aicam_result_t result)
 {
     if (result == AICAM_OK) {
-        LOG_SVC_INFO("WiFi AP initialized and ready (broadcasting)");
-        
+        LOG_SVC_INFO("WiFi AP initialized, configuring...");
+
         // Update statistics
         g_communication_service.stats.successful_connections++;
 
@@ -6045,7 +6045,7 @@ static void on_wifi_ap_ready(const char *if_name, aicam_result_t result)
 
         // Set indicator to solid on (AP active)
         device_service_set_indicator_state(SYSTEM_INDICATOR_RUNNING_AP_ON);
-     
+
         //Configure AP interface using configuration from json_config_mgr
         network_service_config_t* network_config = (network_service_config_t*)buffer_calloc(1, sizeof(network_service_config_t));
         if (!network_config) {
@@ -6056,9 +6056,8 @@ static void on_wifi_ap_ready(const char *if_name, aicam_result_t result)
         aicam_result_t config_result = json_config_get_network_service_config(network_config);
         if (config_result == AICAM_OK) {
             LOG_SVC_INFO("Configuring AP with SSID: %s", network_config->ssid);
-            // Configure AP interface
             if (strcmp(network_config->ssid, "AICAM-AP") == 0 || strlen(network_config->ssid) == 0) {
-                LOG_SVC_INFO("Default AP SSID, skip configuration");
+                LOG_SVC_INFO("Default AP SSID, use current config");
                 communication_get_interface_config(NETIF_NAME_WIFI_AP, &ap_config);
                 strncpy(network_config->ssid, ap_config.wireless_cfg.ssid, sizeof(network_config->ssid) - 1);
                 strncpy(network_config->password, ap_config.wireless_cfg.pw, sizeof(network_config->password) - 1);
@@ -6070,17 +6069,16 @@ static void on_wifi_ap_ready(const char *if_name, aicam_result_t result)
                     LOG_SVC_INFO("Network service configuration set successfully");
                 }
             } else {
-                netif_config_t ap_config = {0};
                 nm_get_netif_cfg(NETIF_NAME_WIFI_AP, &ap_config);
                 strncpy(ap_config.wireless_cfg.ssid, network_config->ssid, sizeof(ap_config.wireless_cfg.ssid) - 1);
                 strncpy(ap_config.wireless_cfg.pw, network_config->password, sizeof(ap_config.wireless_cfg.pw) - 1);
                 ap_config.wireless_cfg.security = (strlen(network_config->password) > 0) ? WIRELESS_WPA_WPA2_MIXED : WIRELESS_OPEN;
-                
-                aicam_result_t result = communication_configure_interface(NETIF_NAME_WIFI_AP, &ap_config);
+
+                aicam_result_t result = nm_set_netif_cfg(NETIF_NAME_WIFI_AP, &ap_config);
                 if (result != AICAM_OK) {
                     LOG_SVC_WARN("Failed to configure WiFi AP: %d", result);
                 } else {
-                    LOG_SVC_INFO("WiFi AP configured successfully with SSID: %s", network_config->ssid);
+                    LOG_SVC_INFO("WiFi AP configured with SSID: %s", network_config->ssid);
                 }
             }
         } else {
@@ -6089,10 +6087,15 @@ static void on_wifi_ap_ready(const char *if_name, aicam_result_t result)
 
         buffer_free(network_config);
 
-        // Notify other services that AP is ready
-        // Web service can now be accessed
+        // Single unified UP — netif_init_manager only does INIT, UP is handled here
+        {
+            aicam_result_t up_result = communication_start_interface(NETIF_NAME_WIFI_AP);
+            if (up_result != AICAM_OK) {
+                LOG_SVC_WARN("Failed to start WiFi AP: %d", up_result);
+            }
+        }
 
-        
+
         uint32_t init_time = netif_init_manager_get_init_time(if_name);
         LOG_SVC_INFO("WiFi AP initialization completed in %u ms", init_time);
         service_set_ap_ready(AICAM_TRUE);

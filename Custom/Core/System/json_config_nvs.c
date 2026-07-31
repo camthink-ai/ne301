@@ -6,6 +6,7 @@
  */
 
 #include "json_config_internal.h"
+#include "version.h"
 #include "buffer_mgr.h"
 #include "storage.h"
 #include <sys/stat.h>

@@ -1,0 +1,7 @@
+# Copy to Script/stedgeai-use.local.sh and set your ST Edge AI install paths.
+# Git Bash paths: use /c/... instead of C:\...
+
+# Git Bash: H:\stm32\... -> /h/stm32/...
+STEDGEAI_22_DIR="/h/stm32/STEdgeAI/2.2"
+STEDGEAI_30_DIR="/h/stm32/STEdgeAI/3.0"
+STEDGEAI_40_DIR="/h/stm32/STEdgeAI/4.0/4.0"

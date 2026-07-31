@@ -229,9 +229,9 @@
 									<listOptionValue builtIn="false" value="../../Custom/Common/Lib/MbedTLS/port"/>
 									<listOptionValue builtIn="false" value="../../Custom/Common/Lib/MbedTLS/library"/>
 									<listOptionValue builtIn="false" value="../../Custom/Common/Lib/MbedTLS/configs"/>
-									<listOptionValue builtIn="false" value="../../Middlewares/ST/AI_Runtime/Npu/Devices/STM32N6XX"/>
-									<listOptionValue builtIn="false" value="../../Middlewares/ST/AI_Runtime/Inc"/>
-									<listOptionValue builtIn="false" value="../../Middlewares/ST/AI_Runtime/Npu/ll_aton"/>
+									<listOptionValue builtIn="false" value="../../Middlewares/ST/stedgeai-lib-3.0/Npu/Devices/STM32N6xx"/>
+									<listOptionValue builtIn="false" value="../../Middlewares/ST/stedgeai-lib-3.0/Inc"/>
+									<listOptionValue builtIn="false" value="../../Middlewares/ST/stedgeai-lib-3.0/Npu/ll_aton"/>
 									<listOptionValue builtIn="false" value="../../Custom/Common/Lib/pp"/>
 									<listOptionValue builtIn="false" value="../../Custom/Common/Lib/cJSON"/>
 									<listOptionValue builtIn="false" value="../../Custom/Common/Lib/mpool"/>
@@ -259,11 +259,11 @@
 									<listOptionValue builtIn="false" srcPrefixMapping="" srcRootPath="" value="c"/>
 									<listOptionValue builtIn="false" srcPrefixMapping="" srcRootPath="" value="m"/>
 									<listOptionValue builtIn="false" srcPrefixMapping="" srcRootPath="" value="nosys"/>
-									<listOptionValue builtIn="false" srcPrefixMapping="" srcRootPath="" value=":NetworkRuntime1020_CM55_GCC.a"/>
+									<listOptionValue builtIn="false" srcPrefixMapping="" srcRootPath="" value=":NetworkRuntime1100_CM55_GCC.a"/>
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.directories.331392465" name="Library search path (-L)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.directories" valueType="libPaths">
 									<listOptionValue builtIn="false" value="../../Middlewares/ST/STM32_ISP_Library/evision/Lib"/>
-									<listOptionValue builtIn="false" value="../../Middlewares/ST/AI_Runtime/Lib/GCC/ARMCortexM55"/>
+									<listOptionValue builtIn="false" value="../../Middlewares/ST/stedgeai-lib-3.0/Lib/GCC/ARMCortexM55"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.input.1371703314" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.input">
 									<additionalInput kind="additionalinputdependency" paths="$(USER_OBJS)"/>
@@ -509,9 +509,9 @@
 									<listOptionValue builtIn="false" value="../../Custom/Common/Lib/MbedTLS/port"/>
 									<listOptionValue builtIn="false" value="../../Custom/Common/Lib/MbedTLS/library"/>
 									<listOptionValue builtIn="false" value="../../Custom/Common/Lib/MbedTLS/configs"/>
-									<listOptionValue builtIn="false" value="../../Middlewares/ST/AI_Runtime/Npu/Devices/STM32N6XX"/>
-									<listOptionValue builtIn="false" value="../../Middlewares/ST/AI_Runtime/Inc"/>
-									<listOptionValue builtIn="false" value="../../Middlewares/ST/AI_Runtime/Npu/ll_aton"/>
+									<listOptionValue builtIn="false" value="../../Middlewares/ST/stedgeai-lib-3.0/Npu/Devices/STM32N6xx"/>
+									<listOptionValue builtIn="false" value="../../Middlewares/ST/stedgeai-lib-3.0/Inc"/>
+									<listOptionValue builtIn="false" value="../../Middlewares/ST/stedgeai-lib-3.0/Npu/ll_aton"/>
 									<listOptionValue builtIn="false" value="../../Custom/Common/Lib/pp"/>
 									<listOptionValue builtIn="false" value="../../Custom/Common/Lib/cJSON"/>
 									<listOptionValue builtIn="false" value="../../Custom/Common/Lib/mpool"/>
@@ -536,11 +536,11 @@
 									<listOptionValue builtIn="false" value="c"/>
 									<listOptionValue builtIn="false" value="m"/>
 									<listOptionValue builtIn="false" value="nosys"/>
-									<listOptionValue builtIn="false" value=":NetworkRuntime1020_CM55_GCC.a"/>
+									<listOptionValue builtIn="false" value=":NetworkRuntime1100_CM55_GCC.a"/>
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.directories.1500573818" name="Library search path (-L)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.directories" valueType="libPaths">
 									<listOptionValue builtIn="false" value="../../Middlewares/ST/STM32_ISP_Library/evision/Lib"/>
-									<listOptionValue builtIn="false" value="../../Middlewares/ST/AI_Runtime/Lib/GCC/ARMCortexM55"/>
+									<listOptionValue builtIn="false" value="../../Middlewares/ST/stedgeai-lib-3.0/Lib/GCC/ARMCortexM55"/>
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.otherflags.1599363962" name="Other flags" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.otherflags" valueType="stringList">
 									<listOptionValue builtIn="false" value="-u _printf_float -Wl,--no-warn-rwx-segments"/>

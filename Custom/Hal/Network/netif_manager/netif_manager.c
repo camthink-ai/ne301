@@ -84,7 +84,7 @@ static const char *netif_encryption_str[] = {"default", "no_encryption", "wep", 
 void sntp_set_system_time(uint32_t sec)
 {
     rtc_set_timeStamp(sec);
-    LOG_SIMPLE("NTP set system time: %d\r\n", sec);
+    LOG_SIMPLE("NTP: %d s\r\n", sec);
 }
 
 void sntp_get_system_time(uint32_t *sec, uint32_t *us)
@@ -709,11 +709,13 @@ void netif_manager_change_nat_route(void)
 int netif_manager_ctrl(const char *if_name, netif_cmd_t cmd, void *param)
 {   
     int ret = -1;
+    uint32_t start_tick = 0, end_tick = 0;
     struct netif *lo_netif = NULL;
     netif_info_t *netif_info = NULL;
     netif_state_t last_state = NETIF_STATE_MAX;
     if (netif_manager_mutex == NULL) return AICAM_ERROR_NOT_INITIALIZED;
     
+    start_tick = HAL_GetTick();
     if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0 || strcmp(if_name, NETIF_NAME_WIFI_AP) == 0) {
         sl_net_netif_ctrl(if_name, NETIF_CMD_STATE, &last_state);
         ret = sl_net_netif_ctrl(if_name, cmd, param);
@@ -777,6 +779,12 @@ int netif_manager_ctrl(const char *if_name, netif_cmd_t cmd, void *param)
         netif_manager_change_nat_route();
     #endif
     }
+
+    if (cmd == NETIF_CMD_INIT || cmd == NETIF_CMD_UP) {
+        end_tick = HAL_GetTick();
+        printf("%s %s: %ld / %ld ms\r\n", if_name, (cmd == NETIF_CMD_INIT) ? "init" : "up", end_tick - start_tick, end_tick);
+    }
+
     return ret;
 }
 

@@ -21,6 +21,7 @@ fi
 
 # Flag for clean operation
 CLEAN_ONLY=false
+STEDGEAI_BIN=""
 
 # Color output functions
 RED='\033[0;31m'
@@ -128,6 +129,7 @@ show_usage() {
     echo ""
     echo "Environment variables:"
     echo "  STEDGEAI_CORE_DIR        Path to ST Edge AI installation directory"
+    echo "                           (stedgeai is resolved from this dir, not PATH)"
     echo "  NEURAL_ART_CONFIG_FILE   Alternative way to specify neural art config file"
     echo ""
     echo "Examples:"
@@ -226,6 +228,39 @@ parse_arguments() {
     fi
 }
 
+# Resolve stedgeai from STEDGEAI_CORE_DIR so an older PATH entry cannot win.
+resolve_stedgeai_bin() {
+    local candidates=()
+
+    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+        candidates=(
+            "$STEDGEAI_CORE_DIR/Utilities/windows/stedgeai.exe"
+            "$STEDGEAI_CORE_DIR/Utilities/windows/stedgeai"
+        )
+    else
+        candidates=(
+            "$STEDGEAI_CORE_DIR/Utilities/linux/stedgeai"
+            "$STEDGEAI_CORE_DIR/Utilities/windows/stedgeai.exe"
+        )
+    fi
+
+    for candidate in "${candidates[@]}"; do
+        if [ -f "$candidate" ]; then
+            STEDGEAI_BIN="$candidate"
+            export PATH="$(cd "$(dirname "$candidate")" && pwd):$PATH"
+            return 0
+        fi
+    done
+
+    if command -v stedgeai &> /dev/null; then
+        STEDGEAI_BIN="stedgeai"
+        log_warning "stedgeai not found under STEDGEAI_CORE_DIR; falling back to PATH"
+        return 0
+    fi
+
+    return 1
+}
+
 # Function to check if required tools and environment variables are available
 check_prerequisites() {
     log_info "Checking prerequisites..."
@@ -236,11 +271,17 @@ check_prerequisites() {
         log_info "Please set STEDGEAI_CORE_DIR to your ST Edge AI installation directory"
         exit 1
     fi
-    
-    # Check if stedgeai command is available
-    if ! command -v stedgeai &> /dev/null; then
-        log_error "stedgeai command not found"
-        log_info "Please ensure ST Edge AI tools are installed and in PATH"
+
+    if ! resolve_stedgeai_bin; then
+        log_error "stedgeai not found under STEDGEAI_CORE_DIR: $STEDGEAI_CORE_DIR"
+        log_info "Expected: $STEDGEAI_CORE_DIR/Utilities/windows/stedgeai.exe (Windows)"
+        exit 1
+    fi
+
+    log_info "Using stedgeai: $STEDGEAI_BIN"
+    "$STEDGEAI_BIN" --version 2>/dev/null | head -1 || true
+
+    if ! python "$(dirname "$0")/check_stedgeai_toolchain.py"; then
         exit 1
     fi
     
@@ -304,7 +345,7 @@ generate_c_code() {
     fi
     
     # Build and execute the stedgeai generate command
-    eval "stedgeai generate -m \"./$MODEL_FILE\" --target stm32n6 --no-workspace --st-neural-art \"$NEURAL_ART_CONFIG\" --output \"$C_OUT_DIR\" $APPEND_ARGS"
+    eval "\"$STEDGEAI_BIN\" generate -m \"./$MODEL_FILE\" --target stm32n6 --no-workspace --st-neural-art \"$NEURAL_ART_CONFIG\" --output \"$C_OUT_DIR\" $APPEND_ARGS"
     
     if [ $? -eq 0 ]; then
         log_success "Model successfully converted to C code"
@@ -332,7 +373,11 @@ convert_to_binary() {
     NETWORK_C_FILE="$C_OUT_DIR/network.c"
     
     # Set up Python path for ST Edge AI utilities
-    export PYTHONPATH="$STEDGEAI_CORE_DIR/Utilities/windows/Lib/site-packages"
+    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+        export PYTHONPATH="$STEDGEAI_CORE_DIR/Utilities/windows/Lib/site-packages"
+    else
+        export PYTHONPATH="$STEDGEAI_CORE_DIR/Utilities/linux/Lib/site-packages"
+    fi
     
     # Run npu_driver.py to convert C code to binary
     python "$STEDGEAI_CORE_DIR/scripts/N6_reloc/npu_driver.py" \
