@@ -118,6 +118,12 @@ export default class H264Player {
 
     private videoFrameCnt: number = 0;
 
+    private estimatedPreviewFrameMs: number = previewFrameMs;
+
+    private frameRateWindowStartMs: number = 0;
+
+    private frameRateWindowFrames: number = 0;
+
     private playerState: number = playerStateIdle;
 
     private iChannelId: number = 0;
@@ -177,6 +183,28 @@ export default class H264Player {
     private captureParts: Uint8Array[] = [];
 
     private captureTotalBytes: number = 0;
+
+    private getAdaptivePreviewFrameDuration(nowMs: number): number {
+        if (this.frameRateWindowStartMs === 0) {
+            this.frameRateWindowStartMs = nowMs;
+            this.frameRateWindowFrames = 0;
+            return Math.round(this.estimatedPreviewFrameMs);
+        }
+
+        this.frameRateWindowFrames++;
+        const elapsedMs = nowMs - this.frameRateWindowStartMs;
+        if (elapsedMs >= 1000 && this.frameRateWindowFrames >= 10) {
+            const measuredFrameMs = elapsedMs / this.frameRateWindowFrames;
+            // Accept 15-60 fps and smooth changes so WebSocket burstiness does not
+            // immediately distort the media timeline.
+            const boundedFrameMs = Math.min(1000 / 15, Math.max(1000 / 60, measuredFrameMs));
+            this.estimatedPreviewFrameMs = this.estimatedPreviewFrameMs * 0.75 + boundedFrameMs * 0.25;
+            this.frameRateWindowStartMs = nowMs;
+            this.frameRateWindowFrames = 0;
+        }
+
+        return Math.round(this.estimatedPreviewFrameMs);
+    }
 
     // Add getter method for debugging
     getCurrentTime(): number {
@@ -415,6 +443,9 @@ export default class H264Player {
         this.lastVideoTime = 0;
         this.lastSec = 0;
         this.videoFrameCnt = 0;
+        this.estimatedPreviewFrameMs = previewFrameMs;
+        this.frameRateWindowStartMs = 0;
+        this.frameRateWindowFrames = 0;
         this.packetCount = 0;
         this.packetsPerSecond = 0;
         this.lastPacketSec = 0;
@@ -512,7 +543,8 @@ export default class H264Player {
         }
 
         let duration = 0;
-        const timeUsec = Date.now() * 1000;
+        const nowMs = Date.now();
+        const timeUsec = nowMs * 1000;
         const nowSec = (timeUsec / 1000) | 0;
         if (this.lastSec !== nowSec) {
             this.lastSec = nowSec;
@@ -522,10 +554,9 @@ export default class H264Player {
 
         if (this.firstFrame === 0) {
             this.firstFrame = 1;
-            duration = previewFrameMs;
+            duration = this.getAdaptivePreviewFrameDuration(nowMs);
         } else if (!this.isPlayback) {
-            // Fixed frame interval keeps MSE timeline stable under network jitter
-            duration = previewFrameMs;
+            duration = this.getAdaptivePreviewFrameDuration(nowMs);
         } else if (this.direction === 0) {
             if (this.playSpeed >= 4 || this.playSpeed <= 0.125) {
                 duration = specialDuration * 1000;

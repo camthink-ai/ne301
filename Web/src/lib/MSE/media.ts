@@ -46,7 +46,11 @@ class MsMediaSource {
     private isPlayback: boolean = false; // false: preview, true: playback
 
     // Live preview latency tuning
-    private readonly LIVE_TARGET_LATENCY = 0.2;
+    private readonly LIVE_TARGET_LATENCY = 0.35;
+
+    private readonly STARTUP_BUFFER_SECONDS = 0.35;
+
+    private readonly REBUFFER_SECONDS = 0.45;
 
     private readonly LIVE_SYNC_COOLDOWN_MS = 150;
 
@@ -56,7 +60,9 @@ class MsMediaSource {
 
     private lastPlaybackCheckMs = 0;
 
-    private initSegmentAppended: boolean = false;
+    private waitingForBuffer = true;
+
+    private hasStartedPlayback = false;
 
     private boundOnVideoStall: (() => void) | null = null;
 
@@ -93,13 +99,31 @@ class MsMediaSource {
 
         const now = Date.now();
 
-        // Hard catch-up when lag exceeds 1s (prevents multi-minute drift)
-        if (bufferTime > 1) {
+        if (this.waitingForBuffer) {
+            const requiredBuffer = this.hasStartedPlayback
+                ? this.REBUFFER_SECONDS
+                : this.STARTUP_BUFFER_SECONDS;
+            if (bufferTime < requiredBuffer) return;
+
+            this.videoElement.currentTime = Math.max(0, liveEdge - this.LIVE_TARGET_LATENCY);
+            this.videoElement.playbackRate = 1;
+            this.waitingForBuffer = false;
+            this.videoElement.play();
+            if (!this.hasStartedPlayback) {
+                this.hasStartedPlayback = true;
+                this.cb({ t: 'startPlay' });
+            }
+            return;
+        }
+
+        // Hard catch-up only for a real backlog; ordinary jitter is absorbed by
+        // the live cache instead of causing repeated seeks.
+        if (bufferTime > 1.2) {
             if (now - this.lastLiveSyncMs >= this.LIVE_SYNC_COOLDOWN_MS) {
                 this.videoElement.currentTime = Math.max(0, liveEdge - this.LIVE_TARGET_LATENCY);
                 this.lastLiveSyncMs = now;
                 if (this.videoElement.paused) {
-                    void this.videoElement.play();
+                    this.videoElement.play();
                 }
             }
             if (this.videoElement.playbackRate !== 1) {
@@ -108,8 +132,8 @@ class MsMediaSource {
             return;
         }
 
-        if (bufferTime > 0.45) {
-            const rate = Math.min(1.15, 1 + (bufferTime - 0.45) * 0.15);
+        if (bufferTime > 0.55) {
+            const rate = Math.min(1.08, 1 + (bufferTime - 0.55) * 0.12);
             if (Math.abs(this.videoElement.playbackRate - rate) > 0.01) {
                 this.videoElement.playbackRate = rate;
             }
@@ -131,10 +155,15 @@ class MsMediaSource {
         const playbackStuck = timeSinceAdvance > 2000
             && Math.abs(this.videoElement.currentTime - this.lastPlaybackTime) < 0.05;
 
-        if (bufferTime > 1 || playbackStuck || this.videoElement.paused) {
+        if (playbackStuck || this.videoElement.paused) {
+            this.waitingForBuffer = true;
+        }
+
+        if (bufferTime > 1.2) {
             this.videoElement.currentTime = Math.max(0, liveEdge - this.LIVE_TARGET_LATENCY);
             this.lastLiveSyncMs = now;
-            void this.videoElement.play();
+            this.waitingForBuffer = false;
+            this.videoElement.play();
         }
     }
 
@@ -380,9 +409,11 @@ class MsMediaSource {
             return;
         }
 
-        // Live preview: one fMP4 fragment per append to keep MSE timeline in sync
-        const batchSize = this.isPlayback ? len : 1;
-        const batch = this.frameBuffer.splice(0, batchSize);
+        // Drain all fragments that accumulated while SourceBuffer was busy.
+        // Appending one fragment per updateend adds enough MSE overhead for the
+        // WebSocket producer to outrun the consumer, which eventually forced the
+        // old queue policy to discard visible frames.
+        const batch = this.frameBuffer.splice(0, len);
 
         let totalSize = 0;
         for (let i = 0; i < batch.length; i += 1) {
@@ -401,10 +432,7 @@ class MsMediaSource {
         try {
             this.sourceBuffer.appendBuffer(segmentBuffer);
             this.updateend = 0;
-            if (!this.isPlayback) {
-                this.initSegmentAppended = true;
-            }
-            if (this.videoElement?.paused) {
+            if (this.isPlayback && this.videoElement?.paused) {
                 this.videoElement.style.display = "";
                 this.videoElement.play();
                 this.cb({
@@ -433,24 +461,11 @@ class MsMediaSource {
             }
         }
 
-        if (!this.isPlayback) {
-            this.frameBuffer.push(objData);
-            // Only drop stale moofs after init segment is in MSE
-            if (
-                this.initSegmentAppended
-                && this.sourceBuffer !== null
-                && this.updateend === 1
-                && this.frameBuffer.length > 12
-            ) {
-                this.frameBuffer.splice(0, this.frameBuffer.length - 6);
-            }
-        } else if (this.frameBuffer.length >= this.MAX_FRAME_BUFFER_SIZE) {
+        if (this.frameBuffer.length >= this.MAX_FRAME_BUFFER_SIZE) {
             console.warn(`Frame buffer full (${this.frameBuffer.length}), dropping oldest frames`);
             this.frameBuffer.splice(0, Math.floor(this.MAX_FRAME_BUFFER_SIZE * 0.3));
-            this.frameBuffer.push(objData);
-        } else {
-            this.frameBuffer.push(objData);
         }
+        this.frameBuffer.push(objData);
 
         if (snapshotFlag === 0) {
             this.updateSourceBuffer();
@@ -486,7 +501,10 @@ class MsMediaSource {
             this.videoElement.removeEventListener('stalled', this.boundOnVideoStall);
         }
         this.videoElement = video;
-        this.boundOnVideoStall = () => this.recoverIfNeeded();
+        this.boundOnVideoStall = () => {
+            this.waitingForBuffer = true;
+            this.recoverIfNeeded();
+        };
         video.addEventListener('waiting', this.boundOnVideoStall);
         video.addEventListener('stalled', this.boundOnVideoStall);
     }
@@ -500,6 +518,8 @@ class MsMediaSource {
         this.lastLiveSyncMs = 0;
         this.lastPlaybackTime = 0;
         this.lastPlaybackCheckMs = 0;
+        this.waitingForBuffer = true;
+        this.hasStartedPlayback = false;
         if (this.sourceBuffer && !this.sourceBuffer.updating && this.mediaSource && this.mediaSource.readyState === 'open') {
             try {
                 const { buffered } = this.sourceBuffer;
@@ -515,7 +535,6 @@ class MsMediaSource {
     }
 
     resetLivePreview(video: HTMLVideoElement): void {
-        this.initSegmentAppended = false;
         this.clearBuffer();
         if (this.mediaSource || this.initFlag !== MsMediaSource.statusIdel) {
             this.uninitMse();

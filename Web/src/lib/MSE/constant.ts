@@ -31,8 +31,10 @@ export const frameHeaderSize = 88
 export const specialDuration = 1 // 1 second
 export const maxDuration = 10 // 10 seconds
 
-// JMuxer feed `time` is in milliseconds (internally multiplied by 1000 for microseconds)
-export const previewFrameMs = 33; // ~30fps
+// The device preview stream is 25 fps. Keeping the MSE timeline at 40 ms per
+// frame prevents the browser from consuming the live buffer faster than frames
+// arrive over WebSocket.
+export const previewFrameMs = 40;
 export const maxFrameMs = maxDuration * 1000;
 
 // Debug switches

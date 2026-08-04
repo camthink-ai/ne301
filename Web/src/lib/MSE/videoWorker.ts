@@ -40,7 +40,7 @@ declare const JMuxer: {
 // @ts-expect-error: importScripts is only available in worker context and jmuxer is UMD
 importScripts('/libs/jmuxer.min.js');
 
-const jmuxer: JMuxer = new JMuxer({ fps: 30 });
+const jmuxer: JMuxer = new JMuxer({ fps: 25 });
 let animationFrameId: number | null = null;
 let jmuxerCmd: MessageEvent<VideoWorkerMessage>[] = [];
 
