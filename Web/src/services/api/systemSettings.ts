@@ -77,7 +77,7 @@ const systemSettings = {
     prioritizeNetworkReq: (data: { interface: string }) => request.post('/api/v1/system/network/comm/prioritize', data),
 
     // wifi
-    getNetworkSTAReq: () => request.get('/api/v1/system/network/wifi/sta'),
+    getNetworkSTAReq: (config?: { skipErrorToast?: boolean; signal?: AbortSignal }) => request.get('/api/v1/system/network/wifi/sta', config),
     getAPConfigReq: () => request.get('/api/v1/system/network/wifi/ap'),
     scanWifi: () => request.post('/api/v1/system/network/wifi/scan'),
     setWifi: (data: SetWifiReq) => request.post('/api/v1/system/network/wifi', data),
