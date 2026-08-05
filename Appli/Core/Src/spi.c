@@ -24,6 +24,7 @@
 #include <string.h>
 #include "cmsis_os2.h"
 #include "rcc_ic_auto.h"
+#include "netif_manager.h"
 /* USER CODE END 0 */
 
 SPI_HandleTypeDef hspi2;
@@ -58,8 +59,8 @@ void MX_SPI2_Init(void)
   hspi2.Init.Mode = SPI_MODE_MASTER;
   hspi2.Init.Direction = SPI_DIRECTION_2LINES;
   hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi2.Init.CLKPolarity = SPI_POLARITY_HIGH;
-  hspi2.Init.CLKPhase = SPI_PHASE_2EDGE;
+  hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi2.Init.NSS = SPI_NSS_SOFT;
   hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
   hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
@@ -150,23 +151,32 @@ void MX_SPI6_Init(void)
   /* USER CODE END SPI6_Init 1 */
   hspi6.Instance = SPI6;
   hspi6.Init.Mode = SPI_MODE_MASTER;
+#if NETIF_WIFI_HALOW_IS_ENABLE
+  /* ---- Halow: bidirectional SDIO-over-SPI ---- */
+  hspi6.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi6.Init.NSS = SPI_NSS_SOFT;
+  hspi6.Init.NSSPMode = SPI_NSS_PULSE_DISABLE;
+  hspi6.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_ENABLE;
+#else
+  /* ---- SensorExt: TX-only, hardware NSS with pulse ---- */
   hspi6.Init.Direction = SPI_DIRECTION_2LINES_TXONLY;
+  hspi6.Init.NSS = SPI_NSS_HARD_OUTPUT;
+  hspi6.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
+  hspi6.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_DISABLE;
+#endif
   hspi6.Init.DataSize = SPI_DATASIZE_8BIT;
   hspi6.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi6.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi6.Init.NSS = SPI_NSS_HARD_OUTPUT;
   hspi6.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
   hspi6.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi6.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi6.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi6.Init.CRCPolynomial = 0x7;
-  hspi6.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
   hspi6.Init.NSSPolarity = SPI_NSS_POLARITY_LOW;
   hspi6.Init.FifoThreshold = SPI_FIFO_THRESHOLD_01DATA;
   hspi6.Init.MasterSSIdleness = SPI_MASTER_SS_IDLENESS_00CYCLE;
   hspi6.Init.MasterInterDataIdleness = SPI_MASTER_INTERDATA_IDLENESS_00CYCLE;
   hspi6.Init.MasterReceiverAutoSusp = SPI_MASTER_RX_AUTOSUSP_DISABLE;
-  hspi6.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_DISABLE;
   hspi6.Init.IOSwap = SPI_IO_SWAP_DISABLE;
   hspi6.Init.ReadyMasterManagement = SPI_RDY_MASTER_MANAGEMENT_INTERNALLY;
   hspi6.Init.ReadyPolarity = SPI_RDY_POLARITY_HIGH;
@@ -183,6 +193,26 @@ void MX_SPI6_Init(void)
   }
   /* USER CODE END SPI6_Init 2 */
 
+}
+
+void MX_SPI6_DeInit(void)
+{
+  /* USER CODE BEGIN SPI6_DeInit 0 */
+
+  /* USER CODE END SPI6_DeInit 0 */
+
+  (void)HAL_SPI_Abort(&hspi6);
+  if (HAL_SPI_DeInit(&hspi6) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /* USER CODE BEGIN SPI6_DeInit 1 */
+  if (sem_spi6 != NULL) {
+    osSemaphoreDelete(sem_spi6);
+    sem_spi6 = NULL;
+  }
+  /* USER CODE END SPI6_DeInit 1 */
 }
 
 void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
@@ -220,14 +250,14 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
     */
     GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_2;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF5_SPI2;
     HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
     GPIO_InitStruct.Pin = GPIO_PIN_2;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF5_SPI2;
     HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
@@ -441,8 +471,8 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
     */
 #if SPI4_NSS_IS_USE_SOFT_CTRL
     GPIO_InitStruct.Pin = GPIO_PIN_11;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = 0;
     HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
@@ -654,8 +684,12 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
 
     /** Initializes the peripherals clock
     */
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    RCC_IC_FillSPI6_PLL_IC9(&PeriphClkInitStruct);
+#else
     PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SPI6;
     PeriphClkInitStruct.Spi6ClockSelection = RCC_SPI6CLKSOURCE_CLKP;
+#endif
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
     {
       Error_Handler();
@@ -665,7 +699,39 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
     __HAL_RCC_SPI6_CLK_ENABLE();
 
     __HAL_RCC_GPIOA_CLK_ENABLE();
+
+#if NETIF_WIFI_HALOW_IS_ENABLE
+	  __HAL_RCC_GPIOB_CLK_ENABLE();
+
     /**SPI6 GPIO Configuration
+    PA5     ------> SPI6_SCK
+    PA0     ------> SPI6_NSS
+    PA7     ------> SPI6_MOSI
+    PB4     ------> SPI6_MISO
+    */
+    GPIO_InitStruct.Pin = MM_HALOW_SPI_CLK_Pin | MM_HALOW_SPI_MOSI_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF8_SPI6;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    GPIO_InitStruct.Pin = MM_HALOW_SPI_CS_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    GPIO_InitStruct.Alternate = 0;
+    HAL_GPIO_Init(MM_HALOW_SPI_CS_GPIO_Port, &GPIO_InitStruct);
+	  HAL_GPIO_WritePin(MM_HALOW_SPI_CS_GPIO_Port, MM_HALOW_SPI_CS_Pin, GPIO_PIN_SET);
+
+    GPIO_InitStruct.Pin = MM_HALOW_SPI_MISO_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF8_SPI6;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+#else
+    /**SPI6 GPIO Configuration (SensorExt — TX only, hardware NSS)
     PA5     ------> SPI6_SCK
     PA0     ------> SPI6_NSS
     PA7     ------> SPI6_MOSI
@@ -683,6 +749,7 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF5_SPI6;
     HAL_GPIO_Init(TFT_CS_GPIO_Port, &GPIO_InitStruct);
+#endif
 
     /* SPI6 DMA Init */
     /* HPDMA1_REQUEST_SPI6_RX Init */
@@ -840,7 +907,12 @@ void HAL_SPI_MspDeInit(SPI_HandleTypeDef* spiHandle)
     PA0     ------> SPI6_NSS
     PA7     ------> SPI6_MOSI
     */
-    HAL_GPIO_DeInit(GPIOA, TFT_CLK_Pin|TFT_CS_Pin|TFT_MOSI_Pin);
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    HAL_GPIO_DeInit(GPIOA, MM_HALOW_SPI_CLK_Pin | MM_HALOW_SPI_CS_Pin | MM_HALOW_SPI_MOSI_Pin);
+    HAL_GPIO_DeInit(GPIOB, MM_HALOW_SPI_MISO_Pin);
+#else
+    HAL_GPIO_DeInit(GPIOA, TFT_CLK_Pin | TFT_CS_Pin | TFT_MOSI_Pin);
+#endif
 
     /* SPI6 DMA DeInit */
     HAL_DMA_DeInit(spiHandle->hdmarx);
@@ -862,6 +934,14 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
     if (sem_spi4 != NULL) osSemaphoreRelease(sem_spi4);
   } else if (hspi->Instance == SPI2) {
     if (sem_spi2 != NULL) osSemaphoreRelease(sem_spi2);
+  } else if (hspi->Instance == SPI6) {
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    extern void mmhal_wlan_hal_dma_complete_from_isr(void);
+    mmhal_wlan_hal_dma_complete_from_isr();
+#endif
+    if (sem_spi6 != NULL) {
+      osSemaphoreRelease(sem_spi6);
+    }
   }
 }
 
@@ -880,6 +960,10 @@ void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
     printf("SPI2 Error=%lx\r\n", hspi->ErrorCode);
   } else if (hspi->Instance == SPI6) {
     printf("SPI6 Error=%lx\r\n", hspi->ErrorCode);
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    extern void mmhal_wlan_hal_dma_complete_from_isr(void);
+    mmhal_wlan_hal_dma_complete_from_isr();
+#endif
   }
 }
 
@@ -1080,7 +1164,7 @@ int SPI6_WriteBytes(const uint8_t *data, uint32_t length, uint32_t timeout)
 /**
  * @brief SPI6 transmit using DMA (blocking until complete or error).
  *
- * Uses HAL_SPI_Transmit_DMA and waits on sem_spi6. Intended for TFT
+ * Uses HAL_SPI_Transmit_DMA and waits on sem_spi6. Intended for sensor extension board
  * bulk data (e.g. fill_rect / draw_bitmap line buffer). Buffer must
  * remain valid until the function returns.
  *

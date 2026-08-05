@@ -95,7 +95,9 @@ static void qn_mqtt_event_handler(ms_mqtt_event_data_t *event_data, void *user_a
 static void qn_mqtt_drain_queue(int publish_err);
 static void qn_mqtt_thread_exit_notify(void);
 static int qn_auto_parallel_full_connect(void);
+static int qn_auto_serial_connect(void);
 static int qn_try_connect_one_ex(qs_comm_pref_type_t type, const char *if_name, int set_default);
+static int qn_try_connect_one(qs_comm_pref_type_t type, const char *if_name);
 
 static int qn_ensure_netif_inited(const char *if_name)
 {
@@ -145,6 +147,14 @@ static int qn_apply_netif_cfg(qs_comm_pref_type_t type, const char *if_name)
         memcpy(&cfg.cellular_cfg, &qs_cfg.cellular_cfg, sizeof(cfg.cellular_cfg));
     } else if (type == COMM_PREF_TYPE_POE) {
         /* already applied by common block */
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    } else if (type == COMM_PREF_TYPE_HALOW) {
+        strncpy(cfg.wireless_cfg.ssid, qs_cfg.wireless_cfg.ssid, sizeof(cfg.wireless_cfg.ssid) - 1);
+        strncpy(cfg.wireless_cfg.pw, qs_cfg.wireless_cfg.pw, sizeof(cfg.wireless_cfg.pw) - 1);
+        cfg.wireless_cfg.security = qs_cfg.wireless_cfg.security;
+        strncpy(cfg.halow_cfg.country_code, qs_cfg.halow_cfg.country_code,
+                sizeof(cfg.halow_cfg.country_code) - 1);
+#endif
     }
 
     return nm_set_netif_cfg(if_name, &cfg);
@@ -342,6 +352,119 @@ static int qn_try_connect_one(qs_comm_pref_type_t type, const char *if_name)
     return qn_try_connect_one_ex(type, if_name, 1);
 }
 
+#if NETIF_WIFI_HALOW_IS_ENABLE
+static void qn_deinit_halow_if_needed(void)
+{
+    netif_state_t st = nm_get_netif_state(NETIF_NAME_WIFI_HALOW);
+    if (st != NETIF_STATE_DEINIT) {
+        (void)nm_ctrl_netif_down(NETIF_NAME_WIFI_HALOW);
+        (void)nm_ctrl_netif_deinit(NETIF_NAME_WIFI_HALOW);
+    }
+}
+
+static int qn_halow_try_connect(void)
+{
+    netif_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+
+    if (quick_storage_read_netif_config(COMM_PREF_TYPE_HALOW, &cfg) != 0) {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+    if (cfg.wireless_cfg.ssid[0] == '\0') {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+
+    int ret = qn_ensure_netif_inited(NETIF_NAME_WIFI_HALOW);
+    if (ret != 0) {
+        return ret;
+    }
+
+    ret = qn_apply_netif_cfg(COMM_PREF_TYPE_HALOW, NETIF_NAME_WIFI_HALOW);
+    if (ret != 0) {
+        return ret;
+    }
+
+    if (nm_wireless_update_scan_result_ex(NETIF_NAME_WIFI_HALOW, 3000) != 0) {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+
+    wireless_scan_result_t *scan = nm_wireless_get_scan_result_ex(NETIF_NAME_WIFI_HALOW);
+    aicam_bool_t found = AICAM_FALSE;
+    if (scan != NULL && scan->scan_info != NULL) {
+        aicam_bool_t have_bssid = NETIF_MAC_IS_UNICAST(cfg.wireless_cfg.bssid) ? AICAM_TRUE : AICAM_FALSE;
+
+        for (uint32_t i = 0; i < (uint32_t)scan->scan_count; i++) {
+            if (strncmp(scan->scan_info[i].ssid, cfg.wireless_cfg.ssid,
+                        sizeof(scan->scan_info[i].ssid)) != 0) {
+                continue;
+            }
+            if (have_bssid &&
+                memcmp(cfg.wireless_cfg.bssid, scan->scan_info[i].bssid, 6) != 0) {
+                continue;
+            }
+            memcpy(cfg.wireless_cfg.bssid, scan->scan_info[i].bssid,
+                   sizeof(cfg.wireless_cfg.bssid));
+            (void)nm_set_netif_cfg(NETIF_NAME_WIFI_HALOW, &cfg);
+            found = AICAM_TRUE;
+            break;
+        }
+    }
+    if (!found) {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+
+    ret = nm_ctrl_netif_up(NETIF_NAME_WIFI_HALOW);
+    if (ret != 0) {
+        return ret;
+    }
+
+    (void)nm_ctrl_set_default_netif(NETIF_NAME_WIFI_HALOW);
+    return 0;
+}
+#endif
+
+static int qn_auto_serial_connect(void)
+{
+    int ret;
+
+#if NETIF_ETH_WAN_IS_ENABLE
+    ret = qn_try_connect_one(COMM_PREF_TYPE_POE, NETIF_NAME_ETH_WAN);
+    if (ret == 0) {
+        strncpy(s_active_if_name, NETIF_NAME_ETH_WAN, sizeof(s_active_if_name) - 1);
+        s_comm_pref_type = COMM_PREF_TYPE_POE;
+        return 0;
+    }
+#endif
+
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    ret = qn_halow_try_connect();
+    if (ret == 0) {
+        strncpy(s_active_if_name, NETIF_NAME_WIFI_HALOW, sizeof(s_active_if_name) - 1);
+        s_comm_pref_type = COMM_PREF_TYPE_HALOW;
+        return 0;
+    }
+    qn_deinit_halow_if_needed();
+#endif
+
+#if NETIF_4G_CAT1_IS_ENABLE
+    ret = qn_try_connect_one(COMM_PREF_TYPE_CELLULAR, NETIF_NAME_4G_CAT1);
+    if (ret == 0) {
+        strncpy(s_active_if_name, NETIF_NAME_4G_CAT1, sizeof(s_active_if_name) - 1);
+        s_comm_pref_type = COMM_PREF_TYPE_CELLULAR;
+        return 0;
+    }
+#endif
+
+    ret = qn_wifi_try_connect_known(3000, QN_WIFI_STA_INIT_UNKNOWN);
+    if (ret == 0) {
+        strncpy(s_active_if_name, NETIF_NAME_WIFI_STA, sizeof(s_active_if_name) - 1);
+        s_comm_pref_type = COMM_PREF_TYPE_WIFI;
+        return 0;
+    }
+
+    return ret;
+}
+
 typedef struct {
     qs_comm_pref_type_t type;
     const char *if_name;
@@ -520,12 +643,17 @@ static void qn_network_thread(void *argument)
         return;
     }
     if (pref == COMM_PREF_TYPE_AUTO) {
-        /* Full parallel connect attempts; first success wins (aligned with upper layer). */
+        /* Serial connect: PoE -> HaLow -> 4G -> WiFi (HaLow/4G mutually exclusive). */
         s_active_if_name[0] = '\0';
-        ret = qn_auto_parallel_full_connect();
+        ret = qn_auto_serial_connect();
     } else if (pref == COMM_PREF_TYPE_POE) {
         ret = qn_try_connect_one(COMM_PREF_TYPE_POE, NETIF_NAME_ETH_WAN);
         if (ret == 0) strncpy(s_active_if_name, NETIF_NAME_ETH_WAN, sizeof(s_active_if_name) - 1);
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    } else if (pref == COMM_PREF_TYPE_HALOW) {
+        ret = qn_halow_try_connect();
+        if (ret == 0) strncpy(s_active_if_name, NETIF_NAME_WIFI_HALOW, sizeof(s_active_if_name) - 1);
+#endif
     } else if (pref == COMM_PREF_TYPE_CELLULAR) {
         ret = qn_try_connect_one(COMM_PREF_TYPE_CELLULAR, NETIF_NAME_4G_CAT1);
         if (ret == 0) strncpy(s_active_if_name, NETIF_NAME_4G_CAT1, sizeof(s_active_if_name) - 1);
@@ -952,6 +1080,9 @@ void quick_network_deinit(void)
         /* Not in remote-wakeup keep-alive mode: bring down and deinit active interface. */
         const char *if_name = NULL;
         if (s_comm_pref_type == COMM_PREF_TYPE_WIFI) if_name = NETIF_NAME_WIFI_STA;
+#if NETIF_WIFI_HALOW_IS_ENABLE
+        else if (s_comm_pref_type == COMM_PREF_TYPE_HALOW) if_name = NETIF_NAME_WIFI_HALOW;
+#endif
         else if (s_comm_pref_type == COMM_PREF_TYPE_CELLULAR) if_name = NETIF_NAME_4G_CAT1;
         else if (s_comm_pref_type == COMM_PREF_TYPE_POE) if_name = NETIF_NAME_ETH_WAN;
 

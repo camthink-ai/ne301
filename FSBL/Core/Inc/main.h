@@ -64,11 +64,12 @@ typedef funcptr funcptr_NS;
 
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
-
+// #include <stdio.h>
 /* USER CODE END EM */
 
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
+// #define Error_Handler() printf("FSBL: Error_Handler, file: %s line: %d\n", __FILE__, __LINE__);
 
 /* USER CODE BEGIN EFP */
 

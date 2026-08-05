@@ -10,6 +10,7 @@
  #include <stdlib.h> 
  #include "debug.h"
  #include "buffer_mgr.h"
+ #include "storage.h"
  
 
 #pragma pack(push, 1) 
@@ -72,6 +73,8 @@ mime_type_map_t mime_type_map[] = {
 
 web_asset_t* web_assets = NULL;
 static uint32_t g_asset_count = 0;
+static uint8_t *g_asset_blob = NULL;
+static size_t g_asset_blob_size = 0;
 
 static const char *get_mime_type(const char *filename) {
     const char *ext = strrchr(filename, '.');
@@ -92,32 +95,47 @@ static const char *get_mime_type(const char *filename) {
     if (!asset_data) {
         return AICAM_ERROR_INVALID_PARAM;
     }
-    const asset_bin_header_t* header_ptr = (const asset_bin_header_t*)asset_data;
-    
-    uint32_t file_count = header_ptr->file_count;
-    uint32_t data_total_size = header_ptr->total_size;
-    size_t asset_file_total_size = sizeof(asset_bin_header_t) + (file_count * sizeof(asset_file_index_t)) + data_total_size;
 
-    //offset 1k from the beginning of the asset_data to skip the header
-    asset_data += 1024;
+    // Re-init safe
+    web_asset_adapter_deinit();
 
- 
-    const asset_bin_header_t* header = (const asset_bin_header_t*)asset_data;
- 
+    // Offset 1k from the beginning of the asset_data to skip the boot/header region
+    const uint8_t *asset_flash = asset_data + 1024;
+
+    // Validate header (while flash is locked against mode switches / concurrent writers)
+    storage_lock();
+    const asset_bin_header_t* header = (const asset_bin_header_t*)asset_flash;
     if (strncmp(header->magic, "WEBASSETS", 8) != 0) {
+        storage_unlock();
         return AICAM_ERROR_INVALID_DATA;
     }
- 
-    g_asset_count = header->file_count;
- 
-    web_assets = (web_asset_t*)buffer_calloc(g_asset_count, sizeof(web_asset_t));
-    if (web_assets == NULL) {
+
+    uint32_t file_count = header->file_count;
+    uint32_t data_total_size = header->total_size;
+    size_t asset_file_total_size =
+        sizeof(asset_bin_header_t) + ((size_t)file_count * sizeof(asset_file_index_t)) + (size_t)data_total_size;
+
+    // Copy the whole asset.bin payload into RAM so later accesses don't directly dereference flash-mapped addresses.
+    g_asset_blob = (uint8_t*)buffer_calloc(1, asset_file_total_size);
+    if (g_asset_blob == NULL) {
+        storage_unlock();
         return AICAM_ERROR_NO_MEMORY;
     }
- 
-    const asset_file_index_t* index_table = (const asset_file_index_t*)(asset_data + sizeof(asset_bin_header_t));
-    const uint8_t* data_section = asset_data;
- 
+    g_asset_blob_size = asset_file_total_size;
+    memcpy(g_asset_blob, asset_flash, asset_file_total_size);
+    storage_unlock();
+
+    g_asset_count = file_count;
+    web_assets = (web_asset_t*)buffer_calloc(g_asset_count, sizeof(web_asset_t));
+    if (web_assets == NULL) {
+        web_asset_adapter_deinit();
+        return AICAM_ERROR_NO_MEMORY;
+    }
+
+    const asset_file_index_t* index_table =
+        (const asset_file_index_t*)(g_asset_blob + sizeof(asset_bin_header_t));
+    const uint8_t* data_section = g_asset_blob;
+
     for (uint32_t i = 0; i < g_asset_count; i++) {
         web_assets[i].path = index_table[i].path;
         web_assets[i].size = index_table[i].size;
@@ -141,7 +159,8 @@ static const char *get_mime_type(const char *filename) {
         web_assets[i].hash = 0; 
     }
      
-    LOG_SVC_INFO("[ASSETS] Asset adapter initialized, %lu files loaded, total size: %u bytes.\n", g_asset_count, (unsigned long)asset_file_total_size);
+    LOG_SVC_INFO("[ASSETS] Asset adapter initialized, %lu files loaded, total size: %u bytes.\n",
+                 g_asset_count, (unsigned long)g_asset_blob_size);
     return AICAM_OK;
  }
  
@@ -150,6 +169,12 @@ static const char *get_mime_type(const char *filename) {
          buffer_free(web_assets);
          web_assets = NULL;
          g_asset_count = 0;
+     }
+
+     if (g_asset_blob != NULL) {
+         buffer_free(g_asset_blob);
+         g_asset_blob = NULL;
+         g_asset_blob_size = 0;
      }
  }
  

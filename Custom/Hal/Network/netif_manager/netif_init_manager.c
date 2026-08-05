@@ -7,14 +7,18 @@
 #include "netif_manager.h"
 #include "debug.h"
 #include "drtc.h"
+#include "common_utils.h"
 #include <string.h>
 #include <stdio.h>
 #include "cmsis_os2.h"
 
 /* ==================== Configuration ==================== */
 
-#define MAX_NETIF_COUNT 4
-#define NETIF_INIT_STACK_SIZE 4096 * 3
+#define MAX_NETIF_COUNT       6
+#define NETIF_INIT_STACK_SIZE (4096 * 4)
+
+/* One fixed stack per registration slot; stack_slot in entry survives priority sort. */
+static uint8_t s_netif_init_stacks[MAX_NETIF_COUNT][NETIF_INIT_STACK_SIZE] ALIGN_32 IN_PSRAM;
 
 /* ==================== Internal Types ==================== */
 
@@ -22,7 +26,7 @@ typedef struct {
     netif_init_config_t config;
     osThreadId_t task_id;
     osSemaphoreId_t ready_semaphore;
-    void* stack_mem;
+    uint8_t stack_slot;
 } netif_init_entry_t;
 
 typedef struct {
@@ -36,6 +40,14 @@ typedef struct {
 /* ==================== Global Context ==================== */
 
 static netif_init_manager_t g_netif_init_mgr = {0};
+
+static void *netif_init_stack_for_slot(uint8_t stack_slot)
+{
+    if (stack_slot >= MAX_NETIF_COUNT) {
+        return NULL;
+    }
+    return s_netif_init_stacks[stack_slot];
+}
 
 /* ==================== Internal Helper Functions ==================== */
 
@@ -101,7 +113,7 @@ static void netif_init_task(void *argument)
     if (!entry) {
         osMutexRelease(g_netif_init_mgr.mutex);
         LOG_DRV_ERROR("Entry not found for interface: %s", if_name);
-        osThreadExit();
+        osThreadTerminate(osThreadGetId());
         return;
     }
     
@@ -131,14 +143,15 @@ static void netif_init_task(void *argument)
         if (entry->config.callback) {
             entry->config.callback(if_name, AICAM_ERROR);
         }
-        if (entry->stack_mem) {
-            hal_mem_free(entry->stack_mem);
-        }
-        osThreadExit();
+        osThreadTerminate(osThreadGetId());
         return;
     }
 
-    if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0 ) {
+    if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0
+#if NETIF_WIFI_HALOW_IS_ENABLE
+        || strcmp(if_name, NETIF_NAME_WIFI_HALOW) == 0
+#endif
+    ) {
         goto end;
     }
 
@@ -201,12 +214,7 @@ end:
         entry->config.callback(if_name, result);
     }
 
-    // Free stack memory
-    if (entry->stack_mem) {
-        hal_mem_free(entry->stack_mem);
-    }
-
-    osThreadExit();
+    osThreadTerminate(osThreadGetId());
 }
 
 /* ==================== Public API Implementation ==================== */
@@ -297,6 +305,7 @@ aicam_result_t netif_init_manager_register(const netif_init_config_t *config)
     }
     
     entry->task_id = NULL;
+    entry->stack_slot = (uint8_t)g_netif_init_mgr.entry_count;
     
     g_netif_init_mgr.entry_count++;
     
@@ -382,31 +391,29 @@ aicam_result_t netif_init_manager_init_async(const char *if_name)
         LOG_DRV_INFO("Interface %s is already ready", if_name);
         return AICAM_OK;
     }
-    
 
-    entry->stack_mem = hal_mem_calloc_large(1, NETIF_INIT_STACK_SIZE);
-    if (!entry->stack_mem) {
+    void *stack_mem = netif_init_stack_for_slot(entry->stack_slot);
+    if (stack_mem == NULL) {
         osMutexRelease(g_netif_init_mgr.mutex);
-        LOG_DRV_ERROR("Failed to allocate stack memory for %s", if_name);
-        return AICAM_ERROR_NO_MEMORY;
+        LOG_DRV_ERROR("Invalid stack slot for %s", if_name);
+        return AICAM_ERROR_INVALID_PARAM;
     }
-    
+
     osThreadAttr_t task_attr = {
-        // .name = task_name,
         .name = if_name,
-        .stack_mem = entry->stack_mem,
+        .stack_mem = stack_mem,
         .stack_size = NETIF_INIT_STACK_SIZE,
-        .priority = (entry->config.priority == NETIF_INIT_PRIORITY_HIGH) ? 
+        .priority = (entry->config.priority == NETIF_INIT_PRIORITY_HIGH) ?
                     osPriorityAboveNormal : osPriorityNormal
     };
-    
+
+    entry->task_id = NULL;
     entry->task_id = osThreadNew(netif_init_task, (void *)if_name, &task_attr);
-    
+
     if (!entry->task_id) {
         osMutexRelease(g_netif_init_mgr.mutex);
         LOG_DRV_ERROR("Failed to create initialization task for %s", if_name);
-        hal_mem_free(entry->stack_mem);
-        entry->stack_mem = NULL;
+        entry->task_id = NULL;
         return AICAM_ERROR;
     }
     

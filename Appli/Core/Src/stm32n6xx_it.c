@@ -20,7 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32n6xx_it.h"
-
+#include "netif_manager.h"
 #include "cmw_camera.h"
 #include "debug.h"
 #include "usb_otg.h"
@@ -640,14 +640,14 @@ void SPI6_IRQHandler(void)
   /* USER CODE END SPI6_IRQn 0 */
   /* SPI6 is shared between SPI mode (TFT) and I2S mode (audio).
    * Dispatch to the correct HAL handler based on which is active. */
-  if (hi2s6.State != HAL_I2S_STATE_RESET)
-  {
-    HAL_I2S_IRQHandler(&hi2s6);
-  }
-  else
-  {
+  // if (hi2s6.State != HAL_I2S_STATE_RESET)
+  // {
+  //   HAL_I2S_IRQHandler(&hi2s6);
+  // }
+  // else
+  // {
     HAL_SPI_IRQHandler(&hspi6);
-  }
+  // }
   /* USER CODE BEGIN SPI6_IRQn 1 */
 
   /* USER CODE END SPI6_IRQn 1 */
@@ -826,11 +826,17 @@ void EXTI12_IRQHandler(void)
     HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_12);
 }
 
+/* EXTI15_IRQHandler is owned by the Morse HaLow driver (see
+ * MM_HALOW_BUSY_IRQ_HANDLER in mmhal_wlan.c, which #defines to
+ * EXTI15_IRQHandler). Keep this Cube-generated copy disabled to avoid a
+ * multiple-definition link error; mmhal_wlan.c's version also forwards to the
+ * HaLow busy callback, so it is the correct handler. */
+#if 0
 void EXTI15_IRQHandler(void)
 {
     HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_15);
 }
-
+#endif
 void CSI_IRQHandler(void)
 {
     HAL_DCMIPP_CSI_IRQHandler(CMW_CAMERA_GetDCMIPPHandle());

@@ -3,7 +3,10 @@
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![Platform](https://img.shields.io/badge/platform-STM32N6570-blue)]()
 [![License](https://img.shields.io/badge/license-Proprietary-red)]()
-[![Version](https://img.shields.io/badge/version-1.0.0.1-blue)]()
+[![Version](https://img.shields.io/badge/version-2.3.0-blue)]()
+[![Changelog](https://img.shields.io/badge/changelog-v2.3.0-green)]()
+
+> 📋 **[Change Log](Docs/NE301_v2.3.0_ChangeLog.md)** — see what's new in v2.3.0
 
 > High-performance AI vision camera system based on STM32N6570 Discovery Kit, featuring real-time video processing, neural network acceleration, and modern web interface.
 
@@ -194,7 +197,7 @@ make model STEDGEAI_VARIANT=3.0   # requires matching stedgeai + STEDGEAI_CORE_D
 ```bash
   ne301_FSBL_signed.bin       --> use for stm32n6 FSBL        --> flash addr 0x70000000
   ne301_App_signed_pkg.bin    --> use for stm32n6 App         --> flash addr 0x70100000
-  ne301_Web_pkg.bin           --> use for web gui             --> flash addr 0x70400000
+  ne301_Web_pkg.bin           --> use for web gui             --> flash addr 0x71900000
   ne301_Model_pkg.bin         --> use for AI model            --> flash addr 0x70900000
   # Connect ST Link to U0 first, then execute
   ne301_WakeCore.bin          --> use for stm32u0 wakecore    --> flash addr 0x08000000 

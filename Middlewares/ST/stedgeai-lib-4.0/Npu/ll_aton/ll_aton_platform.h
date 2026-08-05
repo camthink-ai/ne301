@@ -125,6 +125,7 @@ extern uint8_t *get_zynq_aton_base(void);
 #define ATON_PLAT_HAS_FFLUSH (1)
 
 #define __WFE()
+#define __DSB()
 #define NVIC_EnableIRQ(x)
 #define NVIC_DisableIRQ(x)
 

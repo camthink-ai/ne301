@@ -32,7 +32,7 @@
  *  - v3.2 - added other stellar devices
  *  - v3.3 - added the stellar sr6p3e device
  *  - v3.4 - New Stellar SDKs support
- *
+ *  - v3.5 - Adding STM32C5 definitions
  */
 
 /*
@@ -84,6 +84,10 @@
 #define USE_USB_CDC_CLASS 0
 #endif
 
+/* With HAL version 2, the READ_BIT is replaced by the STM32_READ_BIT macro */
+#if defined(HAL_VERSION_MAIN) && HAL_VERSION_MAIN == 2UL
+#define READ_BIT(REG, BIT)  STM32_READ_BIT(REG, BIT)
+#endif
 
 /* -----------------------------------------------------------------------------
  * Sanity check
@@ -474,6 +478,8 @@ struct io_malloc io_malloc;
 
 void* __real_malloc(size_t bytes);
 void __real_free(void *ptr);
+void* __wrap_malloc(size_t bytes);
+void __wrap_free(void *ptr);
 
 void* __wrap_malloc(size_t bytes)
 {
@@ -717,6 +723,10 @@ static const char *devIdToStr(uint16_t dev_id)
 #elif defined(STM32H5)
   case 0x484: str = "STM32H5x"; break;  /* */
   case 0x474: str = "STM32H503"; break;  /* */
+#elif defined(STM32C5)
+  case 0x44E: str = "STM32C55xx/C56xx"; break;  /* see RM0522 - DBGMCU_IDCODE register description */
+  case 0x44F: str = "STM32C53xx/C54xx"; break;  /* see RM0522 - DBGMCU_IDCODE register description */
+  case 0x45A: str = "STM32C59xx/C5Axx"; break;  /* see RM0522 - DBGMCU_IDCODE register description */
 #elif defined(STM32N6)
   case 0x486: str = "STM32N6"; break;  /* */
 #elif defined(CORSTONE_300)
@@ -798,7 +808,7 @@ void getSysConf(struct mcu_conf *conf)
 #define MCONF_L4_F4     (1 << 24)
 #define MCONF_F7        (2 << 24)
 #define MCONF_H7        (3 << 24)  /* Used for SR5E1 device - Cortex-m7 based */
-#define MCONF_U5_L5     (4 << 24)
+#define MCONF_U5_L5     (4 << 24)  /* Used for C5/H5 series */
 #define MCONF_N6        (5 << 24)
 #define MCONF_V8        (6 << 24)
 
@@ -897,7 +907,7 @@ uint32_t getFlashCacheConf(void)
 
 #endif
 
-#if defined(STM32L5) || defined(STM32U5) || defined(STM32H5)
+#if defined(STM32L5) || defined(STM32U5) || defined(STM32H5) || defined(STM32C5)
   mconf |= MCONF_U5_L5;
   if (READ_BIT(ICACHE->CR, ICACHE_CR_EN))
     mconf |= MCONF_ART_ICACHE;
@@ -1009,7 +1019,7 @@ void systemSettingLog(void)
 #if defined(SR5E1)
   LC_PRINT(" SDK version  : %d.%d.%d\r\n", (int)(port_hal_get_hal_version()&0xFF0000U)>>16U, (int)(port_hal_get_hal_version()&0xFF00U)>>8U, (int)(port_hal_get_hal_version()&0xFFU));
 #elif defined(SR6X)
-  LC_PRINT(" SDK version  : %d.%d.%d\r\n", (int)(port_hal_get_hal_version()&0xFF000000U)>>24U, (int)(port_hal_get_hal_version()&0xFF0000U)>>16U, (int)(port_hal_get_hal_version()&0xFF00U)>>16U);
+  LC_PRINT(" SDK version  : %d.%d.%d\r\n", (int)(port_hal_get_hal_version()&0xFF000000U)>>24U, (int)(port_hal_get_hal_version()&0xFF0000U)>>16U, (int)(port_hal_get_hal_version()&0xFF00U)>>8U);
 #else
   LC_PRINT(" HAL version  : 0x%08x\r\n", (int)port_hal_get_hal_version());
 #endif
@@ -1061,7 +1071,7 @@ void systemSettingLog(void)
       (int)((acr & FLASH_ACR_LATENCY_Msk) >> FLASH_ACR_LATENCY_Pos));
 #endif
 
-#if defined(STM32L5) || defined(STM32U5) || defined(STM32H5)
+#if defined(STM32L5) || defined(STM32U5) || defined(STM32H5) || defined(STM32C5)
   LC_PRINT(" ICACHE       : %s\r\n", bitToStr(READ_BIT(ICACHE->CR, ICACHE_CR_EN)));
 #endif
 

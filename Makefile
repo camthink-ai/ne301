@@ -29,13 +29,15 @@ APP_NAME = $(PROJECT_NAME)_App
 WEB_NAME = $(PROJECT_NAME)_Web
 MODEL_NAME = $(PROJECT_NAME)_Model
 U0_NAME = $(PROJECT_NAME)_WakeCore
+WIFI_NAME = $(PROJECT_NAME)_Wifi
 
 # Flash addresses
 FLASH_ADDR_FSBL = 0x70000000
 FLASH_ADDR_APP = 0x70100000
-FLASH_ADDR_WEB = 0x70400000
+FLASH_ADDR_WEB = 0x71900000
 FLASH_ADDR_MODEL = 0x70900000
 FLASH_ADDR_WAKECORE = 0x8000000
+FLASH_ADDR_WIFI = $(FLASH_ADDR_WIFI_FW_BASE)
 
 # Flash partition addresses and sizes (from mem_map.h)
 FLASH_BASE_ADDR = 0x70000000
@@ -48,18 +50,16 @@ FLASH_ADDR_APP1_BASE = 0x70100000
 FLASH_ADDR_APP1_END = 0x704FFFFF
 FLASH_ADDR_APP2_BASE = 0x70500000
 FLASH_ADDR_APP2_END = 0x708FFFFF
-FLASH_ADDR_AI_DEFAULT_BASE = 0x70900000
-FLASH_ADDR_AI_DEFAULT_END = 0x70DFFFFF
-FLASH_ADDR_AI_1_BASE = 0x70E00000
-FLASH_ADDR_AI_1_END = 0x712FFFFF
-FLASH_ADDR_AI_2_BASE = 0x71300000
-FLASH_ADDR_AI_2_END = 0x717FFFFF
-FLASH_ADDR_AI_3_BASE = 0x71800000
-FLASH_ADDR_AI_3_END = 0x71FFFFFF
-FLASH_ADDR_LITTLEFS_BASE = 0x72000000
-FLASH_ADDR_LITTLEFS_END = 0x75FFFFFF
-FLASH_ADDR_WIFI_FW_BASE = 0x77C00000
-FLASH_ADDR_WIFI_FW_END = 0x77FFFFFF
+FLASH_ADDR_AI_1_BASE = 0x70900000
+FLASH_ADDR_AI_1_END = 0x710FFFFF
+FLASH_ADDR_AI_2_BASE = 0x71100000
+FLASH_ADDR_AI_2_END = 0x718FFFFF
+FLASH_ADDR_WEB_BASE = 0x71900000
+FLASH_ADDR_WEB_END = 0x719FFFFF
+FLASH_ADDR_WIFI_FW_BASE = 0x71A00000
+FLASH_ADDR_WIFI_FW_END = 0x71CFFFFF
+FLASH_ADDR_LITTLEFS_BASE = 0x71D00000
+FLASH_ADDR_LITTLEFS_END = 0x73CFFFFF
 
 
 # Parallel build (auto-detect CPU cores)
@@ -103,7 +103,7 @@ OPT = -g3
 COMMON_CFLAGS = $(MCU_FLAGS) $(OPT) -Wall -Werror -fdata-sections -ffunction-sections -fstack-usage -std=gnu11
 COMMON_ASFLAGS = $(MCU_FLAGS) $(OPT) -Wall -Werror -fdata-sections -ffunction-sections
 COMMON_LDFLAGS = $(MCU_FLAGS) -specs=nano.specs -Wl,--gc-sections -Wl,--no-warn-rwx-segments -Wl,--print-memory-usage -u _printf_float
-COMMON_DEFS = -DSTM32N657xx -DUSE_FULL_LL_DRIVER -DUSE_DCACHE -DPWR_USE_3V3 -DBOARD_PSRAM_SIZE=64
+COMMON_DEFS = -DSTM32N657xx -DUSE_FULL_LL_DRIVER -DUSE_DCACHE -DPWR_USE_3V3 -DBOARD_PSRAM_SIZE=64 -DBOARD_FLASH_SIZE=128
 
 # Export to sub-Makefiles
 export CC AS CP SZ READELF HEX BIN MCU_FLAGS OPT
@@ -132,6 +132,18 @@ MODEL_VERSION_STR   := $(call version_string,$(MODEL_VERSION),$(MODEL_EFFECTIVE_
 WAKECORE_VERSION_STR := $(call version_string,$(WAKECORE_VERSION),$(WAKECORE_EFFECTIVE_SUFFIX))
 
 ######################################
+# WiFi Firmware Version (derived from the SiWG917 .rps file)
+######################################
+# The WiFi firmware is a vendor .rps blob under Custom/Common/Lib/SiliconLabs_SDK/firmware;
+# its version is parsed from the filename (e.g. SiWG917-B.2.15.5.0.0.2.rps).
+# pack_to_hex.py --wifi-meta prints "<4part-version> <rps-stem>"; we pick the two tokens.
+__WIFI_META := $(shell python $(PKG_SCRIPT_DIR)/pack_to_hex.py --wifi-meta 2>/dev/null)
+WIFI_VERSION     := $(word 1,$(__WIFI_META))
+WIFI_VERSION_STR := $(WIFI_VERSION)
+WIFI_RPS_NAME    := $(word 2,$(__WIFI_META))
+WIFI_DESC        := NE301 WiFi Firmware $(WIFI_RPS_NAME)
+
+######################################
 # Version Header Generation (cross-platform using Python)
 ######################################
 VERSION_HEADER = Custom/Common/Inc/version.h
@@ -142,7 +154,8 @@ version-header:
 	@echo "Generating version header..."
 	@python $(VERSION_SCRIPT) -o $(VERSION_HEADER) \
 		$(if $(VERSION_BUILD),-b $(VERSION_BUILD)) \
-		--fsbl-version "$(FSBL_VERSION_STR)"
+		--fsbl-version "$(FSBL_VERSION_STR)" \
+		--stedgeai-version "$(MODEL_STEDGEAI_VERSION)"
 
 ######################################
 # Default Target
@@ -227,11 +240,31 @@ $(eval $(call pkg_project,app,sign-app,$(APP_NAME)_signed,app,NE301_APP,$(APP_VE
 $(eval $(call pkg_project,web,web,$(WEB_NAME),web,NE301_WEB,$(WEB_VERSION),$(WEB_VERSION_STR),$(WEB_EFFECTIVE_SUFFIX),"NE301 Web User Interface"))
 $(eval $(call pkg_project,model,model,$(MODEL_NAME),ai_model,NE301_MODEL,$(MODEL_VERSION),$(MODEL_VERSION_STR),$(MODEL_EFFECTIVE_SUFFIX),"NE301 AI Model"))
 
+# WiFi firmware package: wraps the flash image (flash_header_t + .rps) with a 1KB
+# OTA header for WEB verification. The OTA header is NOT written to flash; only the
+# flash image payload is. fw_type = wifi (0x08), version derived from the .rps name.
+$(eval $(call pkg_project,wifi,wifi-image,$(WIFI_NAME)_flash,wifi,NE301_WIFI,$(WIFI_VERSION),$(WIFI_VERSION_STR),,"$(WIFI_DESC)"))
+
 .PHONY: pkg
-pkg: $(foreach proj, fsbl app web model,pkg-$(proj))
+pkg: $(foreach proj, fsbl app web model wifi,pkg-$(proj))
 	@echo "========================================="
 	@echo "Package Complete!"
 	@echo "========================================="
+
+######################################
+# WiFi Firmware image (SiWG917 .rps)
+######################################
+# The WiFi flash image = flash_header_t (32B) + raw .rps, byte-for-byte identical
+# to the WIFI region embedded by pack_to_hex.py. This is what `make flash-wifi`
+# programs to 0x71A00000 and what `make pkg-wifi` wraps with a 1KB OTA header for
+# WEB OTA (the OTA header is for web verification only and is NOT written to flash).
+.PHONY: wifi-image
+wifi-image: $(BUILD_DIR)
+	@echo "========================================="
+	@echo "Building WiFi flash image..."
+	@echo "========================================="
+	@python $(PKG_SCRIPT_DIR)/pack_to_hex.py --wifi-image $(BUILD_DIR)/$(WIFI_NAME)_flash.bin
+	@echo "WiFi flash image: $(BUILD_DIR)/$(WIFI_NAME)_flash.bin"
 
 ######################################
 # Pack to HEX
@@ -282,13 +315,16 @@ $(eval $(call flash_project,app,pkg-app,$(FLASH_ADDR_APP),$(call pkg_filename,$(
 $(eval $(call flash_project,web,pkg-web,$(FLASH_ADDR_WEB),$(call pkg_filename,$(WEB_NAME),$(WEB_VERSION_STR))))
 $(eval $(call flash_project,model,pkg-model,$(FLASH_ADDR_MODEL),$(call pkg_filename,$(MODEL_NAME),$(MODEL_VERSION_STR))))
 
+# Flash WiFi firmware: programs the flash image (flash_header_t + .rps) to WIFI_FW_BASE.
+$(eval $(call flash_project,wifi,wifi-image,$(FLASH_ADDR_WIFI),$(WIFI_NAME)_flash.bin))
+
 # Flash WakeCore without signing/packaging (STM32U0: no ExternalLoader)
 .PHONY: flash-wakecore
 flash-wakecore: wakecore
 	@$(MAKE) -C $(WAKECORE_DIR) flash
 
 .PHONY: flash
-flash: $(foreach proj,fsbl app web model,flash-$(proj)) erase-ota 
+flash: $(foreach proj,fsbl app web model wifi,flash-$(proj)) erase-ota
 	@echo "========================================="
 	@echo "Flash all to device Complete!"
 	@echo "========================================="
@@ -314,10 +350,9 @@ $(eval $(call erase_partition,nvs,$(FLASH_ADDR_NVS_BASE),$(FLASH_ADDR_NVS_END)))
 $(eval $(call erase_partition,ota,$(FLASH_ADDR_OTA_BASE),$(FLASH_ADDR_OTA_END)))
 $(eval $(call erase_partition,app1,$(FLASH_ADDR_APP1_BASE),$(FLASH_ADDR_APP1_END)))
 $(eval $(call erase_partition,app2,$(FLASH_ADDR_APP2_BASE),$(FLASH_ADDR_APP2_END)))
-$(eval $(call erase_partition,ai-default,$(FLASH_ADDR_AI_DEFAULT_BASE),$(FLASH_ADDR_AI_DEFAULT_END)))
 $(eval $(call erase_partition,ai-1,$(FLASH_ADDR_AI_1_BASE),$(FLASH_ADDR_AI_1_END)))
 $(eval $(call erase_partition,ai-2,$(FLASH_ADDR_AI_2_BASE),$(FLASH_ADDR_AI_2_END)))
-$(eval $(call erase_partition,ai-3,$(FLASH_ADDR_AI_3_BASE),$(FLASH_ADDR_AI_3_END)))
+$(eval $(call erase_partition,wifi,$(FLASH_ADDR_WIFI_FW_BASE),$(FLASH_ADDR_WIFI_FW_END)))
 $(eval $(call erase_partition,littlefs,$(FLASH_ADDR_LITTLEFS_BASE),$(FLASH_ADDR_LITTLEFS_END)))
 
 .PHONY: erase-all
@@ -421,11 +456,11 @@ info:
 	@echo "  OTA:           $(FLASH_ADDR_OTA) (8KB)"
 	@echo "  APP1:          $(FLASH_ADDR_APP1) (4MB)"
 	@echo "  APP2:          $(FLASH_ADDR_APP2) (4MB)"
-	@echo "  AI_Default:    $(FLASH_ADDR_AI_DEFAULT) (5MB)"
-	@echo "  AI_1:          $(FLASH_ADDR_AI_1) (5MB)"
-	@echo "  AI_2:          $(FLASH_ADDR_AI_2) (5MB)"
-	@echo "  AI_3:          $(FLASH_ADDR_AI_3) (8MB)"
-	@echo "  LittleFS:      $(FLASH_ADDR_LITTLEFS) (64MB)"
+	@echo "  AI_1:          $(FLASH_ADDR_AI_1) (8MB)"
+	@echo "  AI_2:          $(FLASH_ADDR_AI_2) (8MB)"
+	@echo "  WEB:           $(FLASH_ADDR_WEB) (1MB)"
+	@echo "  WiFi FW:       $(FLASH_ADDR_WIFI) (3MB)"
+	@echo "  LittleFS:      $(FLASH_ADDR_LITTLEFS) (32MB)"
 	@echo "========================================="
 	@$(CC) --version | head -n 1 2>/dev/null || echo "Toolchain not found"
 	@echo "========================================="
@@ -440,8 +475,8 @@ help:
 	@echo "          STEDGEAI_VARIANT=2.2|3.0|4.0  (default: $(STEDGEAI_VARIANT))"
 	@echo "          make wakecore   # Build STM32U0 WakeCore"
 	@echo "Sign:     make sign[-fsbl|-app]"
-	@echo "Flash:    make flash[-fsbl|-app|-web|-model|-wakecore]"
-	@echo "Package:  make pkg[-fsbl|-app|-web|-model]"
+	@echo "Flash:    make flash[-fsbl|-app|-web|-model|-wakecore|-wifi]"
+	@echo "Package:  make pkg[-fsbl|-app|-web|-model|-wifi]"
 	@echo "Pack HEX: make pack-hex  # Pack all firmware (Main, Main+WiFi, WakeCore) to HEX files"
 	@echo "          make pack-hex-wakecore  # Pack WakeCore to separate HEX file only"
 	@echo "Erase:    make erase-[nvs|ota|app1|app2|ai-default|ai-1|ai-2|ai-3|littlefs]"
@@ -468,6 +503,10 @@ help:
 	@echo "  make flash-fsbl   # Flash signed FSBL to device"
 	@echo "  make flash-app    # Flash signed APP to device"
 	@echo "  make flash-wakecore   # Flash WakeCore to U0 (0x8000000)"
+	@echo "  make wifi-image       # Build WiFi flash image (flash_header_t + .rps)"
+	@echo "  make flash-wifi       # Flash WiFi firmware to 0x71A00000"
+	@echo "  make pkg-wifi         # Package WiFi firmware for WEB OTA (1KB header + flash image)"
+	@echo "  make erase-wifi       # Erase WiFi firmware partition (0x71A00000-0x71CFFFFF)"
 	@echo "  make erase-nvs    # Erase NVS partition"
 	@echo "  make erase-app1   # Erase APP1 partition"
 	@echo "  make erase-all    # Erase all partitions"

@@ -196,6 +196,26 @@ static aicam_result_t apply_camera_config_to_hardware(const camera_config_t *con
     return AICAM_OK;
 }
 
+static void device_service_build_isp_iq_param(const image_config_t *img_cfg, ISP_IQParamTypeDef *out_iq)
+{
+    if (img_cfg == NULL || out_iq == NULL) {
+        return;
+    }
+
+    if (img_cfg->isp_mode == IMAGE_ISP_MODE_CUSTOM && g_device_service.isp_config.valid) {
+        json_config_config_to_isp_param(&g_device_service.isp_config, out_iq);
+    } else {
+        cam_iq_scene_t scene = CAM_IQ_SCENE_INDOOR;
+        if (img_cfg->isp_mode == IMAGE_ISP_MODE_OUTDOOR) {
+            scene = CAM_IQ_SCENE_OUTDOOR;
+        } else if (img_cfg->isp_mode == IMAGE_ISP_MODE_CUSTOM && !g_device_service.isp_config.valid) {
+            LOG_SVC_WARN("ISP mode custom without valid saved profile; using indoor IQ defaults");
+        }
+        camera_fill_isp_iq_scene(scene, out_iq);
+    }
+    camera_apply_grayscale_iq(out_iq, img_cfg->grayscale);
+}
+
 /**
  * @brief Initialize default device information
  */
@@ -281,14 +301,16 @@ static void init_default_camera_config(camera_config_t *config)
     config->image_config.capture_disable_comm = image_config.capture_disable_comm;
     config->image_config.capture_storage_ai = image_config.capture_storage_ai;
     config->image_config.isp_mode = image_config.isp_mode;
+    config->image_config.grayscale = image_config.grayscale;
 
-    LOG_SVC_DEBUG("Image configuration updated: brightness=%u, contrast=%u, h_flip=%d, v_flip=%d, aec=%d, isp_mode=%u, startup_skip=%u, fast_skip=%u, fast_res=%u, fast_jpeg_q=%u, cap_dis_comm=%d, cap_stor_ai=%d",
+    LOG_SVC_DEBUG("Image configuration updated: brightness=%u, contrast=%u, h_flip=%d, v_flip=%d, aec=%d, isp_mode=%u, grayscale=%d, startup_skip=%u, fast_skip=%u, fast_res=%u, fast_jpeg_q=%u, cap_dis_comm=%d, cap_stor_ai=%d",
                 config->image_config.brightness,
                 config->image_config.contrast,
                 config->image_config.horizontal_flip,
                 config->image_config.vertical_flip,
                 config->image_config.aec,
                 config->image_config.isp_mode,
+                config->image_config.grayscale,
                 config->image_config.startup_skip_frames,
                 config->image_config.fast_capture_skip_frames,
                 config->image_config.fast_capture_resolution,
@@ -388,7 +410,7 @@ void device_service_update_device_mac_address()
     netif_info_t netif_info;
     aicam_result_t result = nm_get_netif_info(NETIF_NAME_WIFI_AP, &netif_info);
     if (result == AICAM_OK) {
-        printf("IF_MAC: "NETIF_MAC_STR_FMT"\r\n", NETIF_MAC_PARAMETER(netif_info.if_mac));
+        // printf("IF_MAC: "NETIF_MAC_STR_FMT"\r\n", NETIF_MAC_PARAMETER(netif_info.if_mac));
         snprintf(g_device_service.device_info.mac_address, sizeof(g_device_service.device_info.mac_address), 
                 NETIF_MAC_STR_FMT,
                 NETIF_MAC_PARAMETER(netif_info.if_mac));
@@ -426,35 +448,35 @@ void device_service_update_communication_type()
 static void update_storage_info(storage_info_t *info)
 {
     if (!info) return;
-    
+
+    // ── SD Card ──────────────────────────────────────────
     sd_disk_info_t sd_info;
     int result = sd_get_disk_info(&sd_info);
-    
-    info->sd_card_connected = (result == 0 && 
+
+    info->sd_card_connected = (result == 0 &&
                             (sd_info.mode == SD_MODE_NORMAL || sd_info.mode == SD_MODE_FORMATING));
-    
+
     if (info->sd_card_connected && sd_info.mode == SD_MODE_NORMAL) {
         info->total_capacity_mb = (uint64_t)sd_info.total_KBytes / 1024;
         info->available_capacity_mb = (uint64_t)sd_info.free_KBytes / 1024;
         info->used_capacity_mb = info->total_capacity_mb - info->available_capacity_mb;
-        
+
         if (info->total_capacity_mb > 0) {
             info->usage_percent = (float)info->used_capacity_mb / info->total_capacity_mb * 100.0f;
         } else {
             info->usage_percent = 0.0f;
         }
-        
-        g_device_service.device_info.storage_usage_percent = info->usage_percent;
-        
 
-        snprintf(g_device_service.device_info.storage_card_info, 
+        g_device_service.device_info.storage_usage_percent = info->usage_percent;
+
+        snprintf(g_device_service.device_info.storage_card_info,
                 sizeof(g_device_service.device_info.storage_card_info),
-                "%.1fGB %s SD Card (%.1f%% used)", 
-                info->total_capacity_mb / 1024.0f, 
+                "%.1fGB %s SD Card (%.1f%% used)",
+                info->total_capacity_mb / 1024.0f,
                 sd_info.fs_type,
                 info->usage_percent);
-                
-        LOG_SVC_DEBUG("SD Card Info: Total=%.1fGB, Used=%.1fGB, Free=%.1fGB, FS=%s", 
+
+        LOG_SVC_DEBUG("SD Card Info: Total=%.1fGB, Used=%.1fGB, Free=%.1fGB, FS=%s",
                     info->total_capacity_mb / 1024.0f,
                     info->used_capacity_mb / 1024.0f,
                     info->available_capacity_mb / 1024.0f,
@@ -464,9 +486,9 @@ static void update_storage_info(storage_info_t *info)
         info->used_capacity_mb = 0;
         info->available_capacity_mb = 0;
         info->usage_percent = 0.0f;
-        
+
         g_device_service.device_info.storage_usage_percent = 0.0f;
-        
+
         const char* status_msg = "No SD Card";
         switch (sd_info.mode) {
             case SD_MODE_UNPLUG:
@@ -482,12 +504,42 @@ static void update_storage_info(storage_info_t *info)
                 status_msg = "SD Card Not Ready";
                 break;
         }
-        
-        snprintf(g_device_service.device_info.storage_card_info, 
+
+        snprintf(g_device_service.device_info.storage_card_info,
                 sizeof(g_device_service.device_info.storage_card_info),
                 "%s", status_msg);
-                
+
         LOG_SVC_DEBUG("SD Card Status: mode=%d, result=%d", sd_info.mode, result);
+    }
+
+    // ── Internal Flash (LittleFS) ────────────────────────
+    /* Only check the mounted flag (RAM, O(1)) — do NOT call storage_get_disk_info()
+     * here. That runs lfs_fs_size(), a full-FS traverse whose cost grows linearly
+     * with file count. With thousands of capture records it takes 3-4 seconds,
+     * tripping the watchdog during boot. The free/total capacity is left at 0
+     * here; the web API (device_service_get_info → storage_get_disk_info with a
+     * 2s cache) fills it in lazily on actual request, not on every boot. */
+    info->flash_fs_mounted = storage_is_lfs_mounted();
+    info->flash_fs_error = AICAM_FALSE;
+    memset(info->flash_error, 0, sizeof(info->flash_error));
+
+    if (info->flash_fs_mounted) {
+        /* total is constant — derive from the known partition size, no traverse. */
+        info->flash_total_capacity_mb = LITTLEFS_SIZE / (1024 * 1024);
+        info->flash_available_capacity_mb = 0;  /* filled lazily by web API */
+        info->flash_used_capacity_mb = 0;
+        info->flash_usage_percent = 0.0f;
+        strncpy(info->flash_fs_type, "littlefs", sizeof(info->flash_fs_type) - 1);
+        info->flash_fs_type[sizeof(info->flash_fs_type) - 1] = '\0';
+    } else {
+        /* Not mounted — surface as an error so the web UI can offer a format. */
+        info->flash_fs_error = AICAM_TRUE;
+        strncpy(info->flash_error, "not_mounted", sizeof(info->flash_error) - 1);
+        info->flash_total_capacity_mb = 0;
+        info->flash_available_capacity_mb = 0;
+        info->flash_used_capacity_mb = 0;
+        info->flash_usage_percent = 0.0f;
+        memset(info->flash_fs_type, 0, sizeof(info->flash_fs_type));
     }
 }
 
@@ -639,8 +691,8 @@ static void apply_light_control(const light_config_t *config)
     
     // Control fill light hardware through HAL layer interface
     if (should_enable) {
-        // Set brightness level (0-100 converted to 0-255)
-        uint8_t duty = (uint8_t)((config->brightness_level * 255) / 100);
+        // Set brightness level
+        uint8_t duty = config->brightness_level;
         device_ioctl(g_device_service.light_device, MISC_CMD_PWM_SET_DUTY, (uint8_t *)&duty, 0);
         device_ioctl(g_device_service.light_device, MISC_CMD_PWM_ON, 0, 0);
         LOG_SVC_DEBUG("Light turned ON with brightness: %u%% (duty: %u)", config->brightness_level, duty);
@@ -936,6 +988,23 @@ aicam_result_t device_service_get_info(device_info_config_t *info)
     // Update dynamic information (requires full service start)
     if (g_device_service.running) {
         update_storage_info(&g_device_service.storage_info);
+        /* Lazily fetch flash free-space — update_storage_info skips this to
+         * avoid lfs_fs_size on the boot path. Here (web API request) the 2s
+         * cache in storage_get_disk_info makes repeated polls cheap; the first
+         * call per cache window does traverse, but that's a user-initiated
+         * request, not the boot hot path. */
+        storage_disk_info_t fi;
+        if (storage_get_disk_info(&fi) == 0 && fi.mounted) {
+            g_device_service.storage_info.flash_available_capacity_mb = (uint64_t)fi.free_KBytes / 1024;
+            g_device_service.storage_info.flash_used_capacity_mb =
+                g_device_service.storage_info.flash_total_capacity_mb -
+                g_device_service.storage_info.flash_available_capacity_mb;
+            if (g_device_service.storage_info.flash_total_capacity_mb > 0) {
+                g_device_service.storage_info.flash_usage_percent =
+                    (float)g_device_service.storage_info.flash_used_capacity_mb /
+                    g_device_service.storage_info.flash_total_capacity_mb * 100.0f;
+            }
+        }
         update_device_name(&g_device_service.device_info);
         //device_service_update_device_mac_address();
     }
@@ -965,7 +1034,24 @@ aicam_result_t device_service_update_info(const device_info_config_t *info)
     }
     
     LOG_SVC_INFO("Device information updated");
-    
+
+    return AICAM_OK;
+}
+
+/* Lightweight read of cached device info — no storage scan, no side effects.
+ * Use this in hot paths (e.g. capture metadata build) where only battery %,
+ * device name, and serial are needed. Avoids device_service_get_info() which
+ * internally calls update_storage_info() → storage_get_disk_info() → lfs_fs_size()
+ * (230 ms on a full 32 MB littlefs volume). */
+aicam_result_t device_service_get_cached_info(device_info_config_t *info)
+{
+    if (!info) return AICAM_ERROR_INVALID_PARAM;
+    if (!g_device_service.initialized) return AICAM_ERROR_NOT_INITIALIZED;
+
+    /* Battery is dynamic but fast (HAL GPIO read); update it here. */
+    update_battery_info(&g_device_service.device_info);
+
+    memcpy(info, &g_device_service.device_info, sizeof(device_info_config_t));
     return AICAM_OK;
 }
 
@@ -989,14 +1075,44 @@ aicam_result_t device_service_storage_get_info(storage_info_t *info)
     if (!info) {
         return AICAM_ERROR_INVALID_PARAM;
     }
-    
+
     if (!g_device_service.initialized) {
         return AICAM_ERROR_NOT_INITIALIZED;
     }
-    
+
     update_storage_info(&g_device_service.storage_info);
+    /* Lazily fetch flash free-space — update_storage_info skips this on the boot
+     * path to avoid lfs_fs_size (O(file count), 3-4s with many files → watchdog).
+     * Here it's a web API request; the 2s cache in storage_get_disk_info makes
+     * repeated polls cheap. */
+    storage_disk_info_t fi;
+    int fi_ret = storage_get_disk_info(&fi);
+    if (fi_ret == 0 && fi.mounted) {
+        g_device_service.storage_info.flash_available_capacity_mb = (uint64_t)fi.free_KBytes / 1024;
+        g_device_service.storage_info.flash_used_capacity_mb =
+            g_device_service.storage_info.flash_total_capacity_mb -
+            g_device_service.storage_info.flash_available_capacity_mb;
+        if (g_device_service.storage_info.flash_total_capacity_mb > 0) {
+            g_device_service.storage_info.flash_usage_percent =
+                (float)g_device_service.storage_info.flash_used_capacity_mb /
+                g_device_service.storage_info.flash_total_capacity_mb * 100.0f;
+        }
+    } else {
+        LOG_SVC_WARN("storage_get_info: flash disk info failed (ret=%d, mounted=%d) -- lfs_fs_size may have errored on a corrupt FS",
+                     fi_ret, (int)fi.mounted);
+        /* Surface the failure so the web UI can offer a format. If the FS
+         * reported mounted but lfs_fs_size errored, it's corrupt; otherwise
+         * it's simply not mounted (already flagged by update_storage_info). */
+        g_device_service.storage_info.flash_fs_error = AICAM_TRUE;
+        if (fi.mounted) {
+            strncpy(g_device_service.storage_info.flash_error, "corrupt",
+                    sizeof(g_device_service.storage_info.flash_error) - 1);
+            g_device_service.storage_info.flash_error[
+                sizeof(g_device_service.storage_info.flash_error) - 1] = '\0';
+        }
+    }
     memcpy(info, &g_device_service.storage_info, sizeof(storage_info_t));
-    
+
     return AICAM_OK;
 }
 
@@ -1104,35 +1220,7 @@ aicam_result_t device_service_image_set_config(const image_config_t *config)
         return AICAM_ERROR_INVALID_PARAM;
     }
 
-    uint32_t prev_isp_mode = g_device_service.camera_config.image_config.isp_mode;
     memcpy(&g_device_service.camera_config.image_config, config, sizeof(image_config_t));
-
-    /* ISP mode affects IQ init buffer; refresh while camera is idle or restart stream */
-    if (prev_isp_mode != config->isp_mode && g_device_service.camera_initialized && g_device_service.camera_device) {
-        aicam_bool_t cam_streaming = g_device_service.camera_config.enabled;
-        if (cam_streaming) {
-            (void)device_service_camera_stop();
-        }
-        ISP_IQParamTypeDef iq = {0};
-        if (config->isp_mode == IMAGE_ISP_MODE_CUSTOM && g_device_service.isp_config.valid) {
-            json_config_config_to_isp_param(&g_device_service.isp_config, &iq);
-        } else {
-            cam_iq_scene_t scene = CAM_IQ_SCENE_INDOOR;
-            if (config->isp_mode == IMAGE_ISP_MODE_OUTDOOR) {
-                scene = CAM_IQ_SCENE_OUTDOOR;
-            } else if (config->isp_mode == IMAGE_ISP_MODE_CUSTOM && !g_device_service.isp_config.valid) {
-                LOG_SVC_WARN("ISP mode custom without valid saved profile; using indoor IQ defaults");
-            }
-            camera_fill_isp_iq_scene(scene, &iq);
-        }
-        (void)device_ioctl(g_device_service.camera_device,
-                    CAM_CMD_SET_ISP_PARAM,
-                    (uint8_t *)&iq,
-                    sizeof(ISP_IQParamTypeDef));
-        if (cam_streaming) {
-            (void)device_service_camera_start();
-        }
-    }
 
     
     // Apply configuration to camera device if initialized
@@ -1151,9 +1239,9 @@ aicam_result_t device_service_image_set_config(const image_config_t *config)
     }
 
 
-    LOG_SVC_INFO("Image configuration applied: brightness=%u, contrast=%u, h_flip=%d, v_flip=%d, isp_mode=%u",
+    LOG_SVC_INFO("Image configuration applied: brightness=%u, contrast=%u, h_flip=%d, v_flip=%d, isp_mode=%u, grayscale=%d",
                 config->brightness, config->contrast, config->horizontal_flip, config->vertical_flip,
-                config->isp_mode);
+                config->isp_mode, config->grayscale);
 
     return AICAM_OK;
 }
@@ -1235,7 +1323,7 @@ aicam_result_t device_service_light_control(aicam_bool_t enable)
     // Manual control - temporarily override automatic control
     if (enable) {
         // Set current configured brightness level
-        uint8_t duty = (uint8_t)((g_device_service.light_config.brightness_level * 255) / 100);
+        uint8_t duty = g_device_service.light_config.brightness_level;
         device_ioctl(g_device_service.light_device, MISC_CMD_PWM_SET_DUTY, (uint8_t *)&duty, 0);
         device_ioctl(g_device_service.light_device, MISC_CMD_PWM_ON, 0, 0);
         LOG_SVC_INFO("Light manually controlled: ON (brightness: %u%%)", g_device_service.light_config.brightness_level);
@@ -1264,8 +1352,8 @@ aicam_result_t device_service_light_set_brightness(uint32_t brightness_level)
     // Update brightness level in configuration
     g_device_service.light_config.brightness_level = brightness_level;
     
-    // Set PWM duty cycle (0-100 converted to 0-255)
-    uint8_t duty = (uint8_t)((brightness_level * 255) / 100);
+    // Set PWM duty cycle
+    uint8_t duty = brightness_level;
     device_ioctl(g_device_service.light_device, MISC_CMD_PWM_SET_DUTY, (uint8_t *)&duty, 0);
     
     LOG_SVC_INFO("Light brightness set to: %u%% (duty: %u)", brightness_level, duty);
@@ -1334,6 +1422,8 @@ aicam_result_t device_service_camera_init(void)
 
 aicam_result_t device_service_camera_start(void)
 {
+    aicam_result_t result;
+
     if (!g_device_service.camera_initialized) {
         return AICAM_ERROR_NOT_INITIALIZED;
     }
@@ -1350,28 +1440,17 @@ aicam_result_t device_service_camera_start(void)
                     g_device_service.camera_config.image_config.startup_skip_frames);
     }
 
-    // apply isp IQ init buffer (built-in scene or custom profile from NVS)
+    // apply isp IQ init buffer (built-in scene or custom profile from NVS) + grayscale overlay
     {
         ISP_IQParamTypeDef isp_param = {0};
-        uint32_t m = g_device_service.camera_config.image_config.isp_mode;
-        if (m == IMAGE_ISP_MODE_CUSTOM && g_device_service.isp_config.valid) {
-            json_config_config_to_isp_param(&g_device_service.isp_config, &isp_param);
-        } else {
-            cam_iq_scene_t scene = CAM_IQ_SCENE_INDOOR;
-            if (m == IMAGE_ISP_MODE_OUTDOOR) {
-                scene = CAM_IQ_SCENE_OUTDOOR;
-            } else if (m == IMAGE_ISP_MODE_CUSTOM && !g_device_service.isp_config.valid) {
-                LOG_SVC_WARN("ISP mode custom without valid saved profile; using indoor IQ defaults");
-            }
-            camera_fill_isp_iq_scene(scene, &isp_param);
-        }
+        device_service_build_isp_iq_param(&g_device_service.camera_config.image_config, &isp_param);
         device_ioctl(g_device_service.camera_device,
                     CAM_CMD_SET_ISP_PARAM,
                     (uint8_t *)&isp_param,
                     sizeof(ISP_IQParamTypeDef));
     }
 
-    aicam_result_t result = device_start(g_device_service.camera_device);
+    result = device_start(g_device_service.camera_device);
     if (result != AICAM_OK) {
         LOG_SVC_ERROR("Failed to start camera: %d", result);
         return result;
@@ -1772,7 +1851,7 @@ aicam_result_t device_service_camera_capture_fast(uint8_t **buffer, int *out_len
         nn_state_t nn_state = nn_get_state();
         if (nn_state == NN_STATE_UNINIT || nn_state == NN_STATE_INIT) {
             LOG_SVC_INFO("[FAST] Loading AI model...");
-            uintptr_t model_ptr = json_config_get_ai_1_active() ? AI_1_BASE + 1024 : AI_DEFAULT_BASE + 1024;
+            uintptr_t model_ptr = json_config_get_ai_1_active() ? AI_2_BASE + 1024 : AI_1_BASE + 1024;
             LOG_SVC_INFO("[FAST] Loading model from %p", model_ptr);
             int nn_ret = nn_load_model(model_ptr);
             if (nn_ret != 0) {
@@ -1862,18 +1941,7 @@ aicam_result_t device_service_camera_capture_fast(uint8_t **buffer, int *out_len
 
         {
             ISP_IQParamTypeDef isp_param = {0};
-            uint32_t m = g_device_service.camera_config.image_config.isp_mode;
-            if (m == IMAGE_ISP_MODE_CUSTOM && g_device_service.isp_config.valid) {
-                json_config_config_to_isp_param(&g_device_service.isp_config, &isp_param);
-            } else {
-                cam_iq_scene_t scene = CAM_IQ_SCENE_INDOOR;
-                if (m == IMAGE_ISP_MODE_OUTDOOR) {
-                    scene = CAM_IQ_SCENE_OUTDOOR;
-                } else if (m == IMAGE_ISP_MODE_CUSTOM && !g_device_service.isp_config.valid) {
-                    LOG_SVC_WARN("[FAST] ISP mode custom without valid saved profile; using indoor IQ defaults");
-                }
-                camera_fill_isp_iq_scene(scene, &isp_param);
-            }
+            device_service_build_isp_iq_param(&g_device_service.camera_config.image_config, &isp_param);
             device_ioctl(g_device_service.camera_device,
                         CAM_CMD_SET_ISP_PARAM,
                         (uint8_t *)&isp_param,
@@ -2249,8 +2317,8 @@ aicam_result_t device_service_reset_to_factory_defaults(void)
     SystemState *state = get_system_state();
     if (state) {
         // Mark both slots as IDLE
-        state->slot[FIRMWARE_AI_1][SLOT_A].status = IDLE;
-        state->slot[FIRMWARE_AI_1][SLOT_B].status = IDLE;
+        state->slot[FIRMWARE_AI_2][SLOT_A].status = IDLE;
+        state->slot[FIRMWARE_AI_2][SLOT_B].status = IDLE;
         save_system_state();
         LOG_SVC_INFO("AI model cleared");
     }

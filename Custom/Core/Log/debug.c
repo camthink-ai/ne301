@@ -68,6 +68,36 @@ const osThreadAttr_t ymodem_task_attributes = {
     .stack_size = 4 * 1024
 };
 
+/* ==================== Async Log Writer ==================== *
+ * log_message() (under log_mutex) enqueues formatted lines here; a low-
+ * priority drain task persists them via log_file_flush_line() (which takes
+ * NO log_mutex — the slow LittleFS I/O thus never blocks log callers).
+ *
+ * Ring is SPSC: producers are serialized by log_mutex (only one log_message
+ * runs at a time), and the drainer is exclusive (drain task OR debug_flush_logs,
+ * mutually excluded by g_log_flush_mtx). __DMB() orders the head/tail updates
+ * the same way the cmd_queue already does. */
+
+#define LOG_QUEUE_SLOTS   32
+#define LOG_LINE_MAX      256   /* matches LOG_MAX_LINE in generic_log.c */
+
+static char    g_log_ring[LOG_QUEUE_SLOTS][LOG_LINE_MAX] ALIGN_32 IN_PSRAM;
+static int     g_log_ring_len[LOG_QUEUE_SLOTS];
+static volatile uint16_t g_log_ring_wr;   /* producer index (under log_mutex) */
+static volatile uint16_t g_log_ring_rd;   /* consumer index (drainer only)   */
+static volatile uint32_t g_log_dropped;   /* lines dropped because ring full */
+static osSemaphoreId_t   g_log_sem;       /* "data available" event (binary) */
+static osMutexId_t       g_log_flush_mtx; /* serializes drainers             */
+static osThreadId_t      g_log_writer_task;
+
+static uint8_t log_writer_stack[1024 * 4] ALIGN_32 IN_PSRAM;
+const osThreadAttr_t log_writer_task_attributes = {
+    .name = "logWriter",
+    .priority = (osPriority_t) osPriorityLow,   /* below upload/storage/debug */
+    .stack_mem = log_writer_stack,
+    .stack_size = sizeof(log_writer_stack),
+};
+
 /* ==================== Private Function Declarations ==================== */
 
 static aicam_result_t debug_uart_mode_switch(debug_mode_e mode);
@@ -95,8 +125,14 @@ static int debug_log_fseek(void *handle, long offset, int whence);
 static int debug_log_fflush(void *handle);
 static int debug_log_fwrite(void *handle, const void *buf, size_t size);
 static int debug_log_fstat(const char *filename, struct stat *st);
+static int debug_log_get_free_bytes(uint64_t *out_free);
 static uint64_t debug_log_get_time(void);
 static void debug_uart_log_output(const char *msg, int len);
+
+// Async log writer (drain task + enqueue callback)
+static void debug_log_enqueue(const char *line, int len);
+static void debug_log_writer_task(void *argument);
+static void debug_log_drain_ring(void);
 
 // driver command register all
 static void driver_cmd_register_all(void);
@@ -240,6 +276,8 @@ int debug_cmd_ymodem(int argc, char* argv[])
 int debug_cmd_reset(int argc, char* argv[])
 {
     printf("System reset in 3 seconds...\r\n");
+    /* Flush async log queue so recent log lines are not lost on reset. */
+    debug_flush_logs();
     osDelay(3000);
 #if ENABLE_U0_MODULE
     u0_module_clear_wakeup_flag();
@@ -279,8 +317,13 @@ aicam_result_t debug_system_init(void)
     g_debug_ctx.mutex = osMutexNew(NULL);
     g_debug_ctx.log_mutex = osMutexNew(NULL);
     g_debug_ctx.semaphore = osSemaphoreNew(1, 0, NULL);
-    
-    if (!g_debug_ctx.mutex || !g_debug_ctx.log_mutex || !g_debug_ctx.semaphore) {
+
+    // Async log writer resources: binary "data available" event + drainer mutex
+    g_log_sem        = osSemaphoreNew(1, 0, NULL);
+    g_log_flush_mtx  = osMutexNew(NULL);
+
+    if (!g_debug_ctx.mutex || !g_debug_ctx.log_mutex || !g_debug_ctx.semaphore ||
+        !g_log_sem || !g_log_flush_mtx) {
         printf("[ERROR] Failed to create debug RTOS objects\r\n");
         return AICAM_ERROR_NO_MEMORY;
     }
@@ -331,10 +374,18 @@ aicam_result_t debug_system_init(void)
     // Create tasks
     // printf("[DEBUG] Creating debug tasks...\r\n");
     g_debug_ctx.debug_task = osThreadNew(debug_task_function, NULL, &debug_task_attributes);
-    
+
     if (!g_debug_ctx.debug_task ) {
         LOG_CORE_ERROR("Failed to create debug tasks");
         return AICAM_ERROR;
+    }
+
+    // Low-priority async log writer (drains the enqueue ring to flash)
+    g_log_writer_task = osThreadNew(debug_log_writer_task, NULL, &log_writer_task_attributes);
+    if (!g_log_writer_task) {
+        LOG_CORE_ERROR("Failed to create log writer task");
+        /* Non-fatal: logging falls back to synchronous mode. */
+        log_set_async_file(false, NULL);
     }
     
     // printf("[DEBUG] Registering built-in commands...\r\n");
@@ -376,6 +427,22 @@ aicam_result_t debug_system_deinit(void)
     if (g_debug_ctx.ymodem_task) {
         osThreadTerminate(g_debug_ctx.ymodem_task);
         g_debug_ctx.ymodem_task = NULL;
+    }
+
+    // Stop async log writer and flush any remaining lines.
+    log_set_async_file(false, NULL);
+    debug_flush_logs();
+    if (g_log_writer_task) {
+        osThreadTerminate(g_log_writer_task);
+        g_log_writer_task = NULL;
+    }
+    if (g_log_flush_mtx) {
+        osMutexDelete(g_log_flush_mtx);
+        g_log_flush_mtx = NULL;
+    }
+    if (g_log_sem) {
+        osSemaphoreDelete(g_log_sem);
+        g_log_sem = NULL;
     }
     
     // Clean up RTOS objects
@@ -544,7 +611,10 @@ aicam_result_t debug_set_console_output(aicam_bool_t enable)
 
 aicam_result_t debug_flush_logs(void)
 {
-    // TODO: Implement log flushing if available in generic_log
+    /* Synchronously drain the async log queue so pending lines are persisted
+     * before a reset / sleep. Safe to call from any thread (drainers are
+     * serialized by g_log_flush_mtx). Called from debug_cmd_reset() below. */
+    debug_log_drain_ring();
     return AICAM_OK;
 }
 
@@ -678,6 +748,7 @@ static aicam_result_t debug_init_logging(void)
     g_debug_ctx.log_file_ops.fflush = debug_log_fflush;
     g_debug_ctx.log_file_ops.fwrite = debug_log_fwrite;
     g_debug_ctx.log_file_ops.fstat = debug_log_fstat;
+    g_debug_ctx.log_file_ops.get_free_bytes = debug_log_get_free_bytes;
     
     // Initialize log manager
     int result = log_init(&g_debug_ctx.log_manager, 
@@ -711,6 +782,11 @@ static aicam_result_t debug_init_logging(void)
     // Add custom UART output
     log_add_custom_output(debug_uart_log_output);
 
+    /* Switch file output to async mode: log_message() will enqueue each line
+     * to the low-priority logWriter task instead of writing synchronously, so
+     * callers never block on LittleFS I/O. */
+    log_set_async_file(true, debug_log_enqueue);
+
     return AICAM_OK;
 }
 
@@ -737,16 +813,21 @@ static aicam_result_t debug_init_ymodem(void)
 
 static void debug_uart_output(char c)
 {
-    HAL_UART_Transmit(&H_UART, (uint8_t*)&c, 1, HAL_MAX_DELAY);
+    // HAL_UART_Transmit(&H_UART, (uint8_t*)&c, 1, 10);
+    printf("%c", c);
 }
 
 static void debug_uart_output_str(const char* str)
 {
+    // if (str) {
+    //     while (*str) {
+    //         HAL_UART_Transmit(&H_UART, (uint8_t*)str, 1, 10);
+    //         str++;
+    //     }
+    // }
+
     if (str) {
-        while (*str) {
-            HAL_UART_Transmit(&H_UART, (uint8_t*)str, 1, HAL_MAX_DELAY);
-            str++;
-        }
+        printf("%s", str);
     }
 }
 
@@ -844,6 +925,29 @@ static int debug_log_fstat(const char *filename, struct stat *st)
     return flash_lfs_stat(filename, st);
 }
 
+/* Free-space probe for the file-log circuit breaker. aicam.log lives on the
+ * internal-flash LittleFS.
+ *
+ * We intentionally DON'T call storage_get_disk_info() here — that runs
+ * lfs_fs_size(), a full-FS traverse whose cost grows linearly with file count.
+ * With thousands of capture records, a single call takes 3-4 seconds and
+ * trips the watchdog. Instead, return a generous value so the log layer
+ * attempts the write; the circuit breaker in log_message() disables file
+ * output on the first failed write (LFS_ERR_NOSPC). This trades a one-line
+ * retry on a full FS for O(1) boot time. */
+static int debug_log_get_free_bytes(uint64_t *out_free)
+{
+    storage_disk_info_t info;
+    memset(&info, 0, sizeof(info));
+    /* Only check the mounted flag (RAM, no I/O) — skip the free-space traverse. */
+    info.mounted = storage_is_lfs_mounted();
+    if (!info.mounted) {
+        return -1;  /* FS not ready — log layer will retry, not disable */
+    }
+    *out_free = 64ULL * 1024 * 1024;  /* report plenty — rely on write-failure breaker */
+    return 0;
+}
+
 static uint64_t debug_log_get_time(void)
 {
     // Get system time in milliseconds
@@ -853,7 +957,82 @@ static uint64_t debug_log_get_time(void)
 static void debug_uart_log_output(const char *msg, int len)
 {
     // Output log message to UART
-    HAL_UART_Transmit(&H_UART, (uint8_t*)msg, len, HAL_MAX_DELAY);
+    // HAL_UART_Transmit(&H_UART, (uint8_t*)msg, len, 200);
+    printf("%.*s", len, msg);
+}
+
+/* ---- Async log writer implementation ---- *
+ * Enqueue runs under log_mutex (single producer). Drain is exclusive via
+ * g_log_flush_mtx (single consumer). Both use __DMB() to order ring indices. */
+
+static void debug_log_enqueue(const char *line, int len)
+{
+    if (!line || len <= 0) return;
+    if (len > LOG_LINE_MAX) len = LOG_LINE_MAX;   /* truncate over-long lines */
+
+    uint16_t next_wr = (uint16_t)((g_log_ring_wr + 1) % LOG_QUEUE_SLOTS);
+    if (next_wr == g_log_ring_rd) {
+        /* Ring full: drop the incoming (newest) line. Lost history is preferred
+         * to blocking the caller. A dropped-count summary is emitted by the
+         * drainer on its next pass. */
+        g_log_dropped++;
+        return;
+    }
+    memcpy(g_log_ring[g_log_ring_wr], line, (size_t)len);
+    g_log_ring_len[g_log_ring_wr] = len;
+    __DMB();
+    g_log_ring_wr = next_wr;
+
+    /* Binary "data available" event: release is a no-op if already signaled
+     * (osErrorResource), which we intentionally ignore — the drainer will
+     * sweep all pending slots on wake. */
+    if (g_log_sem) (void)osSemaphoreRelease(g_log_sem);
+}
+
+static void debug_log_drain_ring(void)
+{
+    if (!g_log_flush_mtx) return;
+    osMutexAcquire(g_log_flush_mtx, osWaitForever);
+
+    for (;;) {
+        if (g_log_ring_rd == g_log_ring_wr) break;   /* empty */
+        __DMB();
+        int len = g_log_ring_len[g_log_ring_rd];
+        if (len > 0 && len <= LOG_LINE_MAX) {
+            log_file_flush_line(g_log_ring[g_log_ring_rd], len);
+        }
+        __DMB();
+        g_log_ring_rd = (uint16_t)((g_log_ring_rd + 1) % LOG_QUEUE_SLOTS);
+    }
+
+    /* If lines were dropped, write a single summary line so the loss is
+     * visible in the log file. */
+    uint32_t dropped = g_log_dropped;
+    if (dropped > 0) {
+        g_log_dropped = 0;
+        char sum[LOG_LINE_MAX];
+        int n = snprintf(sum, sizeof(sum),
+            "[LOG] %lu log line(s) dropped (queue full)\r\n",
+            (unsigned long)dropped);
+        if (n > 0) log_file_flush_line(sum, n);
+    }
+
+    osMutexRelease(g_log_flush_mtx);
+}
+
+static void debug_log_writer_task(void *argument)
+{
+    (void)argument;
+    for (;;) {
+        /* Block until a producer signals "data available". */
+        if (g_log_sem && osSemaphoreAcquire(g_log_sem, osWaitForever) == osOK) {
+            debug_log_drain_ring();
+        } else {
+            /* Fallback: poll periodically in case a signal was coalesced. */
+            osDelay(100);
+            debug_log_drain_ring();
+        }
+    }
 }
 
 

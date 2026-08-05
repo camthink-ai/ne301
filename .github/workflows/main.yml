@@ -180,6 +180,7 @@ jobs:
           make clean STEDGEAI_VARIANT=${{ matrix.stedgeai_variant }}
 
           echo "Building firmware (STEDGEAI_VARIANT=${{ matrix.stedgeai_variant }})..."
+          export C_DEFS_EXTRA="-DNETIF_WIFI_HALOW_IS_ENABLE=1"
           make all STEDGEAI_VARIANT=${{ matrix.stedgeai_variant }}
 
           echo "Creating package..."
@@ -189,6 +190,43 @@ jobs:
           make pack-hex STEDGEAI_VARIANT=${{ matrix.stedgeai_variant }}
 
           echo "::notice::Build completed successfully"
+          echo "::endgroup::"
+
+      - name: Build SensorExt firmware (sensor extension board, without Halow)
+        if: success()
+        run: |
+          set -e
+          echo "::group::🖥️ Building SensorExt firmware (NETIF_WIFI_HALOW_IS_ENABLE=0)"
+
+          source /etc/profile.d/stedgeai.sh
+          VARIANT="${{ matrix.stedgeai_variant }}"
+
+          # Save Halow APP pkg before it gets overwritten
+          HALOW_PKG=$(ls build/ne301_App_signed_v*_pkg.bin 2>/dev/null | grep -v SensorExt | head -1)
+          cp "$HALOW_PKG" build/.halow_pkg.bin
+
+          # Clean and rebuild APP without Halow (sensor extension board mode)
+          make clean-app STEDGEAI_VARIANT=$VARIANT
+          export C_DEFS_EXTRA="-DNETIF_WIFI_HALOW_IS_ENABLE=0"
+          make pkg-app STEDGEAI_VARIANT=$VARIANT
+
+          # Copy SensorExt OTA package with _SensorExt suffix
+          for f in build/ne301_App_signed_v*_pkg.bin; do
+            [ -f "$f" ] || continue
+            [[ "$f" == *SensorExt* ]] && continue
+            SE_PKG="${f%_pkg.bin}_SensorExt_pkg.bin"
+            cp "$f" "$SE_PKG"
+            echo "SensorExt OTA package: $(basename "$SE_PKG")"
+          done
+
+          # Generate SensorExt hex (same FSBL/Web/Model/WakeCore, SensorExt APP)
+          python Script/pack_to_hex.py ne301_Main_SensorExt.hex
+          python Script/pack_to_hex.py ne301_Main_WiFi_SensorExt.hex
+
+          # Restore Halow APP pkg (Halow hex already generated in previous step)
+          mv build/.halow_pkg.bin "$HALOW_PKG"
+
+          echo "::notice::SensorExt build completed successfully"
           echo "::endgroup::"
 
       - name: Verify build artifacts
@@ -212,6 +250,10 @@ jobs:
           HEX_COUNT=$(find build -name "*.hex" -type f 2>/dev/null | wc -l)
           echo "Found $HEX_COUNT hex file(s):"
           ls -lh build/*.hex 2>/dev/null || true
+
+          SE_PKG_COUNT=$(find build -name "*_SensorExt_pkg.bin" -type f 2>/dev/null | wc -l)
+          SE_HEX_COUNT=$(find build -name "*_SensorExt.hex" -type f 2>/dev/null | wc -l)
+          echo "Found $SE_PKG_COUNT SensorExt OTA package(s) and $SE_HEX_COUNT SensorExt hex file(s)"
           echo "::endgroup::"
 
       - name: Upload build artifacts
@@ -254,11 +296,13 @@ jobs:
           FSBL_COUNT=$(find ./build -name "*FSBL_signed.bin" -type f 2>/dev/null | wc -l)
           PKG_COUNT=$(find ./build -name "*_pkg.bin" -type f 2>/dev/null | wc -l)
           WAKECORE_COUNT=$(find ./build -name "*_wakecore.bin" -type f 2>/dev/null | wc -l)
+          SE_COUNT=$(find ./build -name "*_SensorExt*" -type f 2>/dev/null | wc -l)
 
           echo "Found artifacts:"
           echo "  FSBL: $FSBL_COUNT file(s)"
-          echo "  Package: $PKG_COUNT file(s)"
+          echo "  Package: $PKG_COUNT file(s) (including SensorExt)"
           echo "  WakeCore: $WAKECORE_COUNT file(s)"
+          echo "  SensorExt variant: $SE_COUNT file(s)"
 
           TOTAL=$(find ./build -name "*.bin" -type f 2>/dev/null | wc -l)
           if [ "$TOTAL" -eq 0 ]; then
@@ -286,10 +330,16 @@ jobs:
 
             ### 📁 Artifacts
             This release includes the following firmware binaries:
-            - **`*_FSBL_signed.bin`** - Files for flashing the FSBL (not for OTA)
-            - **`*_pkg.bin`** - Files for OTA
-            - **`*_WakeCore.bin`** - Files for flashing the WakeCore
-            - **`*.hex`** - Combined HEX file for STM32CubeProgrammer one-click flash
+
+            **Standard (Halow WiFi via SPI6):**
+            - **`*_FSBL_signed.bin`** — FSBL, not for OTA
+            - **`*_pkg.bin`** (non-SensorExt) — OTA packages with Halow WiFi
+            - **`*_WakeCore.bin`** — WakeCore (STM32U0)
+            - **`*.hex`** (non-SensorExt) — Combined HEX for STM32CubeProgrammer one-click flash
+
+            **Sensor extension board variant (SPI6 for sensor board, no Halow):**
+            - **`*_SensorExt_pkg.bin`** — APP OTA package for sensor extension board (TFT/codec/sensors/I2C)
+            - **`*_SensorExt.hex`** — Combined HEX with SensorExt APP (same FSBL/Web/Model/WakeCore)
 
             Other STEdgeAI variants (`3.0`, `2.2`) can be built via **Actions → workflow_dispatch**.
 

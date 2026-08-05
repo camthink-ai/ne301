@@ -382,3 +382,12 @@ int disk_file_stat(FS_Type_t type, const char *filename, struct stat *st)
         return -1;
     return inst->ops->stat(inst->context, filename, st);
 }
+
+int disk_file_mkdir(FS_Type_t type, const char *path)
+{
+    if(type < 0 || type >= FS_MAX) return -1;
+    file_instance_t* inst = &instances[type];
+    if(inst == NULL || inst->ops == NULL || inst->ops->mkdir == NULL)
+        return -1;
+    return inst->ops->mkdir(inst->context, path);
+}

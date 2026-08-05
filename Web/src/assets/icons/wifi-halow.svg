@@ -1,0 +1,5 @@
+<svg fill="currentColor" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" class="design-iconfont">
+  <path d="M0.666626 5.99984L1.99996 7.33318C5.31329 4.01984 10.6866 4.01984 14 7.33318L15.3333 5.99984C11.2866 1.95318 4.71996 1.95318 0.666626 5.99984ZM5.99996 11.3332L7.99996 13.3332L9.99996 11.3332C8.89996 10.2265 7.10663 10.2265 5.99996 11.3332ZM3.33329 8.66651L4.66663 9.99984C6.50663 8.15984 9.49329 8.15984 11.3333 9.99984L12.6666 8.66651C10.0933 6.09318 5.91329 6.09318 3.33329 8.66651Z" fill="currentColor"/>
+  
+  <text x="16.3" y="13.4" font-family="system-ui, -apple-system, sans-serif" font-size="5.2" font-weight="600" text-anchor="end" fill="currentColor" stroke="none">H</text>
+</svg>

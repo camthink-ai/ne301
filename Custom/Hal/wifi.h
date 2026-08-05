@@ -83,7 +83,45 @@ int is_wifi_update(void);
 
 void wifi_enter_update_mode(void);
 
+/**
+ * @brief Mark a WiFi firmware update as pending (NVS wifi_mode = "update")
+ *        WITHOUT resetting the system.
+ *
+ * Used by the web OTA handler after writing a new .rps to WIFI_FW_BASE: the
+ * HTTP response can complete normally, and on the next reboot
+ * wifi_mode_process() -> firmware_upgrade_from_flash() pushes the new image to
+ * the SiWG917 chip. Contrast with wifi_enter_update_mode(), which sets the same
+ * NVS key and then immediately resets.
+ */
+void wifi_mark_update_pending(void);
+
 uint32_t get_wifi_update_times(void);
+
+/**
+ * @brief Get the currently-running WiFi firmware version from the SiWG917 chip.
+ * @param buf  Output buffer (at least 32 bytes recommended).
+ * @param size Buffer size.
+ * @return 0 on success, -1 if the version could not be retrieved (e.g. Wi-Fi
+ *         module not initialised, or communication error).
+ *
+ * @details Calls sl_wifi_get_firmware_version() and formats the result as
+ *          "X.Y.Z.B" where B = security_version * 100 + build_num — matching
+ *          the 4-part version encoding used by the OTA / HEX packing scripts.
+ */
+int wifi_get_running_version(char *buf, size_t size);
+
+/**
+ * @brief Read the WiFi firmware version stored in flash at WIFI_FW_BASE.
+ *
+ * Reads the flash_header_t validation marker, then extracts version components
+ * from the .rps binary header (sl_wifi_firmware_header_t.fw_version_info /
+ * .fw_version_ext_info).  No wireless chip communication is required.
+ *
+ * @param buf  Output buffer.
+ * @param size Buffer size.
+ * @return 0 on success, -1 if no valid WiFi firmware is present in flash.
+ */
+int wifi_get_flash_version(char *buf, size_t size);
 
 void wifi_register(void);
 #endif

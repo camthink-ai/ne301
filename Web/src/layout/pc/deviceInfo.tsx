@@ -85,6 +85,20 @@ export default function DeviceInfo() {
                     </TooltipContent>
                 </Tooltip>
             )}
+            {communicationData?.active_type === 'halow' && (
+                <Tooltip>
+                    <TooltipTrigger>
+                        <div className="w-5 h-5">
+                            <Link to="/system-settings">
+                                <SvgIcon icon="wifi-halow" />
+                            </Link>
+                        </div>
+                    </TooltipTrigger>
+                    <TooltipContent className="absolute">
+                        <p>{i18n._('sys.system_management.halow')}</p>
+                    </TooltipContent>
+                </Tooltip>
+            )}
             {communicationData?.active_type === 'poe' && (
                 <Tooltip>
                     <TooltipTrigger>

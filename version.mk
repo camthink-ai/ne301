@@ -21,8 +21,11 @@
 # =============================================================================
 
 # Main version number definition (manually update for releases)
+# NOTE: VERSION_MAJOR is overridden in stedgeai.mk to $(STEDGEAI_BIT) so that
+# APP and MODEL share the same major prefix (2/3/4 = STEdgeAI generation).
+# Keep MINOR/PATCH/BUILD here as the release line within that generation.
 VERSION_MAJOR  := 2
-VERSION_MINOR  := 1
+VERSION_MINOR  := 3
 VERSION_PATCH  := 0
 # Version suffix (optional, for alpha/beta/rc releases)
 # Examples: alpha, beta, rc1, dev
@@ -71,10 +74,11 @@ endif
 # =============================================================================
 # Set component-specific versions (leave empty to use main version)
 # Format: MAJOR.MINOR.PATCH.BUILD or empty
-FSBL_VERSION_OVERRIDE    := 1.0.1.0
-APP_VERSION_OVERRIDE     := $(VERSION)
-WEB_VERSION_OVERRIDE     := 1.3.4.8
+FSBL_VERSION_OVERRIDE    := 1.0.3.0
+APP_VERSION_OVERRIDE     := 
+WEB_VERSION_OVERRIDE     := 1.5.0.1
 # Model OTA: $(STEDGEAI_BIT).$(MODEL_VERSION_OVERRIDE) — BIT auto in stedgeai.mk (2.2->2, 3.0->3, 4.0->4)
+# APP major is also set to STEDGEAI_BIT in stedgeai.mk (aligned with MODEL prefix)
 MODEL_VERSION_OVERRIDE   := 0.0.0
 WAKECORE_VERSION_OVERRIDE := 0.2.7.5
 
@@ -94,6 +98,20 @@ APP_VERSION      := $(if $(APP_VERSION_OVERRIDE),$(APP_VERSION_OVERRIDE),$(VERSI
 WEB_VERSION      := $(if $(WEB_VERSION_OVERRIDE),$(WEB_VERSION_OVERRIDE),$(VERSION))
 WAKECORE_VERSION := $(if $(WAKECORE_VERSION_OVERRIDE),$(WAKECORE_VERSION_OVERRIDE),$(VERSION))
 # MODEL_VERSION: $(STEDGEAI_BIT).$(MODEL_VERSION_OVERRIDE) in stedgeai.mk
+
+# Expected firmware versions shipped with this APP release.  Compared at runtime
+# against the versions actually running on the device; the web UI prompts the
+# user to upgrade when a mismatch is detected.
+#
+# NOTE: keep EXPECTED_FSBL_VERSION in sync with FSBL_VERSION_OVERRIDE above.
+EXPECTED_FSBL_VERSION := 1.0.3.0
+
+# Expected WiFi (SiWG917) firmware version.  Must match the .rps bundled under
+# Custom/Common/Lib/SiliconLabs_SDK/firmware/ using the same encoding as the
+# OTA packer: Major.Minor.Patch.(Security*100 + Build)
+# e.g. SiWG917-B.2.15.5.0.0.2  ->  2.15.5.2
+#      SiWG917-B.2.14.5.2.0.7  ->  2.14.5.207
+EXPECTED_WIFI_VERSION := 2.15.5.2
 
 # Determine effective suffix for each component
 # Logic: 

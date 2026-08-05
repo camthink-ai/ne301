@@ -1,6 +1,6 @@
 /**
  * @file rtsp_service.h
- * @brief RTSP Service — lifecycle, video_hub subscription, client management
+ * @brief RTSP Service - lifecycle, video_hub subscription, client management
  */
 
 #ifndef RTSP_SERVICE_H

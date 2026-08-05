@@ -1,0 +1,86 @@
+{
+  "version": "1.0.0",
+  "model_info": {
+    "name": "YOLO26n 256 ONNX QDQ coco-person-st",
+    "version": "1.0.0",
+    "description": "YOLO26n 256 ONNX QDQ One-to-Many Head",
+    "type": "OBJECT_DETECTION",
+    "framework": "ONNX",
+    "author": "STMicroelectronics / Ultralytics"
+  },
+  "input_spec": {
+    "width": 256,
+    "height": 256,
+    "channels": 3,
+    "data_type": "int8",
+    "layout": "NCHW",
+    "color_format": "RGB888_YUV444_1",
+    "normalization": {
+      "enabled": true,
+      "mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "std": [
+        255.0,
+        255.0,
+        255.0
+      ]
+    }
+  },
+  "output_spec": {
+    "num_outputs": 1,
+    "outputs": [
+      {
+        "name": "output0",
+        "batch": 1,
+        "height": 5,
+        "width": 1344,
+        "channels": 1,
+        "data_type": "int8",
+        "scale": 0.0050489726,
+        "zero_point": -128
+      }
+    ]
+  },
+  "memory": {
+    "exec_memory_pool": 874512384,
+    "exec_memory_size": 3145728,
+    "ext_memory_pool": 2415919104,
+    "ext_memory_size": 2097152,
+    "alignment_requirement": 32
+  },
+  "postprocess_type": "pp_od_yolo_v8_ui",
+  "postprocess_params": {
+    "num_classes": 1,
+    "class_names": [
+      "person"
+    ],
+    "confidence_threshold": 0.25,
+    "iou_threshold": 0.45,
+    "max_detections": 100,
+    "total_boxes": 1344,
+    "raw_output_scale": 0.0050489726,
+    "raw_output_zero_point": -128,
+    "note": "QDQ graph output is S8; generate uses --output-data-type float32 for uf PP."
+  },
+  "runtime": {
+    "execution": {
+      "mode": "SYNC",
+      "priority": 5,
+      "timeout_ms": 5000
+    },
+    "memory_management": {
+      "cache_policy": "WRITE_BACK",
+      "memory_pool_size": 3145728,
+      "garbage_collection": false
+    },
+    "debugging": {
+      "log_level": "INFO",
+      "performance_monitoring": true,
+      "memory_profiling": false
+    }
+  },
+  "description_note": "Graph cut before TopK/Gather for ST Neural-ART; output [1,84,5040] for yolov8 PP"
+}

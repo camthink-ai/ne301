@@ -340,8 +340,11 @@ static void qs_isp_config_to_iq_param(const isp_config_t *isp_config, ISP_IQPara
     isp_param->luxRef.calibFactor = isp_config->lux_calib_factor;
 }
 
-int quick_storage_fill_isp_iq_param(uint32_t isp_mode, ISP_IQParamTypeDef *isp_param)
+int quick_storage_fill_isp_iq_param(uint32_t isp_mode, uint8_t grayscale,
+                                    ISP_IQParamTypeDef *isp_param)
 {
+    aicam_bool_t gray_on = (grayscale != 0u) ? AICAM_TRUE : AICAM_FALSE;
+
     if (!isp_param) {
         return AICAM_ERROR_INVALID_PARAM;
     }
@@ -351,6 +354,7 @@ int quick_storage_fill_isp_iq_param(uint32_t isp_mode, ISP_IQParamTypeDef *isp_p
         qs_load_isp_config_from_nvs(&cfg);
         if (cfg.valid) {
             qs_isp_config_to_iq_param(&cfg, isp_param);
+            camera_apply_grayscale_iq(isp_param, gray_on);
             return AICAM_OK;
         }
     }
@@ -358,8 +362,12 @@ int quick_storage_fill_isp_iq_param(uint32_t isp_mode, ISP_IQParamTypeDef *isp_p
     cam_iq_scene_t scene = CAM_IQ_SCENE_INDOOR;
     if (isp_mode == QS_IMAGE_ISP_MODE_OUTDOOR) {
         scene = CAM_IQ_SCENE_OUTDOOR;
+    } else if (isp_mode == QS_IMAGE_ISP_MODE_CUSTOM) {
+        /* Align with device_service_build_isp_iq_param: custom without valid NVS profile. */
+        scene = CAM_IQ_SCENE_INDOOR;
     }
     camera_fill_isp_iq_scene(scene, isp_param);
+    camera_apply_grayscale_iq(isp_param, gray_on);
     return AICAM_OK;
 }
 
@@ -536,6 +544,7 @@ int quick_storage_read_snapshot_config(qs_snapshot_config_t *snapshot_config)
     snapshot_config->fast_capture_jpeg_quality = default_config.device_service.image_config.fast_capture_jpeg_quality;
     snapshot_config->capture_storage_ai = default_config.device_service.image_config.capture_storage_ai;
     snapshot_config->isp_mode = default_config.device_service.image_config.isp_mode;
+    snapshot_config->grayscale = (uint8_t)default_config.device_service.image_config.grayscale;
 
     aicam_result_t result;
     aicam_bool_t temp_bool = AICAM_FALSE;
@@ -619,6 +628,11 @@ int quick_storage_read_snapshot_config(qs_snapshot_config_t *snapshot_config)
         snapshot_config->isp_mode != QS_IMAGE_ISP_MODE_OUTDOOR &&
         snapshot_config->isp_mode != QS_IMAGE_ISP_MODE_CUSTOM) {
         snapshot_config->isp_mode = default_config.device_service.image_config.isp_mode;
+    }
+
+    result = qs_nvs_read_bool(NVS_KEY_IMAGE_GRAYSCALE, &temp_bool);
+    if (result == AICAM_OK) {
+        snapshot_config->grayscale = (uint8_t)temp_bool;
     }
 
     return AICAM_OK;
@@ -741,6 +755,7 @@ int quick_storage_read_comm_pref_type(qs_comm_pref_type_t *comm_pref_type)
         case COMM_PREF_TYPE_WIFI:
         case COMM_PREF_TYPE_CELLULAR:
         case COMM_PREF_TYPE_POE:
+        case COMM_PREF_TYPE_HALOW:
             *comm_pref_type = (qs_comm_pref_type_t)temp_u32;
             break;
         default:
@@ -819,6 +834,7 @@ int quick_storage_read_netif_config(qs_comm_pref_type_t comm_pref_type, netif_co
         if (qs_nvs_read_uint8(NVS_KEY_CELLULAR_OPERATOR, &netif_config->cellular_cfg.isp_selected) != AICAM_OK) {
             netif_config->cellular_cfg.isp_selected = 0;
         }
+        (void)qs_nvs_read_string(NVS_KEY_CELLULAR_PLMN, netif_config->cellular_cfg.plmn, sizeof(netif_config->cellular_cfg.plmn));
         netif_config->ip_mode = NETIF_IP_MODE_DHCP;
         return AICAM_OK;
     }
@@ -838,6 +854,52 @@ int quick_storage_read_netif_config(qs_comm_pref_type_t comm_pref_type, netif_co
         (void)qs_nvs_read_string(NVS_KEY_POE_HOSTNAME, s_host_name_buf, sizeof(s_host_name_buf));
         return AICAM_OK;
     }
+
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    if (comm_pref_type == COMM_PREF_TYPE_HALOW) {
+        (void)qs_nvs_read_string(NVS_KEY_HALOW_SSID, netif_config->wireless_cfg.ssid,
+                                 sizeof(netif_config->wireless_cfg.ssid));
+        (void)qs_nvs_read_string(NVS_KEY_HALOW_PASSWORD, netif_config->wireless_cfg.pw,
+                                 sizeof(netif_config->wireless_cfg.pw));
+        if (qs_nvs_read_uint32(NVS_KEY_HALOW_SECURITY, &temp_u32) == AICAM_OK) {
+            netif_config->wireless_cfg.security = (wireless_security_t)temp_u32;
+        } else {
+            netif_config->wireless_cfg.security = WIRELESS_SAE;
+        }
+        (void)qs_nvs_read_string(NVS_KEY_HALOW_COUNTRY_CODE, netif_config->halow_cfg.country_code,
+                                sizeof(netif_config->halow_cfg.country_code));
+        {
+            char bssid_str[18];
+            if (qs_nvs_read_string(NVS_KEY_HALOW_BSSID, bssid_str, sizeof(bssid_str)) == AICAM_OK &&
+                bssid_str[0] != '\0') {
+                unsigned int bssid_bytes[6];
+                if (sscanf(bssid_str, "%02X:%02X:%02X:%02X:%02X:%02X",
+                           &bssid_bytes[0], &bssid_bytes[1], &bssid_bytes[2],
+                           &bssid_bytes[3], &bssid_bytes[4], &bssid_bytes[5]) == 6) {
+                    for (int i = 0; i < 6; i++) {
+                        netif_config->wireless_cfg.bssid[i] = (uint8_t)(bssid_bytes[i] & 0xFF);
+                    }
+                }
+            }
+        }
+        if (qs_nvs_read_uint32(NVS_KEY_HALOW_IP_MODE, &temp_u32) == AICAM_OK) {
+            netif_config->ip_mode = (temp_u32 == POE_IP_MODE_STATIC) ?
+                                    NETIF_IP_MODE_STATIC : NETIF_IP_MODE_DHCP;
+        } else {
+            netif_config->ip_mode = NETIF_IP_MODE_DHCP;
+        }
+        if (qs_nvs_read_uint32(NVS_KEY_HALOW_IP_ADDR, &temp_u32) == AICAM_OK) {
+            u32_to_ipv4(temp_u32, netif_config->ip_addr);
+        }
+        if (qs_nvs_read_uint32(NVS_KEY_HALOW_NETMASK, &temp_u32) == AICAM_OK) {
+            u32_to_ipv4(temp_u32, netif_config->netmask);
+        }
+        if (qs_nvs_read_uint32(NVS_KEY_HALOW_GATEWAY, &temp_u32) == AICAM_OK) {
+            u32_to_ipv4(temp_u32, netif_config->gw);
+        }
+        return AICAM_OK;
+    }
+#endif
 
     /* AUTO/DISABLE: caller decides; we return empty config */
     netif_config->ip_mode = NETIF_IP_MODE_DHCP;

@@ -130,7 +130,7 @@ function TooltipTrigger({
 
   return (
     <div
-      className="relative inline-block"
+      className="relative flex items-center justify-center"
       ref={triggerRef as React.Ref<HTMLDivElement>}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}

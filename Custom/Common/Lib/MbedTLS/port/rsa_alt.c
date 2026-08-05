@@ -62,6 +62,7 @@
 #include "constant_time_internal.h"
 #include "mbedtls/constant_time.h"
 #include "md_psa.h"
+#include "pka_hw_alt.h"
 
 #include <string.h>
 
@@ -89,19 +90,13 @@
   } while( 0 )
 #endif /* !GET_UINT32_BE */
 
-#if defined(MBEDTLS_THREADING_C)
-static mbedtls_threading_mutex_t rsa_mutex;
 static uint32_t rsa_context_count = 0;
 #define RSA_MUTEX_LOCK()                                   \
     do {                                                    \
-        ret = mbedtls_mutex_lock(&rsa_mutex);               \
+        ret = pka_hw_lock();                                \
         if (ret != 0) goto cleanup;                         \
     } while(0);
-#define RSA_MUTEX_UNLOCK() mbedtls_mutex_unlock(&rsa_mutex)
-#else
-#define RSA_MUTEX_LOCK()
-#define RSA_MUTEX_UNLOCK()
-#endif /* MBEDTLS_THREADING_C */
+#define RSA_MUTEX_UNLOCK() pka_hw_unlock()
 
 /**
   * @brief       Operate the PKA Arithmetic multiplication : AxB = A x B
@@ -1153,7 +1148,6 @@ void mbedtls_rsa_init(mbedtls_rsa_context *ctx)
   mbedtls_mutex_init(&ctx->mutex);
 
   __disable_irq();
-  if (rsa_context_count == 0) mbedtls_mutex_init(&rsa_mutex);
   rsa_context_count++;
   __enable_irq();
 #endif /* MBEDTLS_THREADING_C */
@@ -2939,7 +2933,6 @@ void mbedtls_rsa_free(mbedtls_rsa_context *ctx)
   __disable_irq();
   if (rsa_context_count > 0) {
     rsa_context_count--;
-    if (rsa_context_count == 0) mbedtls_mutex_free(&rsa_mutex);
   }
   __enable_irq();
 #endif /* MBEDTLS_THREADING_C */

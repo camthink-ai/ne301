@@ -40,6 +40,10 @@ extern "C" {
 #define OTA_FW_TYPE_CONFIG      0x05        /* Configuration */
 #define OTA_FW_TYPE_PATCH       0x06        /* Patch */
 #define OTA_FW_TYPE_FULL        0x07        /* Full Package */
+#define OTA_FW_TYPE_WIFI        0x08        /* WiFi (SiWG917) firmware
+                                             * Payload written to flash is the conversion-script
+                                             * output (flash_header_t + .rps); the OTA header is
+                                             * used only for web verification and is NOT written. */
 
 /* Encryption type constants */
 #define OTA_ENCRYPT_NONE        0x00

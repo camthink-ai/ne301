@@ -26,11 +26,13 @@ extern "C" {
 
 /**
  * @brief Communication type enumeration
- * @note Priority: PoE > Cellular > WiFi (higher value = higher priority)
+ * @note Priority: PoE > HaLow > Cellular > WiFi (higher value = higher priority)
+ * @note NVS preferred_comm_type and qs_comm_pref_type (0–4) use the same numeric values.
  */
 typedef enum {
     COMM_TYPE_NONE = 0,                     // No communication type
     COMM_TYPE_WIFI,                         // WiFi communication (lowest priority)
+    COMM_TYPE_HALOW,                        // Wi-Fi HaLow communication
     COMM_TYPE_CELLULAR,                     // Cellular/4G communication (medium priority)
     COMM_TYPE_POE,                          // PoE/Ethernet communication (highest priority)
     COMM_TYPE_MAX
@@ -85,6 +87,7 @@ typedef struct {
     cellular_auth_type_t authentication;    // Authentication type
     aicam_bool_t enable_roaming;            // Enable roaming
     uint8_t operator;                       // Mobile operator (0: Auto, 1: China Mobile, 2: China Unicom, 3: China Telecom, 4: American Verizon)
+    char plmn[8];                           // Manual PLMN code (MCC+MNC, 5-6 digits); empty = auto COPS=0
 } cellular_connection_settings_t;
 
 /**
@@ -155,6 +158,7 @@ typedef void (*communication_switch_callback_t)(const communication_switch_resul
 typedef struct {
     aicam_bool_t auto_start_wifi_ap;        // Auto start WiFi AP mode
     aicam_bool_t auto_start_wifi_sta;       // Auto start WiFi STA mode
+    aicam_bool_t auto_start_halow;          // Auto start Wi-Fi HaLow
     aicam_bool_t auto_start_cellular;       // Auto start cellular/4G
     aicam_bool_t auto_start_poe;            // Auto start PoE/Ethernet
     aicam_bool_t enable_network_scan;       // Enable network scanning
@@ -230,6 +234,15 @@ aicam_result_t communication_service_init(void *config);
  * @return aicam_result_t Operation result
  */
 aicam_result_t communication_service_start(void);
+
+/**
+ * @brief Set the required netif for the wake-capture path.
+ * @param type COMM_TYPE_NONE = default (init all per system comm-pref);
+ *             otherwise bring up only that netif on the next start().
+ * @note Must be called before communication_service_start(). Only takes effect
+ *       on the wake-capture boot path; full-speed boots ignore it.
+ */
+void communication_service_set_required_type(communication_type_t type);
 
 /**
  * @brief Stop communication service
@@ -477,11 +490,17 @@ aicam_result_t communication_switch_type(communication_type_t type,
  * @param type Target communication type
  * @param result Switch result structure to fill
  * @param timeout_ms Timeout in milliseconds
+ * @param scan_before_connect AICAM_TRUE on normal boot (scan then connect); AICAM_FALSE for web/low-power
  * @return aicam_result_t Operation result
  */
 aicam_result_t communication_switch_type_sync(communication_type_t type,
                                               communication_switch_result_t *result,
-                                              uint32_t timeout_ms);
+                                              uint32_t timeout_ms,
+                                              aicam_bool_t scan_before_connect);
+
+/** Mark an external switch session (e.g. Web API) so init callbacks do not duplicate work. */
+void communication_switch_session_begin(void);
+void communication_switch_session_end(void);
 
 /**
  * @brief Set preferred communication type

@@ -7,12 +7,14 @@ import NotFound from "@/pages/notFound";
 import ModelVerification from "@/pages/modelVerification";
 import ApplicationManagement from "@/pages/applicationManagement";
 import HardwareManagement from "@/pages/hardwareManagement";
+import CaptureSettings from "@/pages/captureSettings";
 import SystemSettings from "@/pages/systemSettings";
 import StorageManagement from "@/pages/storageManagement";
-import BrowseFiles from "@/pages/browseFiles";
 import DeviceInformation from "@/pages/deviceInformation";
 import AuthGuard from "./components/auth-guard";
 import ImportFSBL from "@/pages/ImportFSBL";
+import ImportWifi from "@/pages/ImportWifi";
+import UpgradeWaiting from "@/pages/UpgradeWaiting";
 
 const baseRoutes = [
   {
@@ -23,37 +25,37 @@ const baseRoutes = [
     path: "/device-tool",
     element: <DeviceTool />,
   },
-  
+
   {
     path: "/model-verification",
     element: <ModelVerification />,
   },
-  
+
   {
     path: "/application-management",
     element: <ApplicationManagement />,
   },
-  
+
   {
     path: "/hardware-management",
     element: <HardwareManagement />,
   },
-  
+
+  {
+    path: "/capture-settings",
+    element: <CaptureSettings />,
+  },
+
   {
     path: "/system-settings",
     element: <SystemSettings />,
   },
-  
+
   {
     path: "/storage-management",
     element: <StorageManagement />,
   },
-  
-  {
-    path: "/browse-files",
-    element: <BrowseFiles />,
-  },
-  
+
   {
     path: "/device-information",
     element: <DeviceInformation />,
@@ -61,6 +63,14 @@ const baseRoutes = [
   {
     path: "/import-fsbl",
     element: <ImportFSBL />,
+  },
+  {
+    path: "/import-wifi",
+    element: <ImportWifi />,
+  },
+  {
+    path: "/upgrade-waiting",
+    element: <UpgradeWaiting />,
   },
 ];
 
@@ -79,7 +89,7 @@ const router = createBrowserRouter([
         index: true,
         element: <Navigate to="/device-tool" replace />,
       },
-      { 
+      {
         path: "/login",
         element: <Login />,
       },

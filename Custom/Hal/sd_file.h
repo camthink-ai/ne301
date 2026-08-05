@@ -29,6 +29,7 @@
 
 typedef struct {
     FX_MEDIA *media;
+    CHAR saved_dir[FX_MAX_LONG_NAME_LEN];  // saved default dir, restored on close
     CHAR path[FX_MAX_LONG_NAME_LEN];
     CHAR entry_name[FX_MAX_LONG_NAME_LEN];
     UINT attributes;
@@ -42,6 +43,8 @@ struct sd_info {
     uint8_t type; // 0: file, 1: dir
     uint32_t size;
     char name[FX_MAX_LONG_NAME_LEN];
+    uint32_t mtime; // modification time (Unix timestamp), at offset 264
+    char short_name[14];  // 8.3 short name, filled by readdir
 };
 
 typedef enum {
@@ -75,6 +78,7 @@ int sd_file_ops_switch(void);
 int sd_format(void);
 int sd_get_disk_info(sd_disk_info_t *info);
 int sd_is_detected(void);
+int sd_is_media_open(void);              /* non-blocking: true once fx_media_open completed */
 int sd_wait_ready_for_open(uint32_t timeout_ms);
 int sd_register(void);
 int sd_unregister(void);

@@ -18,8 +18,8 @@ Model/
 ## File Description
 
 ### `weights/`
-Contains TensorFlow Lite model files (`.tflite`) and their corresponding JSON configuration files (`.json`). Each model must have:
-- A `.tflite` file: The quantized TensorFlow Lite model
+Contains TensorFlow Lite (`.tflite`) or ONNX (`.onnx`) model files and their corresponding JSON configuration files (`.json`). Each model must have:
+- A `.tflite` or `.onnx` file: The quantized model
 - A `.json` file: Model metadata including input/output specifications, post-processing parameters, etc.
 
 ### `mpools/`
@@ -41,6 +41,8 @@ Build system that automates:
 ```bash
 # Build model package
 make model
+
+make model MODEL_NAME=yolo26_256_qdq_int8_od_coco-person-st 
 
 # Show configuration
 make info
@@ -127,7 +129,7 @@ The following table lists all post-processing types defined in `app_postprocess.
 
 ### 1. Add a New Model
 
-1. Place your `.tflite` model file in `weights/`
+1. Place your `.tflite` or `.onnx` model file in `weights/`
 2. Create a corresponding `.json` configuration file (see examples in `weights/`)
 3. Update `Model/Makefile` to set `MODEL_NAME`, `MODEL_TFLITE`, and `MODEL_JSON`
 

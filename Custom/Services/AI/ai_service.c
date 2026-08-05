@@ -779,7 +779,7 @@ static aicam_result_t ai_create_ai_pipeline_nodes(const ai_service_config_t *con
     }
 
     //load model
-    // result = ai_load_model(AI_DEFAULT_BASE);
+    // result = ai_load_model(AI_1_BASE);
     // if (result != AICAM_OK) {
     //     LOG_SVC_ERROR("Failed to load AI model: %d", result);
     //     return result;

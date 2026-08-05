@@ -302,6 +302,7 @@ static const char *qb_comm_type_str(qs_comm_pref_type_t t)
 {
     switch (t) {
         case COMM_PREF_TYPE_WIFI: return "wifi";
+        case COMM_PREF_TYPE_HALOW: return "halow";
         case COMM_PREF_TYPE_CELLULAR: return "cellular";
         case COMM_PREF_TYPE_POE: return "poe";
         case COMM_PREF_TYPE_AUTO: return "auto";

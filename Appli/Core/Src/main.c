@@ -45,8 +45,9 @@
 #include "framework.h"
 #include "driver_core.h"
 #include "driver_test.h"
-#include "xspim.h"
+#include "../FSBL/Core/Inc/xspim.h"
 #include "rng.h"
+#include "mm_hal_common.h"
 #include "core_init.h"
 #include "service_init.h"
 #include "drtc.h"
@@ -105,6 +106,7 @@ const osThreadAttr_t mainTask_attributes = {
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
 
 void NPURam_enable()
 {
@@ -243,16 +245,8 @@ static void PLATFORM_Config(void)
     // NPUCache_config();
 #endif
     /*** External RAM and NOR Flash *********************************************/
-#ifdef BOOT_IN_PSRAM
     // BSP_XSPI_RAM_Init(0);
     // BSP_XSPI_RAM_EnableMemoryMappedMode(0);
-#else
-    // MX_XSPI1_Init();
-    // XSPI_PSRAM_EnableMemoryMappedMode();
-    BSP_XSPI_RAM_Init(0);
-    BSP_XSPI_RAM_EnableMemoryMappedMode(0);
-#endif
-
     MX_XSPI2_Init();
     XSPI_NOR_EnableMemoryMappedMode();
 
@@ -287,8 +281,8 @@ static void PLATFORM_Config(void)
 void StartMainTask(void *argument)
 {
     // Start time measurement using new uptime API
-    uint64_t total_start_time_ms = rtc_get_uptime_ms();
-    uint64_t step_start_time_ms, step_end_time_ms, step_duration_ms;
+    // uint64_t total_start_time_ms = rtc_get_uptime_ms();
+    // uint64_t step_start_time_ms, step_end_time_ms, step_duration_ms;
 
 #if defined(TX_INCLUDE_USER_DEFINE_FILE)
     threadx_resync_systick_from_rcc();
@@ -297,11 +291,11 @@ void StartMainTask(void *argument)
     // printf("\r\n========== SYSTEM BOOT TIME MEASUREMENT ==========\r\n");
     
     // Step 1: Platform configuration
-    step_start_time_ms = rtc_get_uptime_ms();
+    // step_start_time_ms = rtc_get_uptime_ms();
     PLATFORM_Config();
-    step_end_time_ms = rtc_get_uptime_ms();
-    step_duration_ms = step_end_time_ms - step_start_time_ms;
-    printf("[BOOT] Step 1 - PLATFORM_Config: %lu ms\r\n", (unsigned long)step_duration_ms);
+    // step_end_time_ms = rtc_get_uptime_ms();
+    // step_duration_ms = step_end_time_ms - step_start_time_ms;
+    // printf("[BOOT] Step 1 - PLATFORM_Config: %lu ms\r\n", (unsigned long)step_duration_ms);
     
     // printf("StartMainTask\r\n");
     // printf("\r\n-------------- CLK INFO --------------\r\n");
@@ -313,25 +307,25 @@ void StartMainTask(void *argument)
     // printf("-------------------------------------\r\n");
 
     // Step 2: Framework initialization
-    step_start_time_ms = rtc_get_uptime_ms();
+    // step_start_time_ms = rtc_get_uptime_ms();
     framework_init();
-    step_end_time_ms = rtc_get_uptime_ms();
-    step_duration_ms = step_end_time_ms - step_start_time_ms;
-    printf("[BOOT] Step 2 - framework_init: %lu ms\r\n", (unsigned long)step_duration_ms);
+    // step_end_time_ms = rtc_get_uptime_ms();
+    // step_duration_ms = step_end_time_ms - step_start_time_ms;
+    // printf("[BOOT] Step 2 - framework_init: %lu ms\r\n", (unsigned long)step_duration_ms);
     
     // Step 3: Driver core initialization
-    step_start_time_ms = rtc_get_uptime_ms();
+    // step_start_time_ms = rtc_get_uptime_ms();
     driver_core_init();
-    step_end_time_ms = rtc_get_uptime_ms();
-    step_duration_ms = step_end_time_ms - step_start_time_ms;
-    printf("[BOOT] Step 3 - driver_core_init: %lu ms\r\n", (unsigned long)step_duration_ms);
+    // step_end_time_ms = rtc_get_uptime_ms();
+    // step_duration_ms = step_end_time_ms - step_start_time_ms;
+    // printf("[BOOT] Step 3 - driver_core_init: %lu ms\r\n", (unsigned long)step_duration_ms);
 
     // Step 4: Core system initialization
-    step_start_time_ms = rtc_get_uptime_ms();
+    // step_start_time_ms = rtc_get_uptime_ms();
     core_system_init();
-    step_end_time_ms = rtc_get_uptime_ms();
-    step_duration_ms = step_end_time_ms - step_start_time_ms;
-    printf("[BOOT] Step 4 - core_system_init: %lu ms\r\n", (unsigned long)step_duration_ms);
+    // step_end_time_ms = rtc_get_uptime_ms();
+    // step_duration_ms = step_end_time_ms - step_start_time_ms;
+    printf("BOOT: %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
 
 #if POWER_MODULE_TEST
     for (;;) {
@@ -346,68 +340,83 @@ void StartMainTask(void *argument)
     }
 
     // Step 5: Service initialization
-    step_start_time_ms = rtc_get_uptime_ms();
+    // step_start_time_ms = rtc_get_uptime_ms();
     service_init();
-    step_end_time_ms = rtc_get_uptime_ms();
-    step_duration_ms = step_end_time_ms - step_start_time_ms;
-    printf("[BOOT] Step 5 - service_init: %lu ms\r\n", (unsigned long)step_duration_ms);
+    // step_end_time_ms = rtc_get_uptime_ms();
+    // step_duration_ms = step_end_time_ms - step_start_time_ms;
+    // printf("[BOOT] Step 5 - service_init: %lu ms\r\n", (unsigned long)step_duration_ms);
     
     // printf("[MAIN] All systems initialized successfully\r\n");
 
     // Step 6: Process wakeup event
-    step_start_time_ms = rtc_get_uptime_ms();
-    printf("[MAIN] Processing wakeup event...\r\n");
+    // step_start_time_ms = rtc_get_uptime_ms();
+    // printf("[MAIN] Processing wakeup event...\r\n");
     aicam_result_t result = system_service_process_wakeup_event();
-    step_end_time_ms = rtc_get_uptime_ms();
-    step_duration_ms = step_end_time_ms - step_start_time_ms;
+    // step_end_time_ms = rtc_get_uptime_ms();
+    // step_duration_ms = step_end_time_ms - step_start_time_ms;
     if (result != AICAM_OK) {
-        printf("[MAIN] Wakeup event processing completed with warnings: %d\r\n", result);
-    } else {
-        printf("[MAIN] Wakeup event processed successfully\r\n");
-    }
-    printf("[BOOT] Step 6 - process_wakeup_event: %lu ms\r\n", (unsigned long)step_duration_ms);
+        LOG_WARN("[MAIN] Failed to process wakeup event: %d", result);
+    } 
+    // else {
+    //     printf("[MAIN] Wakeup event processed successfully\r\n");
+    // }
+    // printf("[BOOT] Step 6 - process_wakeup_event: %lu ms\r\n", (unsigned long)step_duration_ms);
     
     // Calculate and print total boot time
-    uint64_t total_end_time_ms = rtc_get_uptime_ms();
-    uint64_t total_duration_ms = total_end_time_ms - total_start_time_ms;
-    printf("[BOOT] ============================================\r\n");
-    printf("[BOOT] TOTAL BOOT TIME: %lu ms (%.2f seconds)\r\n", 
-           (unsigned long)total_duration_ms, total_duration_ms / 1000.0f);
-    printf("[BOOT] ============================================\r\n\r\n");
+    // uint64_t total_end_time_ms = rtc_get_uptime_ms();
+    // uint64_t total_duration_ms = total_end_time_ms - total_start_time_ms;
+    // printf("[BOOT] ============================================\r\n");
+    // printf("[BOOT] TOTAL BOOT TIME: %lu ms (%.2f seconds)\r\n", 
+    //        (unsigned long)total_duration_ms, total_duration_ms / 1000.0f);
+    // printf("[BOOT] ============================================\r\n\r\n");
     
     // wdg_task_change_priority(osPriorityNormal);
-    printf("[MAIN] Entering main loop\r\n");
+    // printf("[MAIN] Entering main loop\r\n");
 
+    if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) {
+        LOG_WARN("[MAIN] System reset due to IWDG reset\r\n");
+        __HAL_RCC_CLEAR_RESET_FLAGS();
+    }
+    
+    printf("MAIN: %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
+    
     /* Infinite loop */
+    uint32_t flush_poll_div = 0;  /* counts osDelay(100) ticks; poll flush every ~150 (15s) */
     for(;;)
     {
+        // Periodic scheduled-flush poll: catches upload nodes that arrive while
+        // awake (FULL_SPEED mode, or LOW_POWER awake periods spanning a node).
+        // The wake path only fires on cold-boot wake; this covers the gap.
+        if (++flush_poll_div >= 150) {
+            flush_poll_div = 0;
+            (void)system_service_poll_scheduled_flush();
+        }
+
         // Check if system needs to enter sleep mode
         aicam_bool_t sleep_pending = AICAM_FALSE;
         result = system_service_is_sleep_pending(&sleep_pending);
-        
+
         if (result == AICAM_OK && sleep_pending == AICAM_TRUE) {
-            printf("[MAIN] Sleep pending detected, entering sleep mode...\r\n");
-            
+            LOG_INFO("[MAIN] Sleep pending detected, entering sleep mode...\r\n");
+
             // Execute sleep operation
             result = system_service_execute_pending_sleep();
             if (result == AICAM_OK) {
                 // Note: After entering sleep, system will reset upon wakeup
                 // Execution will restart from main() -> StartMainTask()
                 // This line should not be reached
-                printf("[MAIN] Enter sleep mode successfully!\r\n");
+                printf("SLEEP: %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
+                osDelay(1000);  
+                // Normally, it wouldn't run over here
+                printf("[MAIN] Resetting system...\r\n");
+                HAL_NVIC_SystemReset();
             } else {
-                printf("[MAIN] Failed to enter sleep mode: %d, continuing...\r\n", result);
+                // printf("[MAIN] Failed to enter sleep mode: %d, continuing...\r\n", result);
+                LOG_WARN("[MAIN] Failed to enter sleep mode: %d", result);
                 osDelay(100); // Wait before retry
             }
         }
-        
-        // Main loop periodic tasks can be added here
-        // For example:
-        // - System health monitoring
-        // - Watchdog feeding
-        // - LED blinking
-        // ...
-        
+
         // Sleep 100ms to avoid busy waiting
         osDelay(100);
     }
@@ -582,7 +591,7 @@ static void SystemIsolation_Config(void)
   * @brief  This function is executed in case of error occurrence.
   * @retval None
   */
-void Error_Handler(void)
+void _Error_Handler_(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */

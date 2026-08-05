@@ -82,8 +82,8 @@ static void stai_log_data_type(const stai_format fmt)
   }
 }
 
-
-void stai_log_tensor(const stai_tensor *tensor)
+#if 0
+static void stai_log_tensor(const stai_tensor *tensor)
 {
 
   if (tensor->name)
@@ -112,9 +112,9 @@ void stai_log_tensor(const stai_tensor *tensor)
   }
 
 }
+#endif
 
-
-void stai_log_io_tensor(const stai_tensor *tensor, uintptr_t address)
+static void stai_log_io_tensor(const stai_tensor *tensor, uintptr_t address)
 {
   if (tensor->name)
     LC_PRINT(" name=%s", tensor->name);

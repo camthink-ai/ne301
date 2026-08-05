@@ -43,6 +43,7 @@ bool driver_core_init(void)
     uint32_t wakeup_flag = 0;
 #endif
 
+    // printf("driver_core_init \r\n");
     hal_mem_register();
     storage_register();
 #if ENABLE_U0_MODULE
@@ -85,11 +86,14 @@ bool driver_core_init(void)
     // wifi_register();
     // tls_test_register();
     // cat1_register();
+
     system_top_register();
+#if !NETIF_WIFI_HALOW_IS_ENABLE
     i2c_tool_register();
     codec_register();
     tft_st7789vw_register_commands();
     sensor_exemple_register_commands();
+#endif
 
     LOG_DRV_DEBUG("driver_core_init end \r\n");
     driver_test_main();

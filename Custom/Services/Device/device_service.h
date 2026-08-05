@@ -24,13 +24,24 @@ extern "C" {
  * @brief Storage management structure
  */
 typedef struct {
+    // SD card storage
     aicam_bool_t sd_card_connected;          // SD card connected
-    uint64_t total_capacity_mb;              // Total capacity (MB)
+    uint64_t total_capacity_mb;              // Total capacity (MB) - primary storage
     uint64_t available_capacity_mb;          // Available capacity (MB)
     uint64_t used_capacity_mb;               // Used capacity (MB)
     float usage_percent;                     // Usage percentage
     aicam_bool_t cyclic_overwrite_enabled;   // Cyclic overwrite enabled
     uint32_t overwrite_threshold_percent;    // Overwrite threshold percentage
+
+    // Internal Flash (LittleFS) storage
+    aicam_bool_t flash_fs_mounted;           // Internal flash filesystem mounted
+    aicam_bool_t flash_fs_error;             // Flash FS error (corrupt/unusable) — needs format
+    char flash_error[24];                    // Error detail ("not_mounted"/"corrupt"/"")
+    uint64_t flash_total_capacity_mb;        // Flash total capacity (MB)
+    uint64_t flash_available_capacity_mb;    // Flash available capacity (MB)
+    uint64_t flash_used_capacity_mb;         // Flash used capacity (MB)
+    float flash_usage_percent;               // Flash usage percentage
+    char flash_fs_type[8];                   // Filesystem type ("littlefs")
 } storage_info_t;
 
 /**
@@ -146,6 +157,16 @@ service_state_t device_service_get_state(void);
  * @return aicam_result_t Operation result
  */
 aicam_result_t device_service_get_info(device_info_config_t *info);
+
+/**
+ * @brief Get cached device info without storage scan (fast, hot-path safe).
+ * Only updates battery (HAL read) and returns the in-memory copy.
+ * Does NOT call update_storage_info() — use device_service_get_info() when
+ * storage capacity/usage data is actually needed.
+ * @param info Pointer to device_info_config_t structure
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t device_service_get_cached_info(device_info_config_t *info);
 
 /**
  * @brief Update device information

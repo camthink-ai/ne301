@@ -225,6 +225,7 @@ int si91x_mqtt_client_init(const ms_mqtt_config_t *config)
         goto si91x_mqtt_client_init_end;
     }
     memset(si91x_mqtt_client->sl_mqtt_client_configuration, 0, sizeof(sl_mqtt_client_configuration_t));
+    si91x_mqtt_client->sl_mqtt_client_configuration->credential_id = SL_NET_NO_CREDENTIAL_ID;
 
     si91x_mqtt_client->sl_mqtt_broker = (sl_mqtt_broker_t *)hal_mem_alloc_large(sizeof(sl_mqtt_broker_t));
     if (si91x_mqtt_client->sl_mqtt_broker == NULL) {
@@ -429,6 +430,11 @@ int si91x_mqtt_client_connnect(void)
     sl_status_t status = SL_STATUS_OK;
 
     SI91X_MQTT_CLIENT_FUNC_START(false);
+    if (sl_net_client_netif_state() != NETIF_STATE_UP && sl_net_netif_get_wakeup_mode() != WAKEUP_MODE_WIFI) {
+        SI91X_MQTT_CLIENT_FUNC_END();
+        LOG_DRV_ERROR("[SI91X MQTT]connect refused: netif not up\r\n");
+        return MQTT_ERR_NETIF;
+    }
     status = sl_mqtt_client_connect(si91x_mqtt_client->sl_mqtt_client, si91x_mqtt_client->sl_mqtt_broker, si91x_mqtt_client->sl_mqtt_client_last_will_message, si91x_mqtt_client->sl_mqtt_client_configuration, 0);
     SI91X_MQTT_CLIENT_FUNC_END();
     if (status != SL_STATUS_IN_PROGRESS) {
@@ -443,6 +449,11 @@ int si91x_mqtt_client_connnect_sync(uint32_t timeout_ms)
     sl_status_t status = SL_STATUS_OK;
 
     SI91X_MQTT_CLIENT_FUNC_START(false);
+    if (sl_net_client_netif_state() != NETIF_STATE_UP && sl_net_netif_get_wakeup_mode() != WAKEUP_MODE_WIFI) {
+        SI91X_MQTT_CLIENT_FUNC_END();
+        LOG_DRV_ERROR("[SI91X MQTT]sync connect refused: netif not up\r\n");
+        return MQTT_ERR_NETIF;
+    }
     status = sl_mqtt_client_connect(si91x_mqtt_client->sl_mqtt_client, si91x_mqtt_client->sl_mqtt_broker, si91x_mqtt_client->sl_mqtt_client_last_will_message, si91x_mqtt_client->sl_mqtt_client_configuration, timeout_ms);
     SI91X_MQTT_CLIENT_FUNC_END();
     if (status != SL_STATUS_OK) {

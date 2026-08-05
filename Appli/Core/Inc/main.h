@@ -68,8 +68,9 @@ typedef funcptr funcptr_NS;
 /* USER CODE END EM */
 
 /* Exported functions prototypes ---------------------------------------------*/
-void Error_Handler(void);
+void _Error_Handler_(void);
 
+#define Error_Handler() do { printf("Error_Handler, file: %s line: %d\n", __FILE__, __LINE__); _Error_Handler_(); } while(0)
 /* USER CODE BEGIN EFP */
 
 /* USER CODE END EFP */
@@ -132,6 +133,40 @@ void Error_Handler(void);
 
 #define PWR_USB_3V3_Pin GPIO_PIN_13
 #define PWR_USB_3V3_GPIO_Port GPIOG
+
+////////////////////////////////////////////////////////////
+//clk
+#define MM_HALOW_SPI_CLK_Pin GPIO_PIN_5
+#define MM_HALOW_SPI_CLK_GPIO_Port GPIOA
+//cs
+#define MM_HALOW_SPI_CS_Pin GPIO_PIN_0
+#define MM_HALOW_SPI_CS_GPIO_Port GPIOA
+//mosi
+#define MM_HALOW_SPI_MOSI_Pin GPIO_PIN_7
+#define MM_HALOW_SPI_MOSI_GPIO_Port GPIOA
+//miso
+#define MM_HALOW_SPI_MISO_Pin GPIO_PIN_4
+#define MM_HALOW_SPI_MISO_GPIO_Port GPIOB
+
+#define MM_HALOW_SPI_IRQ_Pin GPIO_PIN_4
+#define MM_HALOW_SPI_IRQ_GPIO_Port GPIOA
+#define MM_HALOW_BUSY_Pin GPIO_PIN_15
+#define MM_HALOW_BUSY_GPIO_Port GPIOA
+
+#define MM_HALOW_RESET_Pin GPIO_PIN_0
+#define MM_HALOW_RESET_GPIO_Port GPIOB
+#define MM_HALOW_WAKE_Pin GPIO_PIN_2
+#define MM_HALOW_WAKE_GPIO_Port GPIOB
+
+#define MM_HALOW_SPI_IRQn            (EXTI4_IRQn)
+#define MM_HALOW_SPI_IRQ_HANDLER     EXTI4_IRQHandler
+
+#define MM_HALOW_BUSY_IRQn           (EXTI15_IRQn)
+#define MM_HALOW_BUSY_IRQ_HANDLER    EXTI15_IRQHandler
+
+
+////////////////////////////////////////////////////////////
+
 
 /* USER CODE BEGIN Private defines */
 void SystemClock_Config(void);

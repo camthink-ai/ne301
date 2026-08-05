@@ -786,21 +786,24 @@ static int jpegc_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsign
                            original_chroma, jpegc->enc_params.ImageWidth, jpegc->enc_params.ImageHeight, auto_chroma);
             }
             
-            /* Allocate or resize encode output buffer based on resolution to avoid overflow */
+            /* Allocate encode output buffer. Always allocate a new buffer:
+             * if the previous encode's buffer was not UNSHAREd, the caller
+             * still holds the pointer from OUTPUT_ENC_BUFFER. Dropping our
+             * reference without freeing avoids both a dangling pointer (if we
+             * freed) and buffer aliasing (if we reused). Caller frees via
+             * RETURN_ENC_BUFFER or FREE_ENC_BUFFER. */
             uint32_t required_size = jpegc_calc_enc_buffer_size(&jpegc->enc_params);
 
-            if (jpegc->enc_output_buffer != NULL && jpegc->enc_output_buffer_capacity < required_size) {
-                hal_mem_free(jpegc->enc_output_buffer);
+            /* Drop jpegc's reference to the previous encode output buffer.
+             * Do NOT hal_mem_free — the caller from OUTPUT_ENC_BUFFER owns it. */
+            if (jpegc->enc_output_buffer != NULL) {
                 jpegc->enc_output_buffer = NULL;
                 jpegc->enc_output_buffer_size = 0;
                 jpegc->enc_output_buffer_capacity = 0;
             }
 
-            if(jpegc->enc_output_buffer == NULL){
-                jpegc->enc_output_buffer = (unsigned char *)hal_mem_alloc_aligned(required_size, 32, MEM_LARGE);
-                jpegc->enc_output_buffer_capacity = (jpegc->enc_output_buffer != NULL) ? required_size : 0;
-                // LOG_DRV_INFO("jpegc enc output buffer addr:0x%x, size:%d \r\n", jpegc->enc_output_buffer, required_size);
-            }
+            jpegc->enc_output_buffer = (unsigned char *)hal_mem_alloc_aligned(required_size, 32, MEM_LARGE);
+            jpegc->enc_output_buffer_capacity = (jpegc->enc_output_buffer != NULL) ? required_size : 0;
             if(jpegc->enc_output_buffer == NULL){
                 ret = AICAM_ERROR_NO_MEMORY;
                 break;
@@ -892,7 +895,6 @@ static int jpegc_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsign
                 }else{
                     ret = AICAM_ERROR_TIMEOUT;
                 }
-                osMutexRelease(jpegc->mtx_id);
             }else{
                 osMutexAcquire(jpegc->mtx_id, osWaitForever);
                 ret = AICAM_ERROR_BUSY;
@@ -940,7 +942,6 @@ static int jpegc_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsign
                 }else{
                     ret = AICAM_ERROR_TIMEOUT;
                 }
-                osMutexRelease(jpegc->mtx_id);
             }else{
                 osMutexAcquire(jpegc->mtx_id, osWaitForever);
                 ret = AICAM_ERROR_BUSY;

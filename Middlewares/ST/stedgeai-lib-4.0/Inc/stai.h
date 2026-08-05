@@ -27,7 +27,7 @@
 
 #define STAI_TOOLS_VERSION_MAJOR      (4)
 #define STAI_TOOLS_VERSION_MINOR      (0)
-#define STAI_TOOLS_VERSION_MICRO      (0)
+#define STAI_TOOLS_VERSION_MICRO      (1)
 
 /*****************************************************************************/
 #ifdef __cplusplus

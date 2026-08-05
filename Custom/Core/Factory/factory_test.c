@@ -10,6 +10,7 @@
 #include "version.h"
 #include "drtc.h"
 #include "device_service.h"
+#include "mem_map.h"
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
@@ -61,7 +62,7 @@ static factory_test_result_t test_psram(void) {
     
     // Quick sanity check - test a small area that's known to be available
     // Use SRAM_AI_EXT area which should be initialized
-    volatile uint32_t *psram = (volatile uint32_t *)0x90400000; // Offset 4MB, safer area
+    volatile uint32_t *psram = (volatile uint32_t *)PSRAM_REGION_BASE; // Offset 4MB from SRAM_APP_BASE, safer area
     const uint32_t test_pattern = 0xDEADBEEF;
     uint32_t backup;
     

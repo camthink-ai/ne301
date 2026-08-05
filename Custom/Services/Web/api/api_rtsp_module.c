@@ -140,7 +140,7 @@ static aicam_result_t rtsp_config_set_handler(http_handler_context_t* ctx)
     } else if (!vs_config.rtsp_enable && was_enabled) {
         rtsp_service_stop();
     } else if (vs_config.rtsp_enable && was_enabled) {
-        /* Already running — check if runtime config changed (port, auth) */
+        /* Already running - check if runtime config changed (port, auth) */
         aicam_bool_t config_changed =
             (vs_config.rtsp_port != old_port) ||
             (strncmp(vs_config.rtsp_auth_mode, old_auth_mode, sizeof(vs_config.rtsp_auth_mode)) != 0) ||

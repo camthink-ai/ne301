@@ -26,6 +26,8 @@
 #include "api_business_error.h"
 #include "device_service.h"
 #include "api_ota_module.h"
+#include "api_file_module.h"
+#include "web_recovery.h"
 
 #define WEB_SERVER_STACK_SIZE (1024 * 32)
 #define WEB_SERVER_AP_SLEEP_TIMER_STACK_SIZE (1024 * 8)
@@ -402,14 +404,19 @@ aicam_result_t api_response_error(http_handler_context_t* ctx,
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
         // check if the request is for ota upload
         if (mg_match(hm->uri, mg_str(API_PATH_PREFIX "/system/ota/upload"), NULL)) {
-            // call the processor: it will set c->pfn = NULL and delete headers, take over the subsequent data
             ota_upload_stream_processor(c, ev, ev_data);
+            return;
+        }
+        // check if the request is for file upload - stream to disk
+        if (mg_match(hm->uri, mg_str(API_PATH_PREFIX "/files/upload"), NULL) &&
+            mg_match(hm->method, mg_str("POST"), NULL)) {
+            file_upload_stream_processor(c, ev, ev_data);
             return;
         }
      }
 
-    // check if the request is for ota upload
-    // IMPORTANT: Do NOT process OTA stream on:
+    // check if the request is for ota upload or file upload
+    // IMPORTANT: Do NOT process streams on:
     // - Listener connections (is_listening = 1)
     // - During MG_EV_OPEN event (pfn not set yet, would be &g_web_server not ota_ctx)
     // - When fn_data is the server instance (&g_web_server)
@@ -417,7 +424,11 @@ aicam_result_t api_response_error(http_handler_context_t* ctx,
         !c->is_listening && c->fn_data != &g_web_server) {
         // use POLL or READ event to drive data write
         // most Mongoose versions will trigger callbacks after POLL or each IO
-        ota_upload_stream_processor(c, ev, ev_data);
+        if (ota_is_upload_in_progress()) {
+            ota_upload_stream_processor(c, ev, ev_data);
+        } else {
+            file_upload_stream_processor(c, ev, ev_data);
+        }
         return;
     }
 
@@ -732,6 +743,25 @@ static aicam_result_t web_server_handle_static_request(http_handler_context_t* c
     char decoded_uri[256];
     const web_asset_t* asset = NULL;
     const char* path_to_find;
+
+    // Recovery mode: the normal web assets are missing, so serve the built-in
+    // recovery page for any path. The page uploads a web firmware package to
+    // the OTA endpoint to restore the full UI.
+    if (web_recovery_is_active()) {
+        const char* html = web_recovery_get_html();
+        size_t html_size = web_recovery_get_html_size();
+        mg_printf(ctx->conn,
+                  "HTTP/1.1 200 OK\r\n"
+                  "Content-Type: text/html; charset=utf-8\r\n"
+                  "Content-Length: %u\r\n"
+                  "Cache-Control: no-store\r\n"
+                  "Access-Control-Allow-Origin: *\r\n"
+                  "\r\n",
+                  (unsigned int)html_size);
+        mg_send(ctx->conn, html, html_size);
+        ctx->conn->is_draining = 1;
+        return AICAM_OK;
+    }
 
     // URL Decode the request URI
     mg_url_decode(ctx->msg->uri.buf, ctx->msg->uri.len, decoded_uri, sizeof(decoded_uri), 0);

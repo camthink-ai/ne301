@@ -19,13 +19,15 @@
 #include "generic_file.h"
 #include "json_config_mgr.h"
 #include "json_config_internal.h"
+#include "wake_scheduler.h"
 #include "ai_service.h"
 #include "ota_service.h"
 #include "ota_header.h"
 #include "storage.h"
+#include "upload_coordinator.h"
 #include "version.h"
 #include "fsbl_app_common.h"
-
+#include "wifi.h"
 /* ==================== Helper Functions ==================== */
 
 static uint32_t restart_delay_seconds = 3;
@@ -214,25 +216,40 @@ aicam_result_t device_storage_handler(http_handler_context_t *ctx) {
     
     // Add storage connection status
     cJSON_AddBoolToObject(response_json, "sd_card_connected", storage_info.sd_card_connected);
-    
+
     // Add capacity information (in MB and GB)
     cJSON_AddNumberToObject(response_json, "total_capacity_mb", storage_info.total_capacity_mb);
     cJSON_AddNumberToObject(response_json, "available_capacity_mb", storage_info.available_capacity_mb);
     cJSON_AddNumberToObject(response_json, "used_capacity_mb", storage_info.used_capacity_mb);
     cJSON_AddNumberToObject(response_json, "usage_percent", storage_info.usage_percent);
-    
+
     // Add capacity information in GB for user-friendly display
     cJSON_AddNumberToObject(response_json, "total_capacity_gb", (double)storage_info.total_capacity_mb / 1024.0);
     cJSON_AddNumberToObject(response_json, "available_capacity_gb", (double)storage_info.available_capacity_mb / 1024.0);
     cJSON_AddNumberToObject(response_json, "used_capacity_gb", (double)storage_info.used_capacity_mb / 1024.0);
-    
+
     // Add cyclic overwrite policy
     cJSON_AddBoolToObject(response_json, "cyclic_overwrite_enabled", storage_info.cyclic_overwrite_enabled);
     cJSON_AddNumberToObject(response_json, "overwrite_threshold_percent", storage_info.overwrite_threshold_percent);
-    
+
+    // ── Internal Flash (LittleFS) storage ──
+    cJSON_AddBoolToObject(response_json, "flash_fs_mounted", storage_info.flash_fs_mounted);
+    cJSON_AddBoolToObject(response_json, "flash_fs_error", storage_info.flash_fs_error);
+    cJSON_AddStringToObject(response_json, "flash_error", storage_info.flash_error);
+    cJSON_AddNumberToObject(response_json, "flash_total_capacity_mb", storage_info.flash_total_capacity_mb);
+    cJSON_AddNumberToObject(response_json, "flash_available_capacity_mb", storage_info.flash_available_capacity_mb);
+    cJSON_AddNumberToObject(response_json, "flash_used_capacity_mb", storage_info.flash_used_capacity_mb);
+    cJSON_AddNumberToObject(response_json, "flash_usage_percent", storage_info.flash_usage_percent);
+    cJSON_AddNumberToObject(response_json, "flash_total_capacity_gb", (double)storage_info.flash_total_capacity_mb / 1024.0);
+    cJSON_AddNumberToObject(response_json, "flash_available_capacity_gb", (double)storage_info.flash_available_capacity_mb / 1024.0);
+    cJSON_AddNumberToObject(response_json, "flash_used_capacity_gb", (double)storage_info.flash_used_capacity_mb / 1024.0);
+    cJSON_AddStringToObject(response_json, "flash_fs_type", storage_info.flash_fs_type);
+
     // Add status summary
     const char* status_summary;
+    const char* primary_storage;
     if (storage_info.sd_card_connected) {
+        primary_storage = "sd";
         if (storage_info.usage_percent > storage_info.overwrite_threshold_percent) {
             status_summary = storage_info.cyclic_overwrite_enabled ? "full_auto_overwrite" : "full_manual_cleanup";
         } else if (storage_info.usage_percent > 80.0f) {
@@ -240,10 +257,21 @@ aicam_result_t device_storage_handler(http_handler_context_t *ctx) {
         } else {
             status_summary = "normal";
         }
+    } else if (storage_info.flash_fs_mounted) {
+        primary_storage = "flash";
+        if (storage_info.flash_usage_percent > 95.0f) {
+            status_summary = "full";
+        } else if (storage_info.flash_usage_percent > 80.0f) {
+            status_summary = "warning";
+        } else {
+            status_summary = "normal";
+        }
     } else {
+        primary_storage = "none";
         status_summary = "no_card";
     }
     cJSON_AddStringToObject(response_json, "status", status_summary);
+    cJSON_AddStringToObject(response_json, "primary_storage", primary_storage);
     
     // Send response
     char* json_string = cJSON_Print(response_json);
@@ -368,6 +396,7 @@ aicam_result_t device_image_config_handler(http_handler_context_t *ctx) {
         cJSON_AddBoolToObject(response_json, "vertical_flip", camera_config.image_config.vertical_flip);
         cJSON_AddNumberToObject(response_json, "aec", camera_config.image_config.aec);
         cJSON_AddNumberToObject(response_json, "isp_mode", camera_config.image_config.isp_mode);
+        cJSON_AddBoolToObject(response_json, "grayscale", camera_config.image_config.grayscale);
         cJSON_AddNumberToObject(response_json, "fast_capture_skip_frames", camera_config.image_config.fast_capture_skip_frames);
         cJSON_AddNumberToObject(response_json, "fast_capture_resolution", camera_config.image_config.fast_capture_resolution);
         cJSON_AddNumberToObject(response_json, "fast_capture_jpeg_quality", camera_config.image_config.fast_capture_jpeg_quality);
@@ -466,6 +495,11 @@ aicam_result_t device_image_config_handler(http_handler_context_t *ctx) {
             }
         }
 
+        cJSON* grayscale_item = cJSON_GetObjectItem(request_json, "grayscale");
+        if (grayscale_item && cJSON_IsBool(grayscale_item)) {
+            image_config.grayscale = cJSON_IsTrue(grayscale_item) ? AICAM_TRUE : AICAM_FALSE;
+        }
+
         // Update fast capture skip frames if provided (0-300 to match CAM_CMD_SET_STARTUP_SKIP_FRAMES)
         cJSON* fast_skip_item = cJSON_GetObjectItem(request_json, "fast_capture_skip_frames");
         if (fast_skip_item && cJSON_IsNumber(fast_skip_item)) {
@@ -514,8 +548,7 @@ aicam_result_t device_image_config_handler(http_handler_context_t *ctx) {
             old_image_config.contrast != image_config.contrast ||
             old_image_config.horizontal_flip != image_config.horizontal_flip ||
             old_image_config.vertical_flip != image_config.vertical_flip ||
-            old_image_config.aec != image_config.aec ||
-            old_image_config.isp_mode != image_config.isp_mode) {
+            old_image_config.aec != image_config.aec) {
             need_restart_pipeline = AICAM_TRUE;
         }
 
@@ -545,6 +578,7 @@ aicam_result_t device_image_config_handler(http_handler_context_t *ctx) {
         cJSON_AddBoolToObject(response_json, "vertical_flip", image_config.vertical_flip);
         cJSON_AddNumberToObject(response_json, "aec", image_config.aec);
         cJSON_AddNumberToObject(response_json, "isp_mode", image_config.isp_mode);
+        cJSON_AddBoolToObject(response_json, "grayscale", image_config.grayscale);
         cJSON_AddNumberToObject(response_json, "fast_capture_skip_frames", image_config.fast_capture_skip_frames);
         cJSON_AddNumberToObject(response_json, "fast_capture_resolution", image_config.fast_capture_resolution);
         cJSON_AddNumberToObject(response_json, "fast_capture_jpeg_quality", image_config.fast_capture_jpeg_quality);
@@ -950,6 +984,7 @@ aicam_result_t device_camera_config_handler(http_handler_context_t *ctx) {
             cJSON_AddBoolToObject(image_config_json, "vertical_flip", camera_config.image_config.vertical_flip);
             cJSON_AddNumberToObject(image_config_json, "aec", camera_config.image_config.aec);
             cJSON_AddNumberToObject(image_config_json, "isp_mode", camera_config.image_config.isp_mode);
+            cJSON_AddBoolToObject(image_config_json, "grayscale", camera_config.image_config.grayscale);
             cJSON_AddNumberToObject(image_config_json, "fast_capture_skip_frames", camera_config.image_config.fast_capture_skip_frames);
             cJSON_AddNumberToObject(image_config_json, "fast_capture_resolution", camera_config.image_config.fast_capture_resolution);
             cJSON_AddNumberToObject(image_config_json, "fast_capture_jpeg_quality", camera_config.image_config.fast_capture_jpeg_quality);
@@ -1066,6 +1101,12 @@ aicam_result_t device_camera_config_handler(http_handler_context_t *ctx) {
                 }
             }
 
+            cJSON* grayscale_nested = cJSON_GetObjectItem(image_config_item, "grayscale");
+            if (grayscale_nested && cJSON_IsBool(grayscale_nested)) {
+                camera_config.image_config.grayscale =
+                    cJSON_IsTrue(grayscale_nested) ? AICAM_TRUE : AICAM_FALSE;
+            }
+
             cJSON* cap_dis_comm_item = cJSON_GetObjectItem(image_config_item, "capture_disable_comm");
             if (cap_dis_comm_item && cJSON_IsBool(cap_dis_comm_item)) {
                 camera_config.image_config.capture_disable_comm =
@@ -1107,6 +1148,7 @@ aicam_result_t device_camera_config_handler(http_handler_context_t *ctx) {
             cJSON_AddBoolToObject(image_config_response, "vertical_flip", camera_config.image_config.vertical_flip);
             cJSON_AddNumberToObject(image_config_response, "aec", camera_config.image_config.aec);
             cJSON_AddNumberToObject(image_config_response, "isp_mode", camera_config.image_config.isp_mode);
+            cJSON_AddBoolToObject(image_config_response, "grayscale", camera_config.image_config.grayscale);
             cJSON_AddNumberToObject(image_config_response, "fast_capture_skip_frames", camera_config.image_config.fast_capture_skip_frames);
             cJSON_AddNumberToObject(image_config_response, "fast_capture_resolution", camera_config.image_config.fast_capture_resolution);
             cJSON_AddNumberToObject(image_config_response, "fast_capture_jpeg_quality", camera_config.image_config.fast_capture_jpeg_quality);
@@ -1207,7 +1249,11 @@ aicam_result_t system_time_handler(http_handler_context_t *ctx) {
     
     // Set system time using RTC
     rtc_setup_by_timestamp(timestamp, timezone_offset_hours);
-    
+
+    /* RTC stepped - invalidate wake_scheduler's last-handled-at state so
+     * we don't accidentally suppress freshly-due events on the new clock. */
+    wake_scheduler_reset_state();
+
     // Get the actual set time for response
     uint64_t current_timestamp = rtc_get_timeStamp();
     uint64_t local_timestamp = rtc_get_local_timestamp();
@@ -2055,8 +2101,8 @@ static aicam_result_t firmware_versions_handler(http_handler_context_t *ctx)
     get_firmware_version_string(FIRMWARE_WEB, version_str, sizeof(version_str));
     cJSON_AddStringToObject(response, "web", version_str);
     
-    // MODEL version (use AI_1 if active, otherwise AI_DEFAULT)
-    FirmwareType model_type = json_config_get_ai_1_active() ? FIRMWARE_AI_1 : FIRMWARE_DEFAULT_AI;
+    // MODEL version (use AI_2 if active, otherwise AI_1)
+    FirmwareType model_type = json_config_get_ai_1_active() ? FIRMWARE_AI_2 : FIRMWARE_AI_1;
     get_firmware_version_string(model_type, version_str, sizeof(version_str));
     cJSON_AddStringToObject(response, "model", version_str);
     
@@ -2074,7 +2120,20 @@ static aicam_result_t firmware_versions_handler(http_handler_context_t *ctx)
 #else
     cJSON_AddStringToObject(response, "wakecore", "N/A");
 #endif
-    
+
+    // WiFi (SiWG917) firmware version — flash-stored .rps + running chip fw
+    {
+        char wifi_flash_ver[32] = "N/A";
+        char wifi_running_ver[32] = "N/A";
+        wifi_get_flash_version(wifi_flash_ver, sizeof(wifi_flash_ver));
+        wifi_get_running_version(wifi_running_ver, sizeof(wifi_running_ver));
+        cJSON_AddStringToObject(response, "wifi", wifi_flash_ver);
+        cJSON_AddStringToObject(response, "wifi_running", wifi_running_ver);
+        // Expected versions compiled from version.mk via version.h
+        cJSON_AddStringToObject(response, "expected_fsbl", EXPECTED_FSBL_VERSION_STRING);
+        cJSON_AddStringToObject(response, "expected_wifi", EXPECTED_WIFI_VERSION_STRING);
+    }
+
     // Convert to string
     char *json_str = cJSON_PrintUnformatted(response);
     cJSON_Delete(response);
@@ -2085,6 +2144,85 @@ static aicam_result_t firmware_versions_handler(http_handler_context_t *ctx)
     
     // Send response
     return api_response_success(ctx, json_str, "Firmware versions retrieved successfully");
+}
+
+/**
+ * @brief GET /api/v1/device/version-check — compare running versions against
+ *        the EXPECTED_* macros compiled into the APP firmware.
+ *
+ * Returns an object like:
+ *   { "fsbl_mismatch": false, "wifi_mismatch": true,
+ *     "expected_fsbl": "1.0.3.0",    "current_fsbl": "1.0.3.0",
+ *     "expected_wifi": "2.15.5.2",   "current_wifi": "2.14.5.207" }
+ *
+ * The web UI uses this after login to prompt the user to upgrade out-of-date
+ * FSBL or WiFi firmware (FSBL check takes priority).
+ */
+static aicam_result_t version_check_handler(http_handler_context_t *ctx)
+{
+    if (!ctx) return AICAM_ERROR_INVALID_PARAM;
+    if (!web_api_verify_method(ctx, "GET"))
+        return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only GET");
+
+    // --- FSBL version (from OTA slot) ---
+    SystemState *state = ota_get_system_state();
+    char current_fsbl[32] = "unknown";
+    if (state) {
+        ota_version_to_string(
+            state->slot[FIRMWARE_FSBL][state->active_slot[FIRMWARE_FSBL]].version,
+            current_fsbl, sizeof(current_fsbl));
+    }
+
+    // --- WiFi version (from running chip) ---
+    char current_wifi[32] = "N/A";
+    wifi_get_running_version(current_wifi, sizeof(current_wifi));
+
+    int fsbl_mismatch = (strcmp(current_fsbl, EXPECTED_FSBL_VERSION_STRING) != 0);
+    int wifi_mismatch = (strcmp(current_wifi, EXPECTED_WIFI_VERSION_STRING) != 0);
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "fsbl_mismatch", fsbl_mismatch);
+    cJSON_AddBoolToObject(resp, "wifi_mismatch", wifi_mismatch);
+    cJSON_AddStringToObject(resp, "expected_fsbl", EXPECTED_FSBL_VERSION_STRING);
+    cJSON_AddStringToObject(resp, "current_fsbl", current_fsbl);
+    cJSON_AddStringToObject(resp, "expected_wifi", EXPECTED_WIFI_VERSION_STRING);
+    cJSON_AddStringToObject(resp, "current_wifi", current_wifi);
+
+    char *json_str = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    return api_response_success(ctx, json_str, "OK");
+}
+
+/**
+ * @brief POST /api/v1/device/storage/format - Format internal flash LittleFS.
+ * @details Destructive: erases ALL files on the internal flash LittleFS volume
+ *          (logs, captures, uploaded assets). NVS (device config) lives in a
+ *          separate partition and is unaffected. Requires auth (route-level).
+ *          After formatting, the captures tree is rebuilt and the record-count
+ *          cache invalidated. The caller is expected to re-fetch storage info.
+ */
+aicam_result_t device_storage_format_handler(http_handler_context_t *ctx) {
+    if (!ctx) return AICAM_ERROR_INVALID_PARAM;
+    if (!web_api_verify_method(ctx, "POST")) {
+        return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
+    }
+    if (!is_device_service_running()) {
+        return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE, "Device service is not running");
+    }
+
+    LOG_SVC_WARN("device: formatting internal flash LittleFS (all flash data erased)");
+    storage_format();
+    /* Rebuild the captures directory tree and invalidate the (now-empty)
+     * record-count cache. */
+    upload_coordinator_reload_config();
+
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to create response");
+    cJSON_AddBoolToObject(resp, "success", 1);
+    char *json = cJSON_Print(resp);
+    cJSON_Delete(resp);
+    if (!json) return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Serialize failed");
+    return api_response_success(ctx, json, "Flash formatted");
 }
 
 /* ==================== Route Registration ==================== */
@@ -2108,6 +2246,13 @@ static const api_route_t device_module_routes[] = {
         .user_data = NULL
     },
     {
+        .method = "GET",
+        .path = API_PATH_PREFIX "/device/version-check",
+        .handler = version_check_handler,
+        .require_auth = AICAM_TRUE,
+        .user_data = NULL
+    },
+    {
         .method = "GET", 
         .path = API_PATH_PREFIX "/device/storage",
         .handler = device_storage_handler,
@@ -2118,6 +2263,13 @@ static const api_route_t device_module_routes[] = {
         .method = "POST",
         .path = API_PATH_PREFIX "/device/storage/config",
         .handler = device_storage_config_handler,
+        .require_auth = AICAM_TRUE,
+        .user_data = NULL
+    },
+    {
+        .method = "POST",
+        .path = API_PATH_PREFIX "/device/storage/format",
+        .handler = device_storage_format_handler,
         .require_auth = AICAM_TRUE,
         .user_data = NULL
     },

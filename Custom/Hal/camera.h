@@ -215,4 +215,16 @@ ISP_HandleTypeDef* camera_get_isp_handle(void);
  */
 void camera_fill_isp_iq_scene(cam_iq_scene_t scene, ISP_IQParamTypeDef *out_iq);
 
+/**
+ * @brief Overlay grayscale (BT.601 luma) ISP settings on an IQ profile.
+ * @param iq IQ buffer to modify in place.
+ * @param grayscale AICAM_TRUE: disable AWB and use luma color matrix; AICAM_FALSE: no change.
+ */
+void camera_apply_grayscale_iq(ISP_IQParamTypeDef *iq, aicam_bool_t grayscale);
+
+/**
+ * @brief Reserved: PIPE1 stays RGB565; grayscale is ISP-only (see camera_apply_grayscale_iq).
+ */
+void camera_configure_pipe1_grayscale(pipe_params_t *pipe1, aicam_bool_t grayscale);
+
 #endif

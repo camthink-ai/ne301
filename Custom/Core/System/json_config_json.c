@@ -263,6 +263,7 @@ static void parse_device_service(cJSON *json, device_service_config_t *cfg)
         json_get_bool(img_cfg, "vertical_flip", &cfg->image_config.vertical_flip);
         json_get_uint32(img_cfg, "aec", &cfg->image_config.aec);
         json_get_uint32(img_cfg, "isp_mode", &cfg->image_config.isp_mode);
+        json_get_bool(img_cfg, "grayscale", &cfg->image_config.grayscale);
         json_get_uint32(img_cfg, "fast_capture_skip_frames", &cfg->image_config.fast_capture_skip_frames);
         json_get_uint32(img_cfg, "fast_capture_resolution", &cfg->image_config.fast_capture_resolution);
         json_get_uint32(img_cfg, "fast_capture_jpeg_quality", &cfg->image_config.fast_capture_jpeg_quality);
@@ -402,6 +403,47 @@ static void parse_network_service(cJSON *json, network_service_config_t *cfg)
         // Validation settings
         json_get_bool(poe, "validate_gateway", &cfg->poe.validate_gateway);
         json_get_bool(poe, "detect_ip_conflict", &cfg->poe.detect_ip_conflict);
+    }
+
+    /* Wi-Fi HaLow */
+    {
+        cJSON *halow = cJSON_GetObjectItem(json, "halow");
+        if (cJSON_IsObject(halow)) {
+            uint32_t temp = 0;
+            json_get_string(halow, "ssid", cfg->halow_ssid, sizeof(cfg->halow_ssid));
+            json_get_string(halow, "password", cfg->halow_password, sizeof(cfg->halow_password));
+            json_get_uint32(halow, "security", &cfg->halow_security);
+            json_get_string(halow, "country_code", cfg->halow_country_code, sizeof(cfg->halow_country_code));
+            json_get_string(halow, "bssid", cfg->halow_bssid, sizeof(cfg->halow_bssid));
+            json_get_uint32(halow, "ip_mode", &temp);
+            cfg->halow_ip_mode = temp;
+
+            cJSON *ip_arr = cJSON_GetObjectItem(halow, "ip_addr");
+            if (cJSON_IsArray(ip_arr) && cJSON_GetArraySize(ip_arr) == 4) {
+                for (int i = 0; i < 4; i++) {
+                    cfg->halow_ip_addr[i] = (uint8_t)cJSON_GetArrayItem(ip_arr, i)->valueint;
+                }
+            }
+            ip_arr = cJSON_GetObjectItem(halow, "netmask");
+            if (cJSON_IsArray(ip_arr) && cJSON_GetArraySize(ip_arr) == 4) {
+                for (int i = 0; i < 4; i++) {
+                    cfg->halow_netmask[i] = (uint8_t)cJSON_GetArrayItem(ip_arr, i)->valueint;
+                }
+            }
+            ip_arr = cJSON_GetObjectItem(halow, "gateway");
+            if (cJSON_IsArray(ip_arr) && cJSON_GetArraySize(ip_arr) == 4) {
+                for (int i = 0; i < 4; i++) {
+                    cfg->halow_gateway[i] = (uint8_t)cJSON_GetArrayItem(ip_arr, i)->valueint;
+                }
+            }
+
+            json_get_uint32(halow, "tx_power_dbm", &temp);
+            cfg->halow_tx_power_dbm = (uint16_t)temp;
+            json_get_uint32(halow, "scan_dwell_ms", &cfg->halow_scan_dwell_ms);
+            json_get_int32(halow, "rc_mcs", &cfg->halow_rc_mcs);
+            json_get_int32(halow, "rc_bw_mhz", &cfg->halow_rc_bw_mhz);
+            json_get_int32(halow, "rc_gi", &cfg->halow_rc_gi);
+        }
     }
 }
 
@@ -562,6 +604,7 @@ static void parse_work_mode(cJSON *json, work_mode_config_t *cfg)
         json_get_uint8(pir, "ignore_time_s", &cfg->pir_trigger.ignore_time_s);
         json_get_uint8(pir, "pulse_count", &cfg->pir_trigger.pulse_count);
         json_get_uint8(pir, "window_time_s", &cfg->pir_trigger.window_time_s);
+        json_get_bool(pir, "disable_in_preview", &cfg->pir_trigger.disable_in_preview);
     }
 
     cJSON *timer = cJSON_GetObjectItem(json, "timer_trigger");
@@ -817,6 +860,7 @@ static cJSON *serialize_device_service(const device_service_config_t *cfg)
     cJSON_AddBoolToObject(img_cfg, "vertical_flip", cfg->image_config.vertical_flip);
     cJSON_AddNumberToObject(img_cfg, "aec", cfg->image_config.aec);
     cJSON_AddNumberToObject(img_cfg, "isp_mode", cfg->image_config.isp_mode);
+    cJSON_AddBoolToObject(img_cfg, "grayscale", cfg->image_config.grayscale);
     cJSON_AddNumberToObject(img_cfg, "fast_capture_skip_frames", cfg->image_config.fast_capture_skip_frames);
     cJSON_AddNumberToObject(img_cfg, "fast_capture_resolution", cfg->image_config.fast_capture_resolution);
     cJSON_AddNumberToObject(img_cfg, "fast_capture_jpeg_quality", cfg->image_config.fast_capture_jpeg_quality);
@@ -933,6 +977,43 @@ static cJSON *serialize_network_service(const network_service_config_t *cfg)
     cJSON_AddBoolToObject(poe, "detect_ip_conflict", cfg->poe.detect_ip_conflict);
     
     cJSON_AddItemToObject(json, "poe", poe);
+
+    /* Wi-Fi HaLow */
+    {
+        cJSON *halow = cJSON_CreateObject();
+        cJSON_AddStringToObject(halow, "ssid", cfg->halow_ssid);
+        cJSON_AddStringToObject(halow, "password", cfg->halow_password);
+        cJSON_AddNumberToObject(halow, "security", cfg->halow_security);
+        cJSON_AddStringToObject(halow, "country_code", cfg->halow_country_code);
+        cJSON_AddStringToObject(halow, "bssid", cfg->halow_bssid);
+        cJSON_AddNumberToObject(halow, "ip_mode", cfg->halow_ip_mode);
+
+        cJSON *ip_arr = cJSON_CreateArray();
+        for (int i = 0; i < 4; i++) {
+            cJSON_AddItemToArray(ip_arr, cJSON_CreateNumber(cfg->halow_ip_addr[i]));
+        }
+        cJSON_AddItemToObject(halow, "ip_addr", ip_arr);
+
+        ip_arr = cJSON_CreateArray();
+        for (int i = 0; i < 4; i++) {
+            cJSON_AddItemToArray(ip_arr, cJSON_CreateNumber(cfg->halow_netmask[i]));
+        }
+        cJSON_AddItemToObject(halow, "netmask", ip_arr);
+
+        ip_arr = cJSON_CreateArray();
+        for (int i = 0; i < 4; i++) {
+            cJSON_AddItemToArray(ip_arr, cJSON_CreateNumber(cfg->halow_gateway[i]));
+        }
+        cJSON_AddItemToObject(halow, "gateway", ip_arr);
+
+        cJSON_AddNumberToObject(halow, "tx_power_dbm", cfg->halow_tx_power_dbm);
+        cJSON_AddNumberToObject(halow, "scan_dwell_ms", cfg->halow_scan_dwell_ms);
+        cJSON_AddNumberToObject(halow, "rc_mcs", cfg->halow_rc_mcs);
+        cJSON_AddNumberToObject(halow, "rc_bw_mhz", cfg->halow_rc_bw_mhz);
+        cJSON_AddNumberToObject(halow, "rc_gi", cfg->halow_rc_gi);
+
+        cJSON_AddItemToObject(json, "halow", halow);
+    }
 
     return json;
 }
@@ -1075,6 +1156,7 @@ static cJSON *serialize_work_mode(const work_mode_config_t *cfg)
     cJSON_AddNumberToObject(pir, "ignore_time_s", cfg->pir_trigger.ignore_time_s);
     cJSON_AddNumberToObject(pir, "pulse_count", cfg->pir_trigger.pulse_count);
     cJSON_AddNumberToObject(pir, "window_time_s", cfg->pir_trigger.window_time_s);
+    cJSON_AddBoolToObject(pir, "disable_in_preview", cfg->pir_trigger.disable_in_preview);
     cJSON_AddItemToObject(json, "pir_trigger", pir);
 
     cJSON *timer = cJSON_CreateObject();

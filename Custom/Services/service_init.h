@@ -155,6 +155,7 @@ aicam_result_t service_get_registered_modules(const char **names, uint32_t max_c
 #define SERVICE_READY_VIDEO_HUB        (1UL << 11)  // Video Hub ready
 #define SERVICE_READY_RTSP             (1UL << 12)  // RTSP service ready
 #define SERVICE_READY_WEBHOOK          (1UL << 13)  // Webhook service ready
+#define SERVICE_READY_NETIF_ALL_FAILED (1UL << 14)  // All attempted netifs failed (wake-capture fast-fail signal)
 
 
 // Combined flags
@@ -187,6 +188,14 @@ aicam_bool_t service_is_ready(uint32_t flags, aicam_bool_t check_all);
 uint32_t service_get_ready_flags(void);
 
 /**
+ * @brief Whether service_start() skipped communication/mqtt/webhook this wake
+ * @return AICAM_TRUE if network services were skipped (LOW_POWER + upload mode
+ *         doesn't need network this wake). system_service checks this at sleep
+ *         time to avoid waiting 30s for an MQTT that was never started.
+ */
+aicam_bool_t service_network_services_skipped(void);
+
+/**
  * @brief Set AP service ready state (for manual control)
  * @param ready TRUE to set ready, FALSE to clear
  * @return AICAM_OK on success, AICAM_ERROR_NOT_INITIALIZED if flags not initialized
@@ -206,6 +215,15 @@ aicam_result_t service_set_sta_ready(aicam_bool_t ready);
  * @return AICAM_OK on success, AICAM_ERROR_NOT_INITIALIZED if flags not initialized
  */
 aicam_result_t service_set_mqtt_net_connected(aicam_bool_t connected);
+
+/**
+ * @brief Signal that all attempted netifs failed to come up.
+ *        Set by communication_service when the startup decision resolves to
+ *        COMM_TYPE_NONE. Lets the upload-coordinator's network wait break out
+ *        early (via SERVICE_READY_NETIF_ALL_FAILED) instead of timing out.
+ *        Flag is per-boot (event flags object is recreated each boot).
+ */
+aicam_result_t service_set_netif_all_failed(aicam_bool_t failed);
 
 /**
  * @brief Register debug commands for service layer

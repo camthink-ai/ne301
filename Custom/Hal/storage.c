@@ -1,6 +1,6 @@
 #include "storage.h"
 #include "debug.h"
-#include "xspim.h"
+#include "../FSBL/Core/Inc/xspim.h"
 #include "common_utils.h"
 #include "upgrade_manager.h"
 #include "crc.h"
@@ -11,11 +11,20 @@
 #define LFS_UNLOCK(sys) do{ if ((sys)->thread_safe && (sys)->unlock) (sys)->unlock(); }while(0)
 
 static storage_t g_storage = {0};
-static uint8_t old_data[4096];
-static uint8_t storage_tread_stack[1024 * 4] ALIGN_32 IN_PSRAM;
+static uint8_t old_data[4096] ALIGN_32 = {0};
+/* Static buffers for littlefs caches/lookahead — provided via lfs_config so
+ * littlefs doesn't allocate on the stack (which risks overflow with larger
+ * cache sizes). cache_size=1024 → 1KB read+prog caches; lookahead_size=256
+ * → 256-block free-block bitmap (32 bytes). The old config used cache/lookahead
+ * =16 with NULL buffers, causing a full-FS traverse (lfs_fs_traverse) every 16
+ * block allocations → seconds of hang with thousands of files. */
+static uint8_t s_lfs_read_buffer[FS_LFS_CACHE_SIZE] ALIGN_32;
+static uint8_t s_lfs_prog_buffer[FS_LFS_CACHE_SIZE] ALIGN_32;
+static uint8_t s_lfs_lookahead_buffer[FS_LFS_LOOKAHEAD_SIZE / 8];
+static uint8_t storage_tread_stack[1024 * 8] ALIGN_32;
 const osThreadAttr_t storageTask_attributes = {
     .name = "storageTask",
-    .priority = (osPriority_t) osPriorityNormal,
+    .priority = (osPriority_t) osPriorityBelowNormal,
     .stack_mem = storage_tread_stack,
     .stack_size = sizeof(storage_tread_stack),
 };
@@ -37,55 +46,75 @@ static int mem_block_read(const struct lfs_config *cfg, lfs_block_t block,
 {
     mem_block_dev_t *dev = (mem_block_dev_t *)cfg->context;
     uint32_t addr = dev->start_addr + block * dev->block_size + off;
+    storage_lock();
     XSPI_NOR_DisableMemoryMappedMode();
     if (XSPI_NOR_Read((uint8_t *)buffer, addr, size) != 0) {
         XSPI_NOR_EnableMemoryMappedMode();
         return LFS_ERR_IO;
     }
     XSPI_NOR_EnableMemoryMappedMode();
+    // uint8_t *ptr_addr = (uint8_t *)(addr + FLASH_BASE);
+    // memcpy(buffer, ptr_addr, size);
+    storage_unlock();
     return LFS_ERR_OK;
 }
 
 // 2. Write
 static int mem_block_prog(const struct lfs_config *cfg, lfs_block_t block,
-                         lfs_off_t off, const void *buffer, lfs_size_t size) 
+                         lfs_off_t off, const void *buffer, lfs_size_t size)
 {
     mem_block_dev_t *dev = (mem_block_dev_t *)cfg->context;
     uint32_t addr = dev->start_addr + block * dev->block_size + off;
+    int ret = LFS_ERR_OK;
 
     if (size > sizeof(old_data)) {
         return LFS_ERR_IO;
     }
+
+    storage_lock();
     XSPI_NOR_DisableMemoryMappedMode();
     if (XSPI_NOR_Read(old_data, addr, size) != 0) {
-        return LFS_ERR_IO;
+        ret = LFS_ERR_IO;
+        goto out;
     }
     if (!is_programmable(old_data, buffer, size)) {
-        return LFS_ERR_CORRUPT;
+        ret = LFS_ERR_CORRUPT;
+        goto out;
     }
     if (XSPI_NOR_Write((const uint8_t *)buffer, addr, size) != 0) {
-        return LFS_ERR_IO;
+        ret = LFS_ERR_IO;
+        goto out;
     }
+
+out:
     XSPI_NOR_EnableMemoryMappedMode();
-    return LFS_ERR_OK;
+    storage_unlock();
+    return ret;
 }
 
 // 3. Erase
-static int mem_block_erase(const struct lfs_config *cfg, lfs_block_t block) 
+static int mem_block_erase(const struct lfs_config *cfg, lfs_block_t block)
 {
     mem_block_dev_t *dev = (mem_block_dev_t *)cfg->context;
+    int ret = LFS_ERR_OK;
+
     if (dev->erase_counts[block] >= dev->max_erase) {
         return LFS_ERR_IO;
     }
+
+    storage_lock();
     XSPI_NOR_DisableMemoryMappedMode();
     uint32_t block_addr = dev->start_addr + block * dev->block_size;
-    // uint32_t block_addr = (dev->start_addr / dev->block_size) + block;
     if (XSPI_NOR_Erase4K(block_addr) != 0) {
-        return LFS_ERR_IO;
+        ret = LFS_ERR_IO;
+        goto out;
     }
-    XSPI_NOR_EnableMemoryMappedMode();
     dev->erase_counts[block]++;
-    return LFS_ERR_OK;
+
+out:
+    XSPI_NOR_EnableMemoryMappedMode();
+    storage_unlock();
+    return ret;
 }
 
 static int mem_block_sync(const struct lfs_config *cfg) 
@@ -93,14 +122,23 @@ static int mem_block_sync(const struct lfs_config *cfg)
     return LFS_ERR_OK;
 }
 
+static uint8_t storage_lfs_isready(void)
+{
+    if (!g_storage.lfs_sys.mounted) osSemaphoreAcquire(g_storage.lfs_sem_id, 3000);
+    return g_storage.lfs_sys.mounted;
+}
+
 static void *storage_lfs_opendir(void *context, const char *path)
 {
     lfs_mem_system_t *sys = (lfs_mem_system_t *)context;
+    if (!sys || !storage_lfs_isready()) return NULL;
     LFS_LOCK(sys);
-    if (!sys->mounted) return NULL;
 
     lfs_dir_handle_t *dh = hal_mem_alloc_fast(sizeof(lfs_dir_handle_t));
-    if (!dh) return NULL;
+    if (!dh) {
+        LFS_UNLOCK(sys);
+        return NULL;
+    }
 
     int err = lfs_dir_open(&sys->lfs, &dh->dir, path);
     if (err) {
@@ -147,11 +185,14 @@ static int storage_lfs_closedir(void *context, void *dd)
 static void * storage_lfs_fopen(void *context, const char *path, const char *mode) 
 {
     lfs_mem_system_t *sys = (lfs_mem_system_t *)context;
+    if (!sys || !storage_lfs_isready()) return NULL;
     LFS_LOCK(sys);
-    if (!sys->mounted) return NULL;
 
     lfs_file_handle_t *fh = hal_mem_alloc_fast(sizeof(lfs_file_handle_t));
-    if (!fh) return NULL;
+    if (!fh) {
+        LFS_UNLOCK(sys); 
+        return NULL;
+    }
 
     int flags = 0;
 
@@ -228,6 +269,7 @@ static int storage_lfs_fwrite(void *context, void *fd, const void *buf, size_t s
 static int storage_lfs_remove(void *context, const char *path) 
 {
     lfs_mem_system_t *sys = (lfs_mem_system_t *)context;
+    if (!sys || !storage_lfs_isready()) return -1;
     LFS_LOCK(sys);
     int res = lfs_remove(&sys->lfs, path);
     LFS_UNLOCK(sys);
@@ -237,6 +279,7 @@ static int storage_lfs_remove(void *context, const char *path)
 static int storage_lfs_rename(void *context, const char *oldpath, const char *newpath) 
 {
     lfs_mem_system_t *sys = (lfs_mem_system_t *)context;
+    if (!sys || !storage_lfs_isready()) return -1;
     LFS_LOCK(sys);
     int res = lfs_rename(&sys->lfs, oldpath, newpath);
     LFS_UNLOCK(sys);
@@ -279,7 +322,7 @@ static int storage_lfs_fseek(void *context, void *fd, long offset, int whence)
 static int storage_lfs_stat(void *context, const char *filename, struct stat *st)
 {
     lfs_mem_system_t *sys = (lfs_mem_system_t *)context;
-    if (!sys) return -1;
+    if (!sys || !storage_lfs_isready()) return -1;
     LFS_LOCK(sys);
 
     struct lfs_info info;
@@ -295,6 +338,18 @@ static int storage_lfs_stat(void *context, const char *filename, struct stat *st
         return 0; // File exists
     }
     return -1; // File does not exist
+}
+
+static int storage_lfs_mkdir(void *context, const char *path)
+{
+    lfs_mem_system_t *sys = (lfs_mem_system_t *)context;
+    if (!sys || !storage_lfs_isready()) return -1;
+    LFS_LOCK(sys);
+
+    int res = lfs_mkdir(&sys->lfs, path);
+
+    LFS_UNLOCK(sys);
+    return (res == LFS_ERR_OK) ? 0 : -1;
 }
 
 void *flash_lfs_fopen(const char *path, const char *mode)
@@ -361,6 +416,12 @@ int flash_lfs_stat(const char *filename, struct stat *st)
 {
     return storage_lfs_stat(&g_storage.lfs_sys, filename, st);
 }
+
+int flash_lfs_mkdir(const char *path)
+{
+    return storage_lfs_mkdir(&g_storage.lfs_sys, path);
+}
+
 // Complete file operation interface table
 
 
@@ -371,6 +432,7 @@ static file_ops_t lfs_file_ops = {
     .fread   = storage_lfs_fread,
     .remove  = storage_lfs_remove,
     .rename  = storage_lfs_rename,
+    .mkdir   = storage_lfs_mkdir,
     .ftell   = storage_lfs_ftell,
     .fseek   = storage_lfs_fseek,
     .fflush  = storage_lfs_fflush,
@@ -416,25 +478,19 @@ static int lfs_mem_init(lfs_mem_system_t *sys,
         .erase = mem_block_erase,
         .sync  = mem_block_sync,
 
-        .read_size = 16,
-        .prog_size = 16,
+        .read_size = FS_LFS_CACHE_SIZE,
+        .prog_size = FS_LFS_CACHE_SIZE,
         .block_size = block_size,
         .block_count = sys->mem_dev.block_count,
-        .cache_size = 16,
-        .lookahead_size = 16,
+        .cache_size = FS_LFS_CACHE_SIZE,
+        .lookahead_size = FS_LFS_LOOKAHEAD_SIZE,
+        .read_buffer = s_lfs_read_buffer,
+        .prog_buffer = s_lfs_prog_buffer,
+        .lookahead_buffer = s_lfs_lookahead_buffer,
         .block_cycles = max_erase_cycles
     };
 
-    // Mount filesystem
-    int err = lfs_mount(&sys->lfs, &sys->config);
-    if (err) {
-        lfs_format(&sys->lfs, &sys->config);
-        err = lfs_mount(&sys->lfs, &sys->config);
-    }
-    
-    sys->mounted = (err == LFS_ERR_OK);
-
-        // Thread safety
+    // Thread safety
     if (lock && unlock) {
         sys->lock = lock;
         sys->unlock = unlock;
@@ -443,6 +499,16 @@ static int lfs_mem_init(lfs_mem_system_t *sys,
         sys->thread_safe = false;
     }
 
+    // Mount filesystem
+    LFS_LOCK(sys);
+    int err = lfs_mount(&sys->lfs, &sys->config);
+    if (err) {
+        lfs_format(&sys->lfs, &sys->config);
+        err = lfs_mount(&sys->lfs, &sys->config);
+    }
+    LFS_UNLOCK(sys);
+
+    sys->mounted = (err == LFS_ERR_OK);
     return err;
 }
 
@@ -561,6 +627,18 @@ int storage_flash_erase(uint32_t offset, size_t num_blk)
     return 0;
 }
 
+/* lfs_fs_size traverses the whole FS (~120ms on 8192 blocks). Boot calls
+ * storage_get_disk_info several times (log registration, ensure_dirs, status
+ * polls). Cache the used-block count for a short window so repeat calls within
+ * the window are free. Stale by up to TTL ms is acceptable: space checks use
+ * large margins (≥512 KB), and total capacity never changes. */
+#define FS_SIZE_CACHE_TTL_MS  2000U
+static struct {
+    lfs_ssize_t used_blocks;
+    uint32_t    ts_ms;
+    bool        valid;
+} g_fs_size_cache;
+
 int storage_get_disk_info(storage_disk_info_t *info)
 {
     if (info == NULL) {
@@ -578,10 +656,21 @@ int storage_get_disk_info(storage_disk_info_t *info)
     lfs_mem_system_t *sys = &g_storage.lfs_sys;
     LFS_LOCK(sys);
 
-    lfs_ssize_t used_blocks = lfs_fs_size(&sys->lfs);
-    if (used_blocks < 0) {
-        LFS_UNLOCK(sys);
-        return -2;
+    /* Use cached used-block count if fresh — avoids the ~120ms full-FS traverse
+     * on repeat calls (boot hits this 2-3x, web status polls hit it regularly). */
+    lfs_ssize_t used_blocks;
+    uint32_t now = HAL_GetTick();
+    if (g_fs_size_cache.valid && (now - g_fs_size_cache.ts_ms) < FS_SIZE_CACHE_TTL_MS) {
+        used_blocks = g_fs_size_cache.used_blocks;
+    } else {
+        used_blocks = lfs_fs_size(&sys->lfs);
+        if (used_blocks < 0) {
+            LFS_UNLOCK(sys);
+            return -2;
+        }
+        g_fs_size_cache.used_blocks = used_blocks;
+        g_fs_size_cache.ts_ms = now;
+        g_fs_size_cache.valid = true;
     }
 
     size_t total_bytes = sys->mem_dev.block_count * sys->mem_dev.block_size;
@@ -594,6 +683,11 @@ int storage_get_disk_info(storage_disk_info_t *info)
     info->free_KBytes = (uint32_t)(free_bytes / 1024U);
 
     return 0;
+}
+
+bool storage_is_lfs_mounted(void)
+{
+    return (g_storage.is_init && g_storage.lfs_sys.mounted);
 }
 
 static int storage_flash_erase4K(uint32_t offset, size_t size)
@@ -639,10 +733,10 @@ static int sysclk_nor_flash_read(uint32_t address, void *data, size_t size)
     if (data == (void *)0 || size == 0U)
         return -1;
 
-    volatile const uint8_t *src = (volatile const uint8_t *)(uintptr_t)address;
-    uint8_t *dst = (uint8_t *)data;
-    for (size_t i = 0; i < size; i++)
-        dst[i] = src[i];
+    storage_lock();
+    memcpy(data, (const void *)address, size);
+    storage_unlock();
+    
     return 0;
 }
 
@@ -675,7 +769,7 @@ static int sysclk_nor_flash_erase(uint32_t address, size_t size)
 
 static uint32_t sysclk_hal_crc32(void *data, size_t size)
 {
-    return HAL_CRC_Calculate(&hcrc, (uint32_t *)data, (uint32_t)size);
+    return CRC_Calculate(data, (uint32_t)size);
 }
 
 static int storage_nvs_init(nvs_fs_t *nvs, uint32_t flash_offset, size_t sector_size, size_t sector_count) 
@@ -707,10 +801,24 @@ static int storage_nvs_init(nvs_fs_t *nvs, uint32_t flash_offset, size_t sector_
     return ret;
 }
 
+void lfs_lock(void)
+{
+    osMutexAcquire(g_storage.lfs_mtx_id, osWaitForever);
+}
+
+void lfs_unlock(void)
+{
+    osMutexRelease(g_storage.lfs_mtx_id);
+}
+
 static void storageProcess(void *argument)
 {
     storage_t *storage = (storage_t *)argument;
-    LOG_DRV_DEBUG("storageProcess start\r\n");
+
+    int ret = lfs_mem_init(&storage->lfs_sys, FS_FLASH_OFFSET, FS_FLASH_SIZE , FS_FLASH_BLK, 10000, lfs_lock, lfs_unlock);
+    if (ret != 0) printf("lfs_mem_init failed(ret = %d)...\r\n", ret);
+    osSemaphoreRelease(storage->lfs_sem_id);
+    
     while (storage->is_init) {
         if (osSemaphoreAcquire(storage->sem_id, osWaitForever) == osOK) {
         
@@ -724,7 +832,10 @@ int storage_init(void *priv)
     int ret;
     storage_t *storage = (storage_t *)priv;
     storage->mtx_id = osMutexNew(NULL);
+    storage->lfs_mtx_id = osMutexNew(NULL);
     storage->sem_id = osSemaphoreNew(1, 0, NULL);
+    storage->lfs_sem_id = osSemaphoreNew(1, 0, NULL);
+    storage->file_ops_handle = -1;
     
     common_flash_ops_t ops = {
         .flash_read = sysclk_nor_flash_read,
@@ -766,18 +877,11 @@ int storage_init(void *priv)
         return ret;
     }
 
-    ret = lfs_mem_init(&storage->lfs_sys, FS_FLASH_OFFSET, FS_FLASH_SIZE , FS_FLASH_BLK, 10000, storage_lock, storage_unlock);
-    if(ret !=0){
-        printf("lfs_mem_init failed...\r\n");
-        return ret;
-    }
-
     storage->file_ops_handle = file_ops_register(FS_FLASH, &lfs_file_ops, &storage->lfs_sys);
-    if(storage->file_ops_handle != -1){
-        file_ops_switch(storage->file_ops_handle);
-    }
-    storage->storage_processId = osThreadNew(storageProcess, storage, &storageTask_attributes);
+    if (storage->file_ops_handle != -1) file_ops_switch(storage->file_ops_handle);
+
     storage->is_init = true;
+    storage->storage_processId = osThreadNew(storageProcess, storage, &storageTask_attributes);
     return 0;
 }
 
@@ -919,6 +1023,9 @@ void storage_format(void)
         err = lfs_mount(&g_storage.lfs_sys.lfs, &g_storage.lfs_sys.config);
         g_storage.lfs_sys.mounted = (err == LFS_ERR_OK);
     }
+    /* Invalidate the free-space cache — used-block count is meaningless after
+     * a format/remount. */
+    g_fs_size_cache.valid = false;
 
     if (g_storage.lfs_sys.thread_safe && g_storage.lfs_sys.lock && g_storage.lfs_sys.unlock) {
         g_storage.lfs_sys.unlock();

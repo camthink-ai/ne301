@@ -22,12 +22,13 @@
 #include "cmsis_os2.h"
 #include "sl_si91x_status.h"
 #include "sl_rsi_utility.h"
+#include "sli_wifi_utility.h"
 #include "sl_constants.h"
 #include "sl_status.h"
 #include "stm32n6xx_hal.h"
 #include "stm32n6xx_hal_spi.h"
 #include "cmsis_gcc.h" 
-#include "em_core.h"
+#include "sl_core.h"
 #include "pwr.h"
 #include "spi.h"
 #include "exti.h"
@@ -41,7 +42,7 @@
 #endif
 #define DMA_ENABLED
 
-extern void Error_Handler(void);
+// extern void Error_Handler(void);
 void gpio_interrupt(void);
 
 extern SPI_HandleTypeDef hspi4;
@@ -203,6 +204,7 @@ sl_status_t sl_si91x_host_spi_transfer(const void *tx_buffer, void *rx_buffer, u
     //     printf("%02X ", ((uint8_t *)tx_buffer)[i]);
     // }
     // printf("\r\n");
+    /*
     if (buffer_length < 8) {
         memcpy(spi_tx_buffer, tx_buffer, buffer_length);
         memset(spi_rx_buffer, 0x00, buffer_length);
@@ -227,6 +229,7 @@ sl_status_t sl_si91x_host_spi_transfer(const void *tx_buffer, void *rx_buffer, u
             return SL_STATUS_ABORT;
         }
     } else {
+     */
 #ifdef DMA_ENABLED
         memcpy(spi_tx_buffer, tx_buffer, buffer_length);
         memset(spi_rx_buffer, 0x00, buffer_length);
@@ -244,13 +247,16 @@ sl_status_t sl_si91x_host_spi_transfer(const void *tx_buffer, void *rx_buffer, u
         } else {
             printf("HAL_SPI_TransmitReceive_DMA failed(ret = %d)!\r\n", ret);
             HAL_SPI_Abort(&hspi4);
+            sl_si91x_host_enable_high_speed_bus();
             osMutexRelease(mtx_id);
             return SL_STATUS_ABORT;
         }
 #else
         HAL_SPI_TransmitReceive(&hspi4, (uint8_t *)tx_buffer, (uint8_t *)rx_buffer, buffer_length, 10);
 #endif
+/*
     }
+*/
     osMutexRelease(mtx_id);
     // printf("Received data: ");
     // for (uint16_t i = 0; i < buffer_length; i++) {
@@ -352,7 +358,7 @@ static void si91x_gpio_interrupt(void)
 {
     // Trigger SiWx91x BUS Event
     if (current_performance_profile != HIGH_PERFORMANCE) printf("#\r\n");
-    sli_si91x_set_event(SL_SI91X_NCP_HOST_BUS_RX_EVENT);
+    sli_wifi_set_event(SL_SI91X_NCP_HOST_BUS_RX_EVENT);
 }
 
 static void si91x_sta_interrupt(void)

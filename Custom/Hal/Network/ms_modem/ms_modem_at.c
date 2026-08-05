@@ -175,6 +175,7 @@ int modem_at_cmd_exec_with_opt(modem_at_handle_t *handle, const at_cmd_item_t *c
                     MODEM_LOGD("RX <= (%d): %s", strlen(rsp_list[rsp_num]), rsp_list[rsp_num]);
                     rsp_num++;
                     if (rsp_num == 1 && cmd_item->expect_rsp_line > 1 && strstr(rsp_list[0], "+CME ERROR:")) {
+                        MODEM_LOGE("CME ERROR: %s", rsp_list[0]);
                         recode = MODEM_ERR_FAILED;
                         break;
                     }

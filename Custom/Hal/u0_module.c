@@ -378,7 +378,7 @@ int u0_module_enter_sleep_mode_ex(uint32_t wakeup_flag, uint32_t switch_bits, ui
         power_ctrl.alarm_b.is_valid = rtc_alarm_b->is_valid;
         power_ctrl.alarm_b.week_day = rtc_alarm_b->week_day;
         power_ctrl.alarm_b.date = rtc_alarm_b->date;
-        power_ctrl.alarm_a.hour = rtc_alarm_b->hour;
+        power_ctrl.alarm_b.hour = rtc_alarm_b->hour;
         power_ctrl.alarm_b.minute = rtc_alarm_b->minute;
         power_ctrl.alarm_b.second = rtc_alarm_b->second;
     }

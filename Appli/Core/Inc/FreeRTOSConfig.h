@@ -59,7 +59,7 @@ extern uint32_t SystemCoreClock;
 /*-------------------- STM32N6 specific defines -------------------*/
 #define configENABLE_TRUSTZONE                  0
 #define configRUN_FREERTOS_SECURE_ONLY          1
-#define configENABLE_FPU                        0
+#define configENABLE_FPU                        1
 #define configENABLE_MPU                        0
 #define configENABLE_MVE                        0
 
@@ -75,7 +75,7 @@ extern uint32_t SystemCoreClock;
 #define configTOTAL_HEAP_SIZE                    ((size_t)1024 * 256)
 #define configSTACK_ALLOCATION_FROM_SEPARATE_HEAP 0
 #define configMAX_TASK_NAME_LEN                  ( 16 )
-#define configUSE_TRACE_FACILITY                 1
+#define configUSE_TRACE_FACILITY                 0
 #define configUSE_16_BIT_TICKS                   0
 #define configUSE_MUTEXES                        1
 #define configQUEUE_REGISTRY_SIZE                8
@@ -102,9 +102,9 @@ extern uint32_t SystemCoreClock;
 
 /* Software timer definitions. */
 #define configUSE_TIMERS                         1
-#define configTIMER_TASK_PRIORITY                ( 2 )
+#define configTIMER_TASK_PRIORITY                ( configMAX_PRIORITIES - 1 )
 #define configTIMER_QUEUE_LENGTH                 10
-#define configTIMER_TASK_STACK_DEPTH             128
+#define configTIMER_TASK_STACK_DEPTH             ( configMINIMAL_STACK_SIZE * 2 )
 
 /* CMSIS-RTOS V2 flags */
 #define configUSE_OS2_THREAD_SUSPEND_RESUME  1
@@ -119,7 +119,7 @@ to exclude the API function. */
 #define INCLUDE_vTaskPrioritySet             1
 #define INCLUDE_uxTaskPriorityGet            1
 #define INCLUDE_vTaskDelete                  1
-#define INCLUDE_vTaskCleanUpResources        0
+#define INCLUDE_vTaskCleanUpResources        1
 #define INCLUDE_vTaskSuspend                 1
 #define INCLUDE_xTaskDelayUntil              1
 #define INCLUDE_vTaskDelay                   1
@@ -189,4 +189,12 @@ placed into the low power state respectively. */
 // #define configNUM_USER_THREAD_LOCAL_STORAGE_POINTERS 32
 // #define configNUM_SDK_THREAD_LOCAL_STORAGE_POINTERS 32
 #define portTICK_PERIOD_MS (TickType_t) (1000 / configTICK_RATE_HZ)
+
+
+#define portYIELD() 								vPortYield()
+#define portNVIC_INT_CTRL_REG	  ( *( ( volatile uint32_t * ) 0xe000ed04 ) )
+#define portNVIC_PENDSVSET_BIT	  ( 1UL << 28UL )
+#define portEND_SWITCHING_ISR( xSwitchRequired )	do { if( xSwitchRequired ) portNVIC_INT_CTRL_REG = portNVIC_PENDSVSET_BIT; } while( 0 )
+#define portYIELD_FROM_ISR( x ) 					portEND_SWITCHING_ISR( x )
+
 #endif /* __FREERTOS_CONFIG_H */

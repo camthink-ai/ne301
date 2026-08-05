@@ -168,7 +168,7 @@ python verify_ota_package.py ../Web/firmware_assets/web-assets_v1.5.0.88_ota.bin
 
 # Step 4: Deploy
 # Method A: Flash directly (recommended for development)
-./maker.sh flash ../Web/firmware_assets/web-assets_v1.5.0.88_ota.bin 0x70400000
+./maker.sh flash ../Web/firmware_assets/web-assets_v1.5.0.88_ota.bin 0x71900000
 
 # Method B: Deploy via network OTA (for production)
 # (Upload to device via web interface or OTA server)
@@ -251,7 +251,7 @@ cd ../../Script
 ./maker.sh flash ota_packages/ne301_Appli_v2.3.1.125_ota.bin 0x70100000
 
 # Flash Web Assets
-./maker.sh flash ota_packages/web-assets_v1.5.0.88_ota.bin 0x70400000
+./maker.sh flash ota_packages/web-assets_v1.5.0.88_ota.bin 0x71900000
 
 # Flash AI Model
 ./maker.sh flash ota_packages/model_yolov8_uf_mpe_v3.0.2.45_ota.bin 0x70900000

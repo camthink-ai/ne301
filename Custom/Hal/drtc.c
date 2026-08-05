@@ -41,6 +41,7 @@ int _gettimeofday_r(struct _reent *reent, struct timeval *tv, void *tz) {
 extern RTC_HandleTypeDef hrtc;
 
 static rtc_t g_rtc = {0};
+static uint64_t g_rtc_wakeup_timestamp = 0ULL;
 static uint8_t rtc_tread_stack[1024 * 8] ALIGN_32 IN_PSRAM;
 const osThreadAttr_t rtcTask_attributes = {
     .name = "rtcTask",
@@ -48,8 +49,10 @@ const osThreadAttr_t rtcTask_attributes = {
     .stack_mem = rtc_tread_stack,
     .stack_size = sizeof(rtc_tread_stack),
 };
-
 uint8_t aShowTime[32] = "yyyy-mm-dd hh:mm:ss weekday"; 
+
+uint64_t time_to_timeStamp(unsigned int year, unsigned int mon, unsigned int day,
+                           unsigned int hour, unsigned int min, unsigned int sec);
 /**
   * @brief RTC Initialization Function
   * @param None
@@ -86,14 +89,24 @@ static void RTC_init(void)
         Error_Handler();
     }
 
+#if ENABLE_U0_MODULE
+    int ret = u0_module_sync_rtc_time();
+    if (ret == 0) {
+        HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+        HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+        g_rtc_wakeup_timestamp = time_to_timeStamp(sDate.Year + START_YEARS, sDate.Month, sDate.Date, sTime.Hours, sTime.Minutes, sTime.Seconds);
+        // printf("timestamp: %lu\n", (uint32_t)g_rtc_wakeup_timestamp);
+    }
+#else
+
     /* USER CODE BEGIN Check_RTC_BKUP */
-    if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) == RTC_BKP_FLAG) return;
+    if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) == RTC_BKP_FLAG) {
+        // printf("RTC already inited\n");
+        return;
+    }
     HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, RTC_BKP_FLAG);
     /* USER CODE END Check_RTC_BKUP */
 
-#if ENABLE_U0_MODULE
-    u0_module_sync_rtc_time();
-#else
     /** Initialize RTC and set the Time and Date
     */
     sTime.Hours = 0x2;
@@ -242,6 +255,10 @@ void timeStamp_to_time(uint64_t timestamp, RTC_TIME_S *rtc_time)
     rtc_time->timeStamp = timestamp;
 }
 
+uint64_t rtc_get_wakeup_timeStamp(void)
+{
+    return g_rtc_wakeup_timestamp;
+}
 
 uint64_t rtc_get_timeStamp(void)
 {
@@ -504,9 +521,7 @@ static int rtc_init(void *priv)
     rtc->mtx_mgr = osMutexNew(NULL);
     rtc->sem_sched1 = osSemaphoreNew(1, 0, NULL);
     rtc->sem_sched2 = osSemaphoreNew(1, 0, NULL);
-    scheduler_init(&rtc->sched_manager, rtc_get_timeStamp, scheds, sizeof(scheds) / sizeof(scheds[0]), rtc_mgr_lock, rtc_mgr_unlock);
-    rtc->rtc_processId = osThreadNew(rtcProcess, rtc, &rtcTask_attributes);
-    RTC_init();
+    scheduler_init(&rtc->sched_manager, rtc_get_timeStamp, rtc_get_wakeup_timeStamp, scheds, sizeof(scheds) / sizeof(scheds[0]), rtc_mgr_lock, rtc_mgr_unlock);
     // rtc_setup(0x65, 0x6, 0x19, 0x8, 0x0, 0x0, 0x4);
     ret = storage_nvs_read(NVS_USER, TIMEZONE_NVS_KEY, tmp, sizeof(tmp));
     if (ret > 0) {
@@ -516,6 +531,8 @@ static int rtc_init(void *priv)
         rtc->timezone = TIMEZONE;
         rtc->sched_manager.timezone = rtc->timezone;
     }
+    RTC_init();
+    rtc->rtc_processId = osThreadNew(rtcProcess, rtc, &rtcTask_attributes);
     // printf("timezone: %d\r\n", rtc->timezone);
     rtc->is_init = true;
     LOG_DRV_DEBUG("rtc_init end\r\n");
@@ -675,7 +692,16 @@ int rtc_get_next_wakeup_time(int sched_id, uint64_t *next_wakeup)
     
     rtc_mgr_lock();
     
-    // Find minimum next_trigger for the specified scheduler
+    // Snapshot current time before taking the lock (rtc_get_timeStamp only
+    // reads hardware RTC, no manager lock -> no recursion).
+    uint64_t now = rtc_get_timeStamp();
+
+    // Find minimum next_trigger for the specified scheduler. Only accept
+    // triggers strictly in the future: a trigger at/before now (e.g. a job
+    // whose next_trigger hasn't been advanced past its just-fired time, or one
+    // stranded in the past by an NTP time correction) would arm an RTC alarm
+    // that fires immediately on standby entry -> U0 wakes/resets and the host
+    // never loses power ("never sleeps"). See enter_sleep_mode() alarm path.
     uint64_t min_trigger = UINT64_MAX;
     bool found = false;
     
@@ -683,7 +709,7 @@ int rtc_get_next_wakeup_time(int sched_id, uint64_t *next_wakeup)
     wakeup_job_t *job = g_rtc.sched_manager.wake_jobs;
     while (job) {
         if (job->sched && job->sched->id == sched_id) {
-            if (job->next_trigger < min_trigger) {
+            if (job->next_trigger > (now + 3) && job->next_trigger < min_trigger) {
                 min_trigger = job->next_trigger;
                 found = true;
             }
@@ -695,7 +721,7 @@ int rtc_get_next_wakeup_time(int sched_id, uint64_t *next_wakeup)
     schedule_job_t *sched_job = g_rtc.sched_manager.schedule_jobs;
     while (sched_job) {
         if (sched_job->sched && sched_job->sched->id == sched_id) {
-            if (sched_job->next_trigger < min_trigger) {
+            if (sched_job->next_trigger > (now + 3) && sched_job->next_trigger < min_trigger) {
                 min_trigger = sched_job->next_trigger;
                 found = true;
             }
@@ -750,3 +776,5 @@ void rtc_register(void)
 
     driver_cmd_register_callback(DRTC_DEVICE_NAME, rtc_cmd_register);
 }
+
+

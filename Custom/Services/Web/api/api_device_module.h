@@ -44,6 +44,14 @@ aicam_result_t device_storage_handler(http_handler_context_t *ctx);
 aicam_result_t device_storage_config_handler(http_handler_context_t *ctx);
 
 /**
+ * @brief POST /api/v1/device/storage/format - Format internal flash LittleFS.
+ *        Destructive (erases all flash files). Requires auth.
+ * @param ctx HTTP request context
+ * @return Operation result
+ */
+aicam_result_t device_storage_format_handler(http_handler_context_t *ctx);
+
+/**
  * @brief Image configuration handler
  * @param ctx HTTP request context
  * @return Operation result

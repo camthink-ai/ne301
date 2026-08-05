@@ -42,7 +42,7 @@ typedef struct rtsp_client rtsp_client_t;
 
 /**
  * @brief Send an H.264 frame as RTP packets to a client
- * @note  Caller MUST hold the RTSP service mutex — these functions use shared
+ * @note  Caller MUST hold the RTSP service mutex - these functions use shared
  *        static buffers (s_rtp_tx_buf, NAL parse arrays) for stack savings.
  * @param client RTSP client with RTP socket info
  * @param data Frame data in Annex-B format

@@ -23,8 +23,8 @@ PACKAGER = $(SCRIPT_DIR)/model_packager.py
 CHECK_STEDGEAI = python $(SCRIPT_DIR)/check_stedgeai_toolchain.py
 
 # Model files (example: YOLOv8)
-MODEL_NAME = yolov8n_256_quant_pc_uf_od_coco-person-st
-MODEL_TFLITE = $(WEIGHTS_DIR)/$(MODEL_NAME).tflite
+MODEL_NAME ?= yolov8n_256_quant_pc_uf_od_coco-person-st
+MODEL_FILE = $(WEIGHTS_DIR)/$(MODEL_NAME).tflite
 MODEL_JSON = $(WEIGHTS_DIR)/$(MODEL_NAME).json
 
 # Intermediate files
@@ -43,13 +43,14 @@ $(BUILD_DIR):
 	@mkdir -p $@
 
 # Step 1: Generate relocated model
-$(NETWORK_RELOC): $(MODEL_TFLITE) | $(BUILD_DIR)
+$(NETWORK_RELOC): $(MODEL_FILE) $(MODEL_JSON) | $(BUILD_DIR)
 	@echo "Checking ST Edge AI toolchain (STEDGEAI_VARIANT=$(STEDGEAI_VARIANT))..."
 	@$(CHECK_STEDGEAI)
 	@echo "Generating relocated model..."
 	@bash $(GEN_RELOC) \
-		-m $(MODEL_TFLITE) \
+		-m $(MODEL_FILE) \
 		-f $(RELOC_CONFIG) \
+		-a "--inputs-ch-position chlast --input-data-type uint8" \
 		-o $@
 	@echo "Relocated model: $@"
 
@@ -71,9 +72,7 @@ reloc: $(NETWORK_RELOC)
 
 .PHONY: list-models
 list-models:
-	@echo "Available models in $(WEIGHTS_DIR):"
-	@ls -1 $(WEIGHTS_DIR)/*.tflite 2>/dev/null || echo "  No .tflite models found"
-
+	@echo "Available models in $(WEIGHTS_DIR):"	
 ######################################
 # Clean Targets
 ######################################
@@ -92,7 +91,7 @@ info:
 	@echo "  TARGET      = $(TARGET)"
 	@echo "  BUILD_DIR   = $(BUILD_DIR)"
 	@echo "  MODEL       = $(MODEL_NAME)"
-	@echo "  TFLITE      = $(MODEL_TFLITE)"
+	@echo "  MODEL_FILE  = $(MODEL_FILE)"
 	@echo "  CONFIG      = $(MODEL_JSON)"
 
 ######################################
@@ -112,8 +111,6 @@ help:
 	@echo "  info         - Show configuration"
 	@echo ""
 	@echo "To use different model:"
-	@echo "  Edit MODEL_TFLITE and MODEL_JSON variables"
-	@echo "  in this Makefile"
 	@echo ""
 	@echo "Example models:"
 	@echo "  - model_yolov8_uf_od_coco"

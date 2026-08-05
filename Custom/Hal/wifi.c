@@ -365,7 +365,8 @@ static int32_t sl_si91x_app_task_fw_update_via_xmodem(uint8_t *rx_data, uint32_t
             uint32_t secs = xfer_time / 1000;
             LOG_SIMPLE("\r\nFirmware upgrade time: %d seconds\r\n", (int)secs);
             LOG_SIMPLE("\r\nDEMO COMPLETED\r\n");
-            
+
+            sl_net_deinit(SL_NET_WIFI_CLIENT_INTERFACE);
             break;
         }
         default:
@@ -499,6 +500,7 @@ static int firmware_upgrade_from_flash(void)
     printf("\n[FW UPGRADE] Starting firmware upgrade from flash\r\n");
 
     // Direct memory access via memory mapping
+    storage_lock();
     flash_addr = (const uint8_t *)WIFI_FLASH_BASE_ADDR;
     
     printf("[FLASH] WiFi FW base address: 0x%08lX\r\n", (unsigned long)WIFI_FLASH_BASE_ADDR);
@@ -516,12 +518,14 @@ static int firmware_upgrade_from_flash(void)
         printf("[ERROR] Invalid flash header flags: 0x%08lX (expected: 0x%08lX)\r\n",
                (unsigned long)flash_header->valid_flags,
                (unsigned long)WIFI_FLASH_VALID_FLAGS);
+        storage_unlock();
         return -1;
     }
 
     // Step 3: Validate total size
     if (flash_header->fw_total_size == 0 || flash_header->fw_total_size > (4 * 1024 * 1024)) {
         printf("[ERROR] Invalid firmware total size: %lu\r\n", flash_header->fw_total_size);
+        storage_unlock();
         return -1;
     }
 
@@ -536,6 +540,7 @@ static int firmware_upgrade_from_flash(void)
     if (total_size != flash_header->fw_total_size) {
         printf("[ERROR] Size mismatch: FW header+image=%lu, Flash header=%lu\r\n",
                total_size, flash_header->fw_total_size);
+        storage_unlock();
         return -1;
     }
 
@@ -547,7 +552,7 @@ static int firmware_upgrade_from_flash(void)
     crc_data_size = flash_header->fw_total_size;
     
     // Use hardware CRC to calculate (byte-wise, InputDataFormat is configured as BYTES)
-    calculated_crc = HAL_CRC_Calculate(&hcrc, (uint32_t *)crc_data_ptr, crc_data_size);
+    calculated_crc = CRC_Calculate((void *)crc_data_ptr, crc_data_size);
 
     printf("[CRC] Calculated CRC: 0x%08lX, Expected CRC: 0x%08lX\r\n",
            calculated_crc, flash_header->fw_crc);
@@ -556,6 +561,7 @@ static int firmware_upgrade_from_flash(void)
     if (calculated_crc != flash_header->fw_crc) {
         printf("[ERROR] CRC mismatch! Calculated: 0x%08lX, Expected: 0x%08lX\r\n",
                calculated_crc, flash_header->fw_crc);
+        storage_unlock();
         return -1;
     }
 
@@ -615,6 +621,7 @@ static int firmware_upgrade_from_flash(void)
         status = sl_si91x_app_task_fw_update_via_xmodem(recv_buffer, SI91X_CHUNK_SIZE);
         if (status != SL_STATUS_OK) {
             printf("[ERROR] Chunk %lu processing failed: 0x%lx\r\n", i, status);
+            storage_unlock();
             return -1;
         }
         
@@ -628,6 +635,7 @@ static int firmware_upgrade_from_flash(void)
     if (si91x_wlan_app_cb.state == SI91X_WLAN_FW_UPGRADE_DONE) {
         printf("\n[UPGRADE] Triggering final upgrade state\r\n");
         status = sl_si91x_app_task_fw_update_via_xmodem(NULL, 0);
+        storage_unlock();
         return (status == SL_STATUS_OK) ? 0 : -1;
     }
     
@@ -638,10 +646,12 @@ static int firmware_upgrade_from_flash(void)
         if (si91x_wlan_app_cb.state == SI91X_WLAN_FW_UPGRADE_DONE) {
             printf("\n[UPGRADE] Triggering final upgrade state\r\n");
             status = sl_si91x_app_task_fw_update_via_xmodem(NULL, 0);
+            storage_unlock();
             return (status == SL_STATUS_OK) ? 0 : -1;
         }
     }
     
+    storage_unlock();
     return -1;
 }
 
@@ -673,9 +683,10 @@ static void wifi_update_process(void)
         device_ioctl(misc, MISC_CMD_LED_SET_BLINK, (uint8_t *)&blink_params, 0);
     }
     status = sl_net_init(SL_NET_WIFI_CLIENT_INTERFACE, &firmware_update_configuration, NULL, NULL);
-    if (status == SL_STATUS_OK) {
-        printf("wifi_update sl_net_init ok \r\n");
-        return;   
+    if (status != SL_STATUS_OK) {
+        printf("wifi_update sl_net_init failed(0x%lx) \r\n", status);
+        sl_net_deinit(SL_NET_WIFI_CLIENT_INTERFACE);
+        return;
     }
     
     status = firmware_upgrade_from_file(WIFI_FIR_NAME);
@@ -731,7 +742,81 @@ void wifi_enter_update_mode(void)
     HAL_NVIC_SystemReset();
 }
 
-static int wifi_update_cmd(int argc, char* argv[]) 
+void wifi_mark_update_pending(void)
+{
+    storage_nvs_write(NVS_FACTORY, NVS_KEY_WIFI_MODE, WIFI_MODE_UPDATE, strlen(WIFI_MODE_UPDATE));
+    LOG_SIMPLE("wifi update pending, will apply on next reboot\r\n");
+}
+
+int wifi_get_running_version(char *buf, size_t size)
+{
+    if (!buf || size < 16) return -1;
+
+    sl_wifi_firmware_version_t fw;
+    sl_status_t status = sl_wifi_get_firmware_version(&fw);
+    if (status != SL_STATUS_OK) {
+        snprintf(buf, size, "N/A");
+        return -1;
+    }
+
+    // Version encoding matches pack_to_hex.py / ota_packer.py:
+    // Major.Minor.Patch.(Security*100 + Build)
+    // e.g. {2,14,5,2,0,7} -> "2.14.5.207"
+    //
+    // NOTE: the SiWG917 SDK swaps the field names — security_version actually
+    //       holds the patch number, and patch_num holds the security version.
+    //       This mirrors the .rps binary header layout (see wifi_get_flash_version).
+    int encoded_build = (int)fw.patch_num * 100 + (int)fw.build_num;
+    snprintf(buf, size, "%u.%u.%u.%d",
+             fw.major, fw.minor, fw.security_version, encoded_build);
+    return 0;
+}
+
+int wifi_get_flash_version(char *buf, size_t size)
+{
+    if (!buf || size < 16) return -1;
+
+    const uint8_t *flash_addr = (const uint8_t *)WIFI_FLASH_BASE_ADDR;
+    const flash_header_t *hdr = (const flash_header_t *)flash_addr;
+    if (hdr->valid_flags != WIFI_FLASH_VALID_FLAGS) {
+        snprintf(buf, size, "N/A");
+        return -1;
+    }
+
+    // .rps binary immediately follows the 32-byte flash_header_t.  Its first
+    // 64 bytes are a sl_wifi_firmware_header_t.  Version components are split
+    // across two sub-structures within that 64-byte block:
+    //
+    //   offset in .rps   field (SDK struct name)   our mapping
+    //   ───────────────  ─────
+    //   12               fw_version_info:
+    //                      build_num        [7:0]   build
+    //                      security_version [15:8]  patch  ← SDK naming quirk
+    //                      minor           [23:16]  minor
+    //                      major           [31:24]  major
+    //   44               fw_version_ext_info:
+    //                      patch_num        [7:0]   security ← SDK naming quirk
+    storage_lock();
+    const uint8_t *rps = flash_addr + WIFI_FLASH_HEADER_SIZE;
+    uint32_t ver_info = *(const uint32_t *)(rps + 12);
+    uint32_t ver_ext  = *(const uint32_t *)(rps + 44);
+    storage_unlock();
+
+    uint8_t major    = (ver_info >> 24) & 0xFF;
+    uint8_t minor    = (ver_info >> 16) & 0xFF;
+    uint8_t patch    = (ver_info >>  8) & 0xFF;  // SDK: security_version
+    uint8_t security = (ver_ext  >>  0) & 0xFF;  // SDK: patch_num
+    uint8_t build    = (ver_info >>  0) & 0xFF;
+
+    // Encode to 4-part version matching pack_to_hex.py / ota_packer.py:
+    // Major.Minor.Patch.(Security*100 + Build)
+    int encoded_build = (int)security * 100 + (int)build;
+    snprintf(buf, size, "%u.%u.%u.%d",
+             major, minor, patch, encoded_build);
+    return 0;
+}
+
+static int wifi_update_cmd(int argc, char* argv[])
 {
     wifi_enter_update_mode();
     return 0;

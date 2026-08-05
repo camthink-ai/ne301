@@ -16,6 +16,7 @@
 #include "common_utils.h"
 #include "pwr.h"
 #include "sd_file.h"
+#include "drtc.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -140,7 +141,7 @@ static void qs_light_set(aicam_bool_t enable, uint32_t brightness_percent)
         return;
     }
     if (brightness_percent > 100U) brightness_percent = 100U;
-    uint8_t duty = (uint8_t)((brightness_percent * 255U) / 100U);
+    uint8_t duty = brightness_percent;
     (void)device_ioctl(s_light_dev, MISC_CMD_PWM_SET_DUTY, (uint8_t *)&duty, 0);
     (void)device_ioctl(s_light_dev, MISC_CMD_PWM_ON, 0, 0);
 }
@@ -212,7 +213,7 @@ static int qs_prepare_camera_and_jpeg(const qs_snapshot_config_t *cfg, const nn_
     /* ISP IQ before start: NVS + stock profiles via quick_storage (no json_config init). */
     {
         ISP_IQParamTypeDef isp_param = {0};
-        (void)quick_storage_fill_isp_iq_param(cfg->isp_mode, &isp_param);
+        (void)quick_storage_fill_isp_iq_param(cfg->isp_mode, cfg->grayscale, &isp_param);
         (void)device_ioctl(s_cam_dev, CAM_CMD_SET_ISP_PARAM, (uint8_t *)&isp_param, sizeof(isp_param));
     }
 
@@ -323,11 +324,14 @@ static void qs_snapshot_thread(void *argument)
         if (s_cfg.light_mode == QS_LIGHT_MODE_ON) light_on = AICAM_TRUE;
         else if (s_cfg.light_mode == QS_LIGHT_MODE_AUTO) light_on = AICAM_TRUE;
         else if (s_cfg.light_mode == QS_LIGHT_MODE_CUSTOM) {
-            /* custom schedule is handled by upper layer in normal flow; here keep it simple and ON if within [start,end) */
-            uint32_t now_s = 0;
-            /* rtc_get_time is in services; avoid dependency here. */
-            (void)now_s;
-            light_on = AICAM_TRUE;
+            uint64_t ts = rtc_get_local_timestamp();
+            uint32_t now_s = (uint32_t)(ts % 86400);
+            if (s_cfg.light_start_time < s_cfg.light_end_time) {
+                light_on = (now_s >= s_cfg.light_start_time && now_s <= s_cfg.light_end_time);
+            } else {
+                /* cross-midnight: e.g. 22:00–06:00 */
+                light_on = (now_s >= s_cfg.light_start_time || now_s <= s_cfg.light_end_time);
+            }
         }
         if (light_on) {
             qs_light_set(AICAM_TRUE, s_cfg.light_brightness);
@@ -363,6 +367,7 @@ static void qs_snapshot_thread(void *argument)
         osThreadExit();
         return;
     }
+    // printf("[QS]end1, %lu ms\r\n", HAL_GetTick());
 
     if (need_ai) {
         camera_buffer_with_frame_id_t pipe2 = {0};
@@ -384,7 +389,9 @@ static void qs_snapshot_thread(void *argument)
             osThreadExit();
             return;
         }
+        // printf("[QS]end2, %lu ms\r\n", HAL_GetTick());
     }
+    printf("SNAP: %lu ms\r\n", HAL_GetTick());
 
     /* turn light off after capture */
     if (s_cfg.light_mode != QS_LIGHT_MODE_OFF) {
@@ -393,7 +400,6 @@ static void qs_snapshot_thread(void *argument)
 
     /* Stop pipes/sensor early to reduce power while encoding/inference runs */
     qs_stop_camera_pipes(need_ai);
-    printf("[QS]end, %lu ms\r\n", HAL_GetTick());
     qt_prof_step(&prof, "[QS] snap:stop ");
 
     /* JPEG encode using pipe1 buffer */
@@ -455,7 +461,7 @@ static void qs_ai_thread(void *argument)
     qt_prof_step(&prof, "[QS] ai:nn ");
 
     /* load model: follow device_service fast path selection */
-    uintptr_t model_ptr = (s_cfg.ai_1_active) ? (AI_1_BASE + 1024U) : (AI_DEFAULT_BASE + 1024U);
+    uintptr_t model_ptr = (s_cfg.ai_1_active) ? (AI_2_BASE + 1024U) : (AI_1_BASE + 1024U);
     if (nn_load_model(model_ptr) != 0) {
         QT_TRACE("[QS] ", "load model fail");
         (void)osEventFlagsSet(s_evt, QS_FLAG_AI_INFO_READY | QS_FLAG_AI_RESULT_READY);

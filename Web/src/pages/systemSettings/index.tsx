@@ -60,6 +60,21 @@ export default function ApplicationManagement() {
         return null;
     }
   }
+  const getSelectedCommunicationTypeLabel = (type?: string) => {
+    switch (type) {
+      case 'wifi':
+        return i18n._('sys.system_management.wifi');
+      case 'halow':
+        return i18n._('sys.system_management.halow');
+      case 'cellular':
+        return i18n._('sys.system_management.cellular_network');
+      case 'poe':
+        return i18n._('sys.system_management.poe_network');
+      default:
+        return i18n._('sys.system_management.wifi');
+    }
+  };
+
   const mobilePage = () => (
     <div className="flex justify-center pt-4">
       <Card className="sm:w-xl w-full mx-4">
@@ -73,7 +88,7 @@ export default function ApplicationManagement() {
           >
             <Label>{i18n._('sys.system_management.communication_title')}</Label>
             <div className="flex items-center gap-2">
-              {communicationData?.selected_type === 'cellular' ? i18n._('sys.system_management.cellular_network') : communicationData?.selected_type === 'poe' ? i18n._('sys.system_management.poe_network') : i18n._('sys.system_management.wifi')}
+              {getSelectedCommunicationTypeLabel(communicationData?.selected_type)}
               <SvgIcon icon="right" className="w-4 h-4" />
             </div>
           </div>

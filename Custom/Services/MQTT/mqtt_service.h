@@ -363,6 +363,23 @@ aicam_result_t mqtt_service_unregister_event_callback(mqtt_service_event_callbac
 aicam_result_t mqtt_service_wait_for_event(ms_mqtt_event_id_t event_id, aicam_bool_t wait_all, uint32_t timeout_ms);
 
 /**
+ * @brief Drain one acknowledged msg_id from the per-publish ack queue.
+ *
+ * Use this to pipeline-upload N images: publish them all (each returns a
+ * msg_id), then call this N times to learn which msg_ids the broker acked.
+ * Unlike wait_for_event (which collapses to a single bit), this preserves
+ * per-msg_id granularity so callers know exactly which upload failed.
+ *
+ * @param out_msg_id  output: the msg_id that was acked
+ * @param timeout_ms  max wait for the next ack (0 = non-blocking)
+ * @return AICAM_OK on success, AICAM_ERROR_TIMEOUT if no ack in timeout,
+ *         AICAM_ERROR_NOT_INITIALIZED if service not up
+ * @note For QoS 0 there is no puback — callers should treat publish success
+ *       as immediate ack and not call this.
+ */
+aicam_result_t mqtt_service_get_acked_msg_id(int *out_msg_id, uint32_t timeout_ms);
+
+/**
  * @brief Clear event flag for specific event
  * @param event_id Event ID to clear
  * @return aicam_result_t Operation result

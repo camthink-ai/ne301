@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'preact/hooks';
+import { useState, useEffect, useRef } from 'preact/hooks';
 import { useLingui } from '@lingui/react';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
@@ -6,6 +6,7 @@ import TimePicker from '@/components/time-picker';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import Slider from '@/components/slider';
 import hardwareServiceApi, { type SetLightConfigReq } from '@/services/api/hardware-management';
 
@@ -24,8 +25,22 @@ export default function Light() {
          end_minute: 0,
       },
    })
+   const lightConfigRef = useRef(lightConfig);
+   const testLightOnRef = useRef(false);
+   const brightnessApplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+   const latestBrightnessRef = useRef<number>(lightConfig.brightness_level);
+   const [testLightOn, setTestLightOn] = useState(false);
    const [loading, setLoading] = useState(true);
-   const { getLightConfigReq, setLightConfigReq } = hardwareServiceApi;
+   const { getLightConfigReq, setLightConfigReq, controlLightReq } = hardwareServiceApi;
+
+   useEffect(() => {
+      lightConfigRef.current = lightConfig;
+   }, [lightConfig]);
+
+   useEffect(() => {
+      testLightOnRef.current = testLightOn;
+   }, [testLightOn]);
+
    const initLightConfig = async () => {
       try {
          setLoading(true);
@@ -58,7 +73,43 @@ export default function Light() {
       setLightConfig({ ...lightConfig, mode: value });
    }
    const handleSetLightBrightness = async (value: number) => {
-      await handleSetLightConfig({ ...lightConfig, brightness_level: value });
+      const nextCfg: SetLightConfigReq = { ...lightConfigRef.current, brightness_level: value };
+      await handleSetLightConfig(nextCfg);
+      // When test switch is ON, update duty immediately by re-applying manual ON.
+      if (testLightOnRef.current) {
+         await controlLightReq({ enable: true });
+      }
+   }
+
+   const handleToggleTestLight = async (checked: boolean) => {
+      if (!checked && brightnessApplyTimerRef.current) {
+         clearTimeout(brightnessApplyTimerRef.current);
+         brightnessApplyTimerRef.current = null;
+      }
+      testLightOnRef.current = checked;
+      setTestLightOn(checked);
+      try {
+         if (checked) {
+            // Ensure brightness is applied before turning ON.
+            const value = latestBrightnessRef.current;
+            const nextCfg: SetLightConfigReq = {
+               ...lightConfigRef.current,
+               brightness_level: value,
+            };
+            await handleSetLightConfig(nextCfg);
+            await controlLightReq({ enable: true });
+         } else {
+            await controlLightReq({ enable: false });
+         }
+      } catch (error) {
+         console.error('handleToggleTestLight', error);
+         testLightOnRef.current = !checked;
+         setTestLightOn(!checked);
+         if (checked) {
+            // Best-effort revert: turn light off if enabling failed.
+            controlLightReq({ enable: false }).catch(() => {});
+         }
+      }
    }
 
    const handleSetStartTime = async (value: string) => {
@@ -80,6 +131,38 @@ export default function Light() {
          </div>
       </div>
    )
+
+   // If leaving the brightness-adjustable modes, ensure test switch turns light off
+   useEffect(() => {
+      if (loading) return;
+      if (!lightConfig?.connected || lightConfig.mode === 'off') {
+         if (testLightOn) {
+            if (brightnessApplyTimerRef.current) {
+               clearTimeout(brightnessApplyTimerRef.current);
+               brightnessApplyTimerRef.current = null;
+            }
+            controlLightReq({ enable: false }).catch(error => {
+               console.error('auto-disable test light', error);
+            });
+            setTestLightOn(false);
+         }
+      }
+   }, [lightConfig?.connected, lightConfig?.mode, loading, testLightOn]);
+
+   const scheduleRealtimeBrightnessApply = (value: number) => {
+      latestBrightnessRef.current = value;
+      if (!testLightOnRef.current) return;
+      if (brightnessApplyTimerRef.current) {
+         clearTimeout(brightnessApplyTimerRef.current);
+      }
+      // Throttle to reduce POST spam while dragging.
+      brightnessApplyTimerRef.current = setTimeout(() => {
+         handleSetLightBrightness(latestBrightnessRef.current).catch(error => {
+            console.error('scheduleRealtimeBrightnessApply', error);
+         });
+      }, 150);
+   };
+
    return (
       <div>
          {loading ? skeletonScreen() : (
@@ -133,7 +216,21 @@ export default function Light() {
                            <div className="flex justify-between">
                               <Label>{i18n._('sys.hardware_management.light_brightness')}</Label>
                               <div className="flex items-center gap-2">
-                                 <Slider className="w-4xs md:w-2xs" value={lightConfig.brightness_level} onChange={value => setLightConfig({ ...lightConfig, brightness_level: value })} onChangeEnd={value => handleSetLightBrightness(value)} max={100} step={1} />
+                                 <Slider
+                                   className="w-4xs md:w-2xs"
+                                   value={lightConfig.brightness_level}
+                                   onChange={value => {
+                                      const nextCfg: SetLightConfigReq = {
+                                         ...lightConfigRef.current,
+                                         brightness_level: value,
+                                      };
+                                      setLightConfig(nextCfg);
+                                      scheduleRealtimeBrightnessApply(value);
+                                   }}
+                                   onChangeEnd={value => handleSetLightBrightness(value)}
+                                   max={100}
+                                   step={1}
+                                 />
                                  <Input
                                    className="w-[65px]"
                                    type="number"
@@ -151,6 +248,11 @@ export default function Light() {
                                    onBlur={e => handleSetLightBrightness(Math.max(0, Math.min(100, Number.isNaN(Number((e.target as HTMLInputElement).value)) ? 0 : Number((e.target as HTMLInputElement).value))))}
                                  />
                               </div>
+                           </div>
+                           <Separator />
+                           <div className="flex justify-between items-center">
+                              <Label>{i18n._('sys.hardware_management.fill_light_test')}</Label>
+                              <Switch checked={testLightOn} onCheckedChange={handleToggleTestLight} />
                            </div>
                         </>
                      ) : (

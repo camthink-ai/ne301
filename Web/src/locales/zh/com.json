@@ -67,7 +67,9 @@
         "manual": "手动",
         "status": "状态",
         "start": "开始",
-        "secret_key": "密钥"
+        "secret_key": "密钥",
+        "yes": "是",
+        "no": "否"
 
     }
     

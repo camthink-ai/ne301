@@ -11,7 +11,7 @@
  #include "cJSON.h"           // Include the cJSON library
  #include "debug.h"
  #include "system_service.h"
- #include "version.h"         // For FW_VERSION_STRING
+
  #include "storage.h"         // For NVS access
  #include <string.h>
  #include <stdlib.h>
@@ -98,6 +98,7 @@
  #define NVS_KEY_IMAGE_VFLIP             "img_vflip"
  #define NVS_KEY_IMAGE_AEC               "img_aec"
  #define NVS_KEY_IMAGE_ISP_MODE          "img_isp_mode"
+ #define NVS_KEY_IMAGE_GRAYSCALE         "img_gray"
  #define NVS_KEY_IMAGE_SKIP_FRAMES       "img_skip"
  #define NVS_KEY_IMAGE_FAST_SKIP_FRAMES  "img_fast_skip"
  #define NVS_KEY_IMAGE_FAST_RESOLUTION   "img_fast_res"
@@ -179,6 +180,22 @@
 // Note: Individual known network entries use format "net_<idx>_<field>"
 // where <idx> is 0-15 and <field> is ssid/bssid/pwd/rssi/ch/sec/conn/known/time
 
+// Wi-Fi HaLow last-connected info
+#define NVS_KEY_HALOW_SSID              "hw_ssid"
+#define NVS_KEY_HALOW_PASSWORD          "hw_pwd"
+#define NVS_KEY_HALOW_SECURITY          "hw_sec"
+#define NVS_KEY_HALOW_COUNTRY_CODE      "hw_cc"
+#define NVS_KEY_HALOW_BSSID              "hw_bssid"
+#define NVS_KEY_HALOW_IP_MODE            "hw_ip_mode"
+#define NVS_KEY_HALOW_IP_ADDR            "hw_ip"
+#define NVS_KEY_HALOW_NETMASK            "hw_mask"
+#define NVS_KEY_HALOW_GATEWAY            "hw_gw"
+#define NVS_KEY_HALOW_TX_POWER           "hw_txpwr"
+#define NVS_KEY_HALOW_SCAN_DWELL         "hw_scan_dw"
+#define NVS_KEY_HALOW_RC_MCS             "hw_rc_mcs"
+#define NVS_KEY_HALOW_RC_BW              "hw_rc_bw"
+#define NVS_KEY_HALOW_RC_GI              "hw_rc_gi"
+
 // Communication type configuration key names
 #define NVS_KEY_COMM_PREFERRED_TYPE     "comm_pref"
 #define NVS_KEY_COMM_AUTO_PRIORITY      "comm_auto_pri"
@@ -191,6 +208,7 @@
 #define NVS_KEY_CELLULAR_AUTH           "cell_auth"
 #define NVS_KEY_CELLULAR_ROAMING        "cell_roam"
 #define NVS_KEY_CELLULAR_OPERATOR       "cell_operator"
+#define NVS_KEY_CELLULAR_PLMN           "cell_plmn"
 
 // PoE/Ethernet configuration key names
 #define NVS_KEY_POE_IP_MODE             "poe_ip_mode"
@@ -307,6 +325,7 @@
 #define NVS_KEY_PIR_IGNORE_TIME     "pir_ignore"
 #define NVS_KEY_PIR_PULSE_COUNT     "pir_pulse"
 #define NVS_KEY_PIR_WINDOW_TIME     "pir_window"
+#define NVS_KEY_PIR_DISABLE_PREVIEW  "pir_dis_pv"
  // Remote Trigger
  #define NVS_KEY_REMOTE_TRIGGER_ENABLE "remote_trigger_enable"
  // IO (Indexed)
@@ -348,6 +367,21 @@
 #define NVS_KEY_WEBHOOK_SECRET      "wh_secret"
 #define NVS_KEY_WEBHOOK_CA_CERT_PATH "wh_ca_path"
 
+// Capture-upload configuration key names
+#define NVS_KEY_CAPUP_VERSION       "cu_ver"
+#define NVS_KEY_CAPUP_MODE          "cu_mode"
+#define NVS_KEY_CAPUP_STORAGE       "cu_store"
+#define NVS_KEY_CAPUP_POLICY        "cu_policy"
+#define NVS_KEY_CAPUP_PROTO         "cu_proto"
+#define NVS_KEY_CAPUP_RETRY_EN      "cu_re_en"
+#define NVS_KEY_CAPUP_RETRY_MAX     "cu_re_max"
+#define NVS_KEY_CAPUP_BATCH_N       "cu_bat_n"
+#define NVS_KEY_CAPUP_SCHED_CNT     "cu_sch_cnt"
+#define NVS_KEY_CAPUP_SCHED_MIN_FMT "cu_sch_%u"   /* uint16_t index 0..7 */
+#define NVS_KEY_CAPUP_KEEP_HOURS    "cu_keep_h"
+#define NVS_KEY_CAPUP_MAX_PENDING   "cu_max_pd"
+#define NVS_KEY_CAPUP_COMM_TYPE     "cu_comm"
+
 
  /* ==================== Internal Function Prototypes ==================== */
  
@@ -368,6 +402,8 @@ aicam_result_t json_config_save_mqtt_service_config_to_nvs(const mqtt_service_co
 aicam_result_t json_config_save_auth_mgr_config_to_nvs(const auth_mgr_config_t *config);
 aicam_result_t json_config_save_webhook_config_to_nvs(const webhook_config_t *config);
 aicam_result_t json_config_load_webhook_from_nvs(webhook_config_t *config);
+aicam_result_t json_config_save_capture_upload_to_nvs(const capture_upload_config_t *config);
+aicam_result_t json_config_load_capture_upload_from_nvs(capture_upload_config_t *config);
  aicam_result_t json_config_save_to_nvs(const aicam_global_config_t *config);
  aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config);
  

@@ -692,6 +692,7 @@ static aicam_result_t work_mode_triggers_get_handler(http_handler_context_t* ctx
     // Convert register value (0-3) to actual pulse count (1-4) for frontend
     cJSON_AddNumberToObject(pir_trigger, "pulse_count", config.pir_trigger.pulse_count + 1);
     cJSON_AddNumberToObject(pir_trigger, "window_time_s", config.pir_trigger.window_time_s);
+    cJSON_AddBoolToObject(pir_trigger, "disable_in_preview", config.pir_trigger.disable_in_preview);
     cJSON_AddItemToObject(response, "pir_trigger", pir_trigger);
 
     // Remote trigger configuration
@@ -913,6 +914,11 @@ static aicam_result_t work_mode_triggers_set_handler(http_handler_context_t* ctx
                 config.pir_trigger.window_time_s = window_time;
             }
         }
+
+        // Parse disable_in_preview (default: true)
+        cJSON* disable_in_preview_item = cJSON_GetObjectItem(pir_trigger, "disable_in_preview");
+        config.pir_trigger.disable_in_preview = (disable_in_preview_item && cJSON_IsBool(disable_in_preview_item))
+            ? cJSON_IsTrue(disable_in_preview_item) : AICAM_TRUE;
     }
 
     // Parse Remote trigger settings

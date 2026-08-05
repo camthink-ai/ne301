@@ -21,13 +21,14 @@
 #include "buffer_mgr.h"
 #include "drtc.h"
 #include "storage.h"
-#include "version.h"
 #include "nn.h"
 #include "cmsis_os2.h"
 #include "mqtt_service.h"
 #include "system_service.h"
 #include "device_service.h"
 #include "ai_service.h"
+#include "web_recovery.h"
+#include "wifi.h"
 
 #define OTA_WRITE_BUF_SIZE 1024
 #define OTA_PRECHECK_DATA_SIZE 2048  // 2KB: 1KB OTA header + 1KB model package header
@@ -120,11 +121,11 @@ static FirmwareType parse_firmware_type(const char* type_str) {
     } else if (strcmp(type_str, "web") == 0) {
         return FIRMWARE_WEB;
     } else if (strcmp(type_str, "ai_default") == 0) {
-        return FIRMWARE_DEFAULT_AI;
-    } else if (strcmp(type_str, "ai") == 0) {
         return FIRMWARE_AI_1;
-    } else if (strcmp(type_str, "reserved1") == 0) {
-        return FIRMWARE_RESERVED1;
+    } else if (strcmp(type_str, "ai") == 0) {
+        return FIRMWARE_AI_2;
+    } else if (strcmp(type_str, "wifi") == 0) {
+        return FIRMWARE_WIFI;
     } else if (strcmp(type_str, "reserved2") == 0) {
         return FIRMWARE_RESERVED2;
     } else {
@@ -232,8 +233,9 @@ static int process_ota_header(ota_upload_ctx_t *ctx) {
         case 0x01: fw_type_from_header = FIRMWARE_FSBL; break;
         case 0x02: fw_type_from_header = FIRMWARE_APP; break;
         case 0x03: fw_type_from_header = FIRMWARE_WEB; break;
-        case 0x04: fw_type_from_header = FIRMWARE_AI_1; break;
-        case 0x05: fw_type_from_header = FIRMWARE_AI_1; break;
+        case 0x04: fw_type_from_header = FIRMWARE_AI_2; break;
+        case 0x05: fw_type_from_header = FIRMWARE_AI_2; break;
+        case 0x08: fw_type_from_header = FIRMWARE_WIFI; break;
         default: fw_type_from_header = FIRMWARE_APP; break;
     }
 
@@ -308,7 +310,7 @@ static aicam_result_t ota_precheck_header(const uint8_t *header_data, size_t dat
                                           size_t expected_content_length)
 {
     // Determine required data size based on firmware type
-    aicam_bool_t is_ai_model = (fw_type_param == FIRMWARE_AI_1 || fw_type_param == FIRMWARE_DEFAULT_AI);
+    aicam_bool_t is_ai_model = (fw_type_param == FIRMWARE_AI_2 || fw_type_param == FIRMWARE_AI_1);
     size_t required_size = is_ai_model ? OTA_PRECHECK_DATA_SIZE : sizeof(ota_header_t);
     
     if (!header_data || data_len < required_size) {
@@ -332,8 +334,9 @@ static aicam_result_t ota_precheck_header(const uint8_t *header_data, size_t dat
         case 0x01: fw_type_from_header = FIRMWARE_FSBL; break;
         case 0x02: fw_type_from_header = FIRMWARE_APP; break;
         case 0x03: fw_type_from_header = FIRMWARE_WEB; break;
-        case 0x04: fw_type_from_header = FIRMWARE_AI_1; break;
-        case 0x05: fw_type_from_header = FIRMWARE_AI_1; break;
+        case 0x04: fw_type_from_header = FIRMWARE_AI_2; break;
+        case 0x05: fw_type_from_header = FIRMWARE_AI_2; break;
+        case 0x08: fw_type_from_header = FIRMWARE_WIFI; break;
         default: fw_type_from_header = FIRMWARE_APP; break;
     }
     
@@ -380,7 +383,7 @@ static aicam_result_t ota_precheck_header(const uint8_t *header_data, size_t dat
                  (int)sizeof(header->fw_ver), header->fw_ver);
     
     // ============== Part 2: Validate model package header (second 1KB, for AI model only) ==============
-    if (fw_type_param == FIRMWARE_AI_1 || fw_type_param == FIRMWARE_DEFAULT_AI) {
+    if (fw_type_param == FIRMWARE_AI_2 || fw_type_param == FIRMWARE_AI_1) {
         
         // Model package header starts at offset 1KB (after OTA header)
         const nn_package_header_t *model_header = (const nn_package_header_t *)(header_data + sizeof(ota_header_t));
@@ -444,7 +447,7 @@ aicam_result_t ota_precheck_handler(http_handler_context_t *ctx)
     FirmwareType fw_type = parse_firmware_type(fw_type_str);
     
     // Determine required Content-Length based on firmware type
-    aicam_bool_t is_ai_model = (fw_type == FIRMWARE_AI_1 || fw_type == FIRMWARE_DEFAULT_AI);
+    aicam_bool_t is_ai_model = (fw_type == FIRMWARE_AI_2 || fw_type == FIRMWARE_AI_1);
     size_t required_size = is_ai_model ? OTA_PRECHECK_DATA_SIZE : sizeof(ota_header_t);
     
     // Check Content-Length (1KB for non-AI, 2KB for AI model)
@@ -703,8 +706,11 @@ void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data)
                 }
                 ctx->header_processed = AICAM_TRUE;
 
-                // Header is also part of the firmware, FSBL is skipped, others need to be written
-                if (ctx->fw_type_param != FIRMWARE_FSBL) {
+                // Header is also part of the firmware for most types and gets written
+                // to flash. FSBL and WiFi are exceptions: their OTA header is used only
+                // for web verification and is NOT written — the payload (flash image)
+                // is written directly to the partition base.
+                if (ctx->fw_type_param != FIRMWARE_FSBL && ctx->fw_type_param != FIRMWARE_WIFI) {
                     memcpy(ctx->write_buf, ctx->header_storage.raw, sizeof(ota_header_t));
                     ctx->write_buf_pos = sizeof(ota_header_t);
                 }
@@ -787,10 +793,19 @@ void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data)
             }
 
             // Update json config
-            if (ctx->fw_type_param == FIRMWARE_AI_1) {
+            if (ctx->fw_type_param == FIRMWARE_AI_2) {
                 json_config_set_ai_1_active(AICAM_TRUE);
             }
 
+            // Web firmware lives in a single-slot partition at WEB_BASE, so the
+            // freshly written asset.bin is already addressable. Reload the web
+            // assets now so the new UI is live immediately (and exit recovery
+            // mode if we were serving the built-in recovery page).
+            if (ctx->fw_type_param == FIRMWARE_WEB) {
+                web_recovery_reload_assets();
+            }
+
+            // WiFi firmware is written to WIFI_FW_BASE (flash_header_t + .rps).
             LOG_SVC_INFO("OTA Success!");
             ota_send_response(c, API_ERROR_NONE, "Upgrade successful");
             goto cleanup;
@@ -847,9 +862,26 @@ aicam_result_t ota_upgrade_local_handler(http_handler_context_t *ctx)
     if (!ctx) {
         return AICAM_ERROR_INVALID_PARAM;
     }
-    
-   // return ok
-   return api_response_success(ctx, NULL, "OTA upgrade local handler called");
+
+    // Parse firmware_type from the JSON body.  For WiFi, this is the trigger
+    // point that sets NVS wifi_mode=update so the next reboot pushes the .rps
+    // that was already written to WIFI_FW_BASE by the streaming upload.  For
+    // all other firmware types this remains a no-op (the streaming upload
+    // already handled everything in its upgrade_finish / slot-switch path).
+    cJSON *request = web_api_parse_body(ctx);
+    if (request) {
+        cJSON *type_item = cJSON_GetObjectItem(request, "firmware_type");
+        if (type_item && cJSON_IsString(type_item)) {
+            const char *fw_type_str = type_item->valuestring;
+            if (strcmp(fw_type_str, "wifi") == 0) {
+                wifi_mark_update_pending();
+                LOG_SVC_INFO("WiFi update flag set (upgrade-local confirm)");
+            }
+        }
+        cJSON_Delete(request);
+    }
+
+    return api_response_success(ctx, NULL, "OK");
 }
 
 
@@ -908,9 +940,9 @@ aicam_result_t ota_export_firmware_handler(http_handler_context_t *ctx)
     
     // parse the parameters
     FirmwareType fw_type = parse_firmware_type(type_item->valuestring);
-    if(fw_type == FIRMWARE_AI_1) {
+    if(fw_type == FIRMWARE_AI_2) {
         if(!json_config_get_ai_1_active()) {
-            fw_type = FIRMWARE_DEFAULT_AI;
+            fw_type = FIRMWARE_AI_1;
         }
     }
     char export_filename[256] = {0};

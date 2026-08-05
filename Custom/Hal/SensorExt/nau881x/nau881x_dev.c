@@ -85,8 +85,8 @@ int nau881x_dev_init(void)
 
     int ret = i2c_driver_is_ready(s_i2c_inst, 3, NAU881X_I2C_TIMEOUT_MS);
     if (ret != AICAM_OK) {
-        LOG_DRV_ERROR("nau881x_dev: device not ready on I2C (addr=0x%02X)\r\n",
-                      (unsigned)NAU881X_I2C_ADDR_7BIT);
+        // LOG_DRV_ERROR("nau881x_dev: device not ready on I2C (addr=0x%02X)\r\n",
+        //               (unsigned)NAU881X_I2C_ADDR_7BIT);
         i2c_driver_destroy(s_i2c_inst);
         s_i2c_inst = NULL;
         return AICAM_ERROR_NOT_FOUND;

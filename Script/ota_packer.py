@@ -42,6 +42,7 @@ FW_TYPE_MAP = {
     'config': 0x05,
     'patch': 0x06,
     'full': 0x07,
+    'wifi': 0x08,
 }
 
 @dataclass

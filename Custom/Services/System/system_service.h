@@ -638,6 +638,19 @@ aicam_result_t system_service_update_rtc_to_u0(void);
  */
 aicam_result_t system_service_process_wakeup_event(void);
 
+/**
+ * @brief Poll for a scheduled upload-flush node due now (while awake).
+ *        Call ~every 15s from the main loop. Handles FULL_SPEED mode and
+ *        LOW_POWER awake periods spanning a node without a dedicated wake.
+ */
+aicam_result_t system_service_poll_scheduled_flush(void);
+
+/**
+ * @brief Wait for an in-progress upload flush to finish before sleeping.
+ *        Does NOT start a new flush. Call before execute_pending_sleep().
+ */
+aicam_result_t system_service_wait_upload_before_sleep(uint32_t timeout_ms);
+
 /* ==================== Image Capture and Upload API ==================== */
 
 typedef struct {

@@ -46,6 +46,9 @@ typedef struct {
     /** One of `QS_IMAGE_ISP_MODE_*` (aligned with app `image_config_t.isp_mode`). */
     uint32_t isp_mode;
 
+    /** Same as `image_config_t.grayscale` — ISP luma matrix when non-zero. */
+    uint8_t grayscale;
+
 } qs_snapshot_config_t;
 
 /**
@@ -58,10 +61,12 @@ int quick_storage_read_snapshot_config(qs_snapshot_config_t *snapshot_config);
 /**
  * @brief Build ISP IQ parameters for fast capture without json_config (NVS + stock profiles only).
  * @param isp_mode `QS_IMAGE_ISP_MODE_*`
+ * @param grayscale Same as `image_config_t.grayscale` (0/1, ISP grayscale overlay).
  * @param isp_param Output for `CAM_CMD_SET_ISP_PARAM`
  * @return AICAM_OK or AICAM_ERROR_INVALID_PARAM
  */
-int quick_storage_fill_isp_iq_param(uint32_t isp_mode, ISP_IQParamTypeDef *isp_param);
+int quick_storage_fill_isp_iq_param(uint32_t isp_mode, uint8_t grayscale,
+                                    ISP_IQParamTypeDef *isp_param);
 
 
 typedef struct {
@@ -96,13 +101,16 @@ int quick_storage_read_work_mode_config(qs_work_mode_config_t *work_mode_config)
 
 /**
  * @brief Communication preference type
+ * @note Concrete values MUST match communication_type_t in communication_service.h:
+ *       0=none, 1=WiFi, 2=HaLow, 3=Cellular, 4=PoE. AUTO/DISABLE are quick-bootstrap only.
  */
 typedef enum {
-    COMM_PREF_TYPE_AUTO = 0,
-    COMM_PREF_TYPE_WIFI = 1,
-    COMM_PREF_TYPE_CELLULAR = 2,
-    COMM_PREF_TYPE_POE = 3,
-    COMM_PREF_TYPE_DISABLE = 0XFF,
+    COMM_PREF_TYPE_AUTO     = 0,    /* COMM_TYPE_NONE + enable_auto_priority */
+    COMM_PREF_TYPE_WIFI     = 1,    /* COMM_TYPE_WIFI */
+    COMM_PREF_TYPE_HALOW    = 2,    /* COMM_TYPE_HALOW */
+    COMM_PREF_TYPE_CELLULAR = 3,    /* COMM_TYPE_CELLULAR */
+    COMM_PREF_TYPE_POE      = 4,    /* COMM_TYPE_POE */
+    COMM_PREF_TYPE_DISABLE  = 0xFF,
 } qs_comm_pref_type_t;
 
 /**

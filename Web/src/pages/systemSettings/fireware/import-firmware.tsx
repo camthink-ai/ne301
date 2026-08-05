@@ -15,6 +15,12 @@ import { toast } from 'sonner';
 import WifiReloadMask from '@/components/wifi-reload-mask';
 import { retryFetch, sleep, sliceFile } from '@/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { useNavigate } from 'react-router-dom';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 
 type ImportFirmwareProps = {
   isImportFirmwareDialogOpen: boolean;
@@ -37,6 +43,8 @@ export default function ImportFirmware({
   const [webFile, setWebFile] = useState<File | null>(null);
   const [aiModelFile, setAiModelFile] = useState<File | null>(null);
   const [deviceFile, setDeviceFile] = useState<File | null>(null);
+  const [isAdvancedMenuOpen, setIsAdvancedMenuOpen] = useState(false);
+  const navigate = useNavigate();
   // const [updateLoadingValue, setUpdateLoadingValue] = useState(10);
   const [isUpdateLoading, setIsUpdateLoading] = useState(false);
   const [restartLoading, setRestartLoading] = useState(false);
@@ -324,21 +332,64 @@ export default function ImportFirmware({
               </div>
             </ScrollArea>
           </DialogHeader>
-          <DialogFooter className="mt-4">
-            <Button
-              variant="outline"
-              className="w-1/2 md:w-auto"
-              onClick={() => setIsImportFirmwareDialogOpen(false)}
+          <DialogFooter className="mt-4 justify-between">
+            <Popover
+              open={isAdvancedMenuOpen}
+              onOpenChange={setIsAdvancedMenuOpen}
             >
-              {i18n._('common.cancel')}
-            </Button>
-            <Button
-              variant="primary"
-              className="w-1/2 md:w-auto"
-              onClick={() => handleUpdate()}
-            >
-              {i18n._('sys.system_management.confirm_burn')}
-            </Button>
+              <PopoverTrigger asChild>
+                <div className="inline-flex">
+                  <Button variant="outline" className="md:w-auto gap-1">
+                    {i18n._('sys.system_management.advanced_options')}
+                    <SvgIcon icon="bottom" className="w-4 h-4" />
+                  </Button>
+                </div>
+              </PopoverTrigger>
+              <PopoverContent
+                className="w-auto p-1"
+                align="start"
+                side="top"
+              >
+                <button
+                  type="button"
+                  className="flex w-full items-center rounded-sm px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
+                  onClick={() => {
+                    setIsAdvancedMenuOpen(false);
+                    setIsImportFirmwareDialogOpen(false);
+                    navigate('/import-fsbl');
+                  }}
+                >
+                  {i18n._('sys.system_management.advanced_fsbl_upgrade')}
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center rounded-sm px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
+                  onClick={() => {
+                    setIsAdvancedMenuOpen(false);
+                    setIsImportFirmwareDialogOpen(false);
+                    navigate('/import-wifi');
+                  }}
+                >
+                  {i18n._('sys.system_management.advanced_wifi_upgrade')}
+                </button>
+              </PopoverContent>
+            </Popover>
+            <div className="flex flex-row space-x-2">
+              <Button
+                variant="outline"
+                className="w-1/2 md:w-auto"
+                onClick={() => setIsImportFirmwareDialogOpen(false)}
+              >
+                {i18n._('common.cancel')}
+              </Button>
+              <Button
+                variant="primary"
+                className="w-1/2 md:w-auto"
+                onClick={() => handleUpdate()}
+              >
+                {i18n._('sys.system_management.confirm_burn')}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

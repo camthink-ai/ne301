@@ -40,7 +40,7 @@ ADDRESS_MAP = {
     },
     'WEB': {
         'pattern': 'ne301_Web_v*_pkg.bin',
-        'address': 0x70400000,
+        'address': 0x71900000,
         'required': True
     },
     'MODEL': {
@@ -77,7 +77,7 @@ def find_latest_wifi_firmware(project_root: Path) -> Optional[Path]:
     """
     Find the latest WiFi firmware file (.rps file).
     """
-    wifi_dir = project_root / 'Custom' / 'Common' / 'Lib' / 'si91x'
+    wifi_dir = project_root / 'Custom' / 'Common' / 'Lib' / 'SiliconLabs_SDK' / 'firmware'
     if not wifi_dir.exists():
         return None
     
@@ -128,6 +128,14 @@ def find_latest_file(build_dir: Path, pattern: str) -> Optional[Path]:
         return files[0]
 
 
+# WiFi flash layout (must match wifi.h on the device side)
+# [0 .. 31]      : flash_header_t (32 bytes)
+# [32 .. 32+N-1] : original WiFi firmware (.rps), internally containing a 64-byte FW header + payload
+WIFI_FLASH_BASE_ADDR = 0x71A00000
+WIFI_FLASH_HEADER_SIZE = 32
+WIFI_FLASH_VALID_FLAGS = 0x20060123
+
+
 def calculate_checksum(data: bytes) -> int:
     """
     Calculate the checksum of an Intel HEX record.
@@ -161,6 +169,74 @@ def stm32_crc32_mpeg2(data: bytes) -> int:
 
     # HAL does not apply an additional final XOR, return directly
     return crc & 0xFFFFFFFF
+
+
+def build_wifi_flash_image(project_root: Path) -> Optional[dict]:
+    """
+    Build the WiFi flash image: flash_header_t (32B) + original .rps firmware.
+
+    This is byte-for-byte identical to what gets embedded in the WIFI region of
+    the full HEX file (see pack_bin_to_hex), so anything flashed from this image
+    matches the conversion script's final output exactly.
+
+    Returns a dict with the image bytes and metadata, or None if no .rps found:
+      data            : bytes (flash_header + raw .rps)
+      rps_path        : Path to the resolved .rps file
+      rps_name        : .rps filename (e.g. SiWG917-B.2.15.5.0.0.2.rps)
+      version_4part   : 'X.Y.Z.B' derived for the OTA fw_ver field
+      version_full    : full SiWG version stem (e.g. SiWG917-B.2.15.5.0.0.2)
+      fw_total_size   : len(raw .rps)
+      fw_crc          : STM32 CRC32-MPEG2 over the raw .rps (flash_header.fw_crc)
+    """
+    wifi_firmware = find_latest_wifi_firmware(project_root)
+    if wifi_firmware is None:
+        return None
+
+    try:
+        with open(wifi_firmware, 'rb') as f:
+            raw_wifi_data = f.read()
+    except Exception as e:
+        print(f"[ERROR] Failed to read WiFi firmware {wifi_firmware}: {e}")
+        return None
+
+    fw_total_size = len(raw_wifi_data)
+    # flash_header.fw_crc uses the same CRC32-MPEG2 as the STM32 HAL peripheral
+    fw_crc = stm32_crc32_mpeg2(raw_wifi_data)
+
+    # flash_header_t (little-endian, packed): valid_flags, fw_total_size, fw_crc, reserved[5]
+    flash_header = struct.pack(
+        "<III5I",
+        WIFI_FLASH_VALID_FLAGS,
+        fw_total_size,
+        fw_crc,
+        0, 0, 0, 0, 0,
+    )
+
+    # Derive a 4-part version for the OTA fw_ver field. The SiWG917 .rps has a
+    # 6-component version (Major.Minor.Patch.Security.Customer.Build).  We use
+    # Major.Minor.Patch.(Security*100 + Build) so comparisons stay monotonic.
+    # Example: 2.14.5.2.0.7  -> 2.14.5.207
+    #          2.15.5.0.0.2  -> 2.15.5.2
+    # The full SiWG917 string is preserved in the OTA package description.
+    v6 = parse_wifi_version(wifi_firmware.name)
+    if v6:
+        major, minor, patch = v6[0], v6[1], v6[2]
+        security = v6[3]
+        build = v6[5]
+        version_4part = f"{major}.{minor}.{patch}.{security * 100 + build}"
+    else:
+        version_4part = "0.0.0.0"
+    version_full = wifi_firmware.stem  # e.g. SiWG917-B.2.15.5.0.0.2
+
+    return {
+        'data': flash_header + raw_wifi_data,
+        'rps_path': wifi_firmware,
+        'rps_name': wifi_firmware.name,
+        'version_4part': version_4part,
+        'version_full': version_full,
+        'fw_total_size': fw_total_size,
+        'fw_crc': fw_crc,
+    }
 
 
 def write_extended_linear_address(hex_file, address: int) -> None:
@@ -276,65 +352,23 @@ def pack_bin_to_hex(build_dir: Path, output_file: Path, include_wifi: bool = Fal
     
     # If including WiFi firmware, add WiFi firmware (with flash header)
     if include_wifi and project_root:
-        wifi_firmware = find_latest_wifi_firmware(project_root)
-        if wifi_firmware:
-            try:
-                with open(wifi_firmware, 'rb') as f:
-                    raw_wifi_data = f.read()
+        wifi_info = build_wifi_flash_image(project_root)
+        if wifi_info:
+            print(f"\n[WIFI]")
+            print(f"  File: {wifi_info['rps_name']}")
+            print(f"  Base address: 0x{WIFI_FLASH_BASE_ADDR:08X}")
+            print(f"  Original size: {wifi_info['fw_total_size']} bytes")
+            print(f"  flash_header.valid_flags: 0x{WIFI_FLASH_VALID_FLAGS:08X}")
+            print(f"  flash_header.fw_total_size: {wifi_info['fw_total_size']} bytes")
+            print(f"  flash_header.fw_crc: 0x{wifi_info['fw_crc']:08X}")
+            print(f"  Total programmed size (including flash header): {len(wifi_info['data'])} bytes")
 
-                # WiFi flash layout:
-                # [0 .. 31]           : flash_header_t (32 bytes)
-                # [32 .. 32+N-1]      : original WiFi firmware (.rps), internally containing a 64-byte FW header + payload
-                #
-                # C side expects:
-                # - flash_header.valid_flags == 0x20060123
-                # - flash_header.fw_total_size == FW_HEADER_SIZE + image_size == len(.rps)
-                # - CRC covers [WIFI_FLASH_HEADER_SIZE .. WIFI_FLASH_HEADER_SIZE + fw_total_size)
-
-                WIFI_FLASH_BASE_ADDR = 0x77C00000
-                WIFI_FLASH_HEADER_SIZE = 32
-                WIFI_FLASH_VALID_FLAGS = 0x20060123
-
-                fw_total_size = len(raw_wifi_data)
-
-                # Calculate CRC32, using the same CRC32-MPEG2 algorithm as STM32 HAL
-                fw_crc = stm32_crc32_mpeg2(raw_wifi_data)
-
-                # Generate flash_header_t (consistent with definition in wifi.h, packed in little-endian)
-                # typedef struct {
-                #   uint32_t valid_flags;
-                #   uint32_t fw_total_size;
-                #   uint32_t fw_crc;
-                #   uint32_t reserved[5];
-                # } flash_header_t;
-                flash_header = struct.pack(
-                    "<III5I",
-                    WIFI_FLASH_VALID_FLAGS,
-                    fw_total_size,
-                    fw_crc,
-                    0, 0, 0, 0, 0,
-                )
-
-                wifi_data_with_header = flash_header + raw_wifi_data
-
-                print(f"\n[WIFI]")
-                print(f"  File: {wifi_firmware.name}")
-                print(f"  Base address: 0x{WIFI_FLASH_BASE_ADDR:08X}")
-                print(f"  Original size: {len(raw_wifi_data)} bytes")
-                print(f"  flash_header.valid_flags: 0x{WIFI_FLASH_VALID_FLAGS:08X}")
-                print(f"  flash_header.fw_total_size: {fw_total_size} bytes")
-                print(f"  flash_header.fw_crc: 0x{fw_crc:08X}")
-                print(f"  Total programmed size (including flash header): {len(wifi_data_with_header)} bytes")
-
-                files_to_pack.append({
-                    'name': 'WIFI',
-                    'address': WIFI_FLASH_BASE_ADDR,
-                    'data': wifi_data_with_header,
-                    'file': wifi_firmware
-                })
-            except Exception as e:
-                print(f"\n[WARNING] Failed to read WiFi firmware {wifi_firmware}: {e}")
-                print("  Continue packing without WiFi firmware")
+            files_to_pack.append({
+                'name': 'WIFI',
+                'address': WIFI_FLASH_BASE_ADDR,
+                'data': wifi_info['data'],
+                'file': wifi_info['rps_path'],
+            })
         else:
             print(f"\n[WARNING] WiFi firmware file not found")
             print("  Continue packing without WiFi firmware")
@@ -464,9 +498,56 @@ def main():
     """
     # Get script directory
     script_dir = Path(__file__).parent
+    # project root is the parent of the Script directory
+    project_root = script_dir.parent
     # build directory is under the project root
-    build_dir = script_dir.parent / 'build'
-    
+    build_dir = project_root / 'build'
+
+    # ---- Mode: emit only the WiFi flash image as a .bin (flash_header_t + .rps) ----
+    # This is the exact content written to the WIFI flash region, used by both
+    # `make flash-wifi` (program to 0x71A00000) and `make pkg-wifi` (wrap with the
+    # 1KB OTA header for WEB verification; the header itself is NOT written to flash).
+    if len(sys.argv) > 1 and sys.argv[1] == '--wifi-image':
+        output_file = Path(sys.argv[2]) if len(sys.argv) > 2 else (build_dir / 'ne301_Wifi_flash.bin')
+        if not output_file.is_absolute():
+            output_file = project_root / output_file
+
+        print("=" * 60)
+        print("Building WiFi flash image (flash_header_t + .rps)")
+        print("=" * 60)
+
+        wifi_info = build_wifi_flash_image(project_root)
+        if wifi_info is None:
+            print("[ERROR] WiFi firmware (.rps) not found")
+            return 1
+
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_file, 'wb') as f:
+            f.write(wifi_info['data'])
+
+        print(f"\n[WIFI]")
+        print(f"  File: {wifi_info['rps_name']}")
+        print(f"  Base address: 0x{WIFI_FLASH_BASE_ADDR:08X}")
+        print(f"  Original size: {wifi_info['fw_total_size']} bytes")
+        print(f"  flash_header.valid_flags: 0x{WIFI_FLASH_VALID_FLAGS:08X}")
+        print(f"  flash_header.fw_total_size: {wifi_info['fw_total_size']} bytes")
+        print(f"  flash_header.fw_crc: 0x{wifi_info['fw_crc']:08X}")
+        print(f"  Total image size (including flash header): {len(wifi_info['data'])} bytes")
+        print(f"  OTA version: {wifi_info['version_4part']} ({wifi_info['version_full']})")
+        print(f"\n[SUCCESS] WiFi flash image generated: {output_file}")
+        print("=" * 60)
+        return 0
+
+    # ---- Mode: print WiFi metadata "<4part-version> <rps-stem>" for the Makefile ----
+    if len(sys.argv) > 1 and sys.argv[1] == '--wifi-meta':
+        wifi_info = build_wifi_flash_image(project_root)
+        if wifi_info is None:
+            print("0.0.0.0 UNKNOWN")
+            return 1
+        # Two whitespace-free tokens so the Makefile can pick them with $(word).
+        print(f"{wifi_info['version_4part']} {wifi_info['version_full']}")
+        return 0
+
     # Check if build directory exists
     if not build_dir.exists():
         print(f"[ERROR] build directory does not exist: {build_dir}")

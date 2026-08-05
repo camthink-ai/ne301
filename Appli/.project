@@ -4610,6 +4610,31 @@
 			<locationURI>PARENT-1-PROJECT_LOC/Custom/Common/Lib/MbedTLS/port/sha256_alt.c</locationURI>
 		</link>
 		<link>
+			<name>Custom/Common/Lib/MbedTLS/port/ecp_alt.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Custom/Common/Lib/MbedTLS/port/ecp_alt.c</locationURI>
+		</link>
+		<link>
+			<name>Custom/Common/Lib/MbedTLS/port/ecdh_alt.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Custom/Common/Lib/MbedTLS/port/ecdh_alt.c</locationURI>
+		</link>
+		<link>
+			<name>Custom/Common/Lib/MbedTLS/port/ecdsa_alt.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Custom/Common/Lib/MbedTLS/port/ecdsa_alt.c</locationURI>
+		</link>
+		<link>
+			<name>Custom/Common/Lib/MbedTLS/port/pka_p256_alt.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Custom/Common/Lib/MbedTLS/port/pka_p256_alt.c</locationURI>
+		</link>
+		<link>
+			<name>Custom/Common/Lib/MbedTLS/port/pka_hw_alt.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Custom/Common/Lib/MbedTLS/port/pka_hw_alt.c</locationURI>
+		</link>
+		<link>
 			<name>Custom/Common/Lib/MbedTLS/port/threading_alt.c</name>
 			<type>1</type>
 			<locationURI>PARENT-1-PROJECT_LOC/Custom/Common/Lib/MbedTLS/port/threading_alt.c</locationURI>

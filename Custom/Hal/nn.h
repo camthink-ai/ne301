@@ -132,9 +132,7 @@ typedef struct {
 #define MODEL_PACKAGE_VERSION 0x030000  // v3.0.0
 #define MODEL_RELOCATABLE_MAGIC 0x4E49424E  // 'NBIN' - v1.0
 
-#ifndef MODEL_STEDGEAI_VERSION_SUPPORTED
-#define MODEL_STEDGEAI_VERSION_SUPPORTED "v4.0.1"
-#endif
+#include "stedgeai_version.h"
 
 /* ==================== public API functions ==================== */
 

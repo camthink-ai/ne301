@@ -275,6 +275,9 @@ int register_wakeup_ex(scheduler_manager_t *mgr, int sched_id,
     job->arg = arg;
 
     uint64_t now = mgr->get_time() + (mgr->timezone * 3600);
+    uint64_t wk_time = mgr->get_wakeup_time() + (mgr->timezone * 3600);
+    // printf("now=%lu\n", (uint32_t)now);
+    // printf("wk_time=%lu\n", (uint32_t)wk_time);
 
     if (type == WAKEUP_TYPE_ABSOLUTE) {
         job->trigger_sec = day_sec % 86400;
@@ -285,7 +288,12 @@ int register_wakeup_ex(scheduler_manager_t *mgr, int sched_id,
         job->next_trigger = calculate_wakeup_trigger(job, now);
     } else if (type == WAKEUP_TYPE_INTERVAL) {
         job->interval = day_sec;
-        job->next_trigger = now + job->interval;
+        if (wk_time != 0 && (now - wk_time) < (job->interval - 10)) {
+            job->next_trigger = wk_time + job->interval;
+        } else {
+            job->next_trigger = now + job->interval;
+        }
+        // printf("next_trigger=%lu\n", (uint32_t)job->next_trigger);
     }
 
     job->next = mgr->wake_jobs;
@@ -520,11 +528,12 @@ void scheduler_handle_event(scheduler_t *sched, scheduler_manager_t *mgr)
 }
 
 // Initialize scheduler manager
-void scheduler_init(scheduler_manager_t *mgr, get_time_func_t get_time, 
+void scheduler_init(scheduler_manager_t *mgr, get_time_func_t get_time, get_time_func_t get_wakeup_time,
                    scheduler_t *scheds, int num_sched,
                    sched_lock_func_t lock, sched_unlock_func_t unlock) 
 {
     mgr->get_time = get_time;
+    mgr->get_wakeup_time = get_wakeup_time;
     mgr->schedulers = scheds;
     mgr->num_sched = num_sched;
     mgr->wake_jobs = NULL;

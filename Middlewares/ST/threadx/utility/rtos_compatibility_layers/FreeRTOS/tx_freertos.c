@@ -42,8 +42,11 @@
 
 #include <stdint.h>
 #include <limits.h>
+#include <stdio.h>
+#include <string.h>
 
 #include <tx_api.h>
+#include <tx_byte_pool.h>
 #include <tx_thread.h>
 #include <tx_semaphore.h>
 #include <tx_queue.h>
@@ -67,6 +70,8 @@ UBaseType_t g_txfr_task_count;
 #ifdef configTOTAL_HEAP_SIZE
 static uint8_t txfr_heap_mem[configTOTAL_HEAP_SIZE] __attribute__ ((section (".psram_bss")));
 static TX_BYTE_POOL txfr_heap;
+static TX_MUTEX txfr_heap_mutex;
+static UINT txfr_heap_mutex_ready;
 #endif
 
 static UINT txfr_heap_initialized;
@@ -75,36 +80,158 @@ static UINT txfr_initialized;
 static UINT txfr_scheduler_started;
 #endif // #if (TX_FREERTOS_AUTO_INIT == 1)
 
-// TODO - do something with malloc.
-void *txfr_malloc(size_t len)
+/* Serialize NO_WAIT alloc/free on txfr_heap. Concurrent searches can livelock in
+ * _tx_byte_allocate when another thread keeps taking tx_byte_pool_owner. */
+static void *txfr_malloc_nowait(size_t len)
 {
     void *p;
     UINT ret;
 
-    if(txfr_heap_initialized == 1u) {
-        ret = tx_byte_allocate(&txfr_heap, &p, len, 0u);
+    if(txfr_heap_mutex_ready == 1u) {
+        ret = tx_mutex_get(&txfr_heap_mutex, TX_WAIT_FOREVER);
         if(ret != TX_SUCCESS) {
             return NULL;
         }
-    } else {
+    }
+
+    (void)tx_byte_pool_prioritize(&txfr_heap);
+    ret = tx_byte_allocate(&txfr_heap, &p, len, TX_NO_WAIT);
+
+    if(txfr_heap_mutex_ready == 1u) {
+        (void)tx_mutex_put(&txfr_heap_mutex);
+    }
+
+    if(ret != TX_SUCCESS) {
         return NULL;
     }
 
     return p;
 }
 
+/* Task stacks/TCBs: retry until memory is available (all pool ops are serialized). */
+static void *txfr_malloc_blocking(size_t len)
+{
+    void *p;
+    ULONG retries = 0;
+
+    while(retries < 10000u) {
+        p = txfr_malloc_nowait(len);
+        if(p != NULL) {
+            return p;
+        }
+        (void)tx_thread_relinquish();
+        retries++;
+    }
+
+    return NULL;
+}
+
+// TODO - do something with malloc.
+void *txfr_malloc(size_t len)
+{
+    if(txfr_heap_initialized != 1u) {
+        return NULL;
+    }
+
+    return txfr_malloc_nowait(len);
+}
+
 void txfr_free(void *p)
 {
     UINT ret;
 
-    if(txfr_heap_initialized == 1u) {
-        ret = tx_byte_release(p);
+    if((txfr_heap_initialized != 1u) || (p == NULL)) {
+        return;
+    }
+
+    if(txfr_heap_mutex_ready == 1u) {
+        ret = tx_mutex_get(&txfr_heap_mutex, TX_WAIT_FOREVER);
         if(ret != TX_SUCCESS) {
             TX_FREERTOS_ASSERT_FAIL();
+            return;
         }
     }
 
-    return;
+    ret = tx_byte_release(p);
+
+    if(txfr_heap_mutex_ready == 1u) {
+        (void)tx_mutex_put(&txfr_heap_mutex);
+    }
+
+    if(ret != TX_SUCCESS) {
+        TX_FREERTOS_ASSERT_FAIL();
+    }
+}
+
+/* User payload size of a block allocated from txfr_heap (ThreadX byte-pool layout). */
+static size_t txfr_block_user_size(void *ptr)
+{
+    UCHAR               *work_ptr;
+    UCHAR               **block_link_ptr;
+    UCHAR               *next_block_ptr;
+    ALIGN_TYPE          *free_ptr;
+    UCHAR               *temp_ptr;
+    ULONG               block_bytes;
+    const ULONG         header_size = (ULONG)(sizeof(UCHAR *)) + (ULONG)(sizeof(ALIGN_TYPE));
+
+    if(ptr == NULL) {
+        return 0;
+    }
+
+    work_ptr = TX_VOID_TO_UCHAR_POINTER_CONVERT(ptr);
+    work_ptr = TX_UCHAR_POINTER_SUB(work_ptr, header_size);
+
+    temp_ptr = TX_UCHAR_POINTER_ADD(work_ptr, (sizeof(UCHAR *)));
+    free_ptr = TX_UCHAR_TO_ALIGN_TYPE_POINTER_CONVERT(temp_ptr);
+    if((*free_ptr) == TX_BYTE_BLOCK_FREE) {
+        return 0;
+    }
+
+    block_link_ptr = TX_UCHAR_TO_INDIRECT_UCHAR_POINTER_CONVERT(work_ptr);
+    next_block_ptr = *block_link_ptr;
+    block_bytes = TX_UCHAR_POINTER_DIF(next_block_ptr, work_ptr);
+    if(block_bytes <= header_size) {
+        return 0;
+    }
+
+    return (size_t)(block_bytes - header_size);
+}
+
+void *txfr_realloc(void *ptr, size_t size)
+{
+    void   *new_ptr;
+    size_t  old_size;
+    size_t  copy_len;
+
+    if(txfr_heap_initialized != 1u) {
+        return NULL;
+    }
+
+    if(ptr == NULL) {
+        return txfr_malloc(size);
+    }
+
+    if(size == 0) {
+        txfr_free(ptr);
+        return NULL;
+    }
+
+    old_size = txfr_block_user_size(ptr);
+    new_ptr = txfr_malloc(size);
+    if(new_ptr == NULL) {
+        return NULL;
+    }
+
+    copy_len = old_size;
+    if(copy_len > size) {
+        copy_len = size;
+    }
+    if(copy_len > 0) {
+        (void)memcpy(new_ptr, ptr, copy_len);
+    }
+
+    txfr_free(ptr);
+    return new_ptr;
 }
 
 #if (INCLUDE_vTaskDelete == 1)
@@ -203,6 +330,13 @@ UINT tx_freertos_init(void)
         if(ret != TX_SUCCESS) {
             return ret;
         }
+
+        ret = tx_mutex_create(&txfr_heap_mutex, "txfr_heap_mtx", TX_NO_INHERIT);
+        if(ret != TX_SUCCESS) {
+            return ret;
+        }
+
+        txfr_heap_mutex_ready = 1u;
         txfr_heap_initialized = 1u;
     }
 #endif
@@ -242,7 +376,6 @@ void txfr_thread_wrapper(ULONG id)
 #endif // #if (INCLUDE_vTaskDelete == 1)
 }
 
-
 void *pvPortMalloc(size_t xWantedSize)
 {
     return txfr_malloc(xWantedSize);
@@ -253,6 +386,11 @@ void vPortFree(void *pv)
     txfr_free(pv);
 
     return;
+}
+
+void *pvPortRealloc(void *pv, size_t xWantedSize)
+{
+    return txfr_realloc(pv, xWantedSize);
 }
 
 void vPortEnterCritical(void)
@@ -423,12 +561,12 @@ BaseType_t xTaskCreate(TaskFunction_t pvTaskCode,
     }
     stack_depth_bytes = usStackDepth * sizeof(StackType_t);
 
-    p_stack = txfr_malloc((size_t)stack_depth_bytes);
+    p_stack = txfr_malloc_blocking((size_t)stack_depth_bytes);
     if(p_stack == NULL) {
         return errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
     }
 
-    p_task = txfr_malloc(sizeof(txfr_task_t));
+    p_task = txfr_malloc_blocking(sizeof(txfr_task_t));
     if(p_task == NULL) {
         txfr_free(p_stack);
         return errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
@@ -1477,6 +1615,11 @@ UBaseType_t uxSemaphoreGetCount(SemaphoreHandle_t xSemaphore)
 TaskHandle_t xSemaphoreGetMutexHolder(SemaphoreHandle_t xMutex)
 {
     configASSERT(xMutex != NULL);
+
+	if (xMutex->mutex.tx_mutex_owner == NULL)
+	{
+		return NULL;
+	}
 
     return xMutex->mutex.tx_mutex_owner->txfr_thread_ptr;
 }

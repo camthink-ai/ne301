@@ -65,15 +65,40 @@
     #define NETIF_USB_ECM_IS_CAT1_MODULE        (1)
 #endif
 
+#ifndef NETIF_WIFI_HALOW_IS_ENABLE
+#define NETIF_WIFI_HALOW_IS_ENABLE          (1)
+#endif
+#define NETIF_WIFI_HALOW_DEFAULT_TX_PWR       (0)
+#define NETIF_WIFI_HALOW_DEFAULT_SCAN_DWELL   (30)
+#if NETIF_WIFI_HALOW_IS_ENABLE
+#define NETIF_WIFI_HALOW_DEFAULT_SSID         ""
+#define NETIF_WIFI_HALOW_DEFAULT_PW           ""
+#define NETIF_WIFI_HALOW_DEFAULT_COUNTRY      "US"
+#define NETIF_WIFI_HALOW_DEFAULT_IP           {192, 168, 12, 199}
+#define NETIF_WIFI_HALOW_DEFAULT_MASK         {255, 255, 255, 0}
+#define NETIF_WIFI_HALOW_DEFAULT_GW           {192, 168, 12, 1}
+#define NETIF_WIFI_HALOW_DEFAULT_IP_MODE      (NETIF_IP_MODE_DHCP)
+#define NETIF_WIFI_HALOW_MAX_SCAN_DWELL       (300)
+/** 1: scan de-dup by BSSID+SSID+freq+bw; 0 (default): BSSID+SSID only */
+#ifndef NETIF_WIFI_HALOW_SCAN_DEDUP_BY_FREQ_BW
+#define NETIF_WIFI_HALOW_SCAN_DEDUP_BY_FREQ_BW  (0)
+#endif
+#endif
+
 #define NETIF_NAME_STR_FMT                  "%c%c%d"
 #define NETIF_NAME_PARAMETER(netif)          (netif)->name[0], (netif)->name[1], (netif)->num
 #define NETIF_NAME_LOCAL                    "lo"
 #define NETIF_NAME_WIFI_STA                 "wl"
 #define NETIF_NAME_WIFI_AP                  "ap"
+#define NETIF_NAME_WIFI_HALOW               "hw"
 #define NETIF_NAME_ETH_WAN                  "wn"
 #define NETIF_NAME_4G_CAT1                  "4g"
 #define NETIF_NAME_USB_ECM                  "ue"
+#if NETIF_ETH_WAN_IS_ENABLE
 #define NETIF_DEFAULT_NETIF_NAME            NETIF_NAME_ETH_WAN
+#else
+#define NETIF_DEFAULT_NETIF_NAME            NETIF_NAME_WIFI_STA
+#endif
 
 #define NETIF_MAC_STR_FMT                   "%02x:%02x:%02x:%02x:%02x:%02x"
 #define NETIF_MAC_SCAN_STR_FMT              "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx"
@@ -143,6 +168,8 @@ typedef enum {
   WIRELESS_WPA3_TRANSITION,                 ///< Wi-Fi WPA3 Transition security type (not currently supported in AP mode)
   WIRELESS_WPA3_ENTERPRISE,                 ///< Wi-Fi WPA3 enterprise security type
   WIRELESS_WPA3_TRANSITION_ENTERPRISE,      ///< Wi-Fi WPA3 Transition enterprise security type
+  WIRELESS_OWE,                             ///< Wi-Fi OWE (HaLow / WPA3)
+  WIRELESS_SAE,                             ///< Wi-Fi SAE (HaLow / WPA3)
   WIRELESS_SECURITY_MAX,
   WIRELESS_SECURITY_UNKNOWN = 0xFFFF,       ///< Wi-Fi Unknown Security type
 } wireless_security_t;
@@ -175,6 +202,27 @@ typedef struct
     uint8_t max_client_num;                 // Maximum client count (only for AP network cards)
 } wireless_config_t;
 
+/** HaLow regdomain code buffer size (matches @ref MMWLAN_COUNTRY_CODE_LEN). */
+#define NETIF_HALOW_COUNTRY_CODE_LEN        (16U)
+
+#if NETIF_WIFI_HALOW_IS_ENABLE
+/// @brief HaLow (mmx108) extended wireless configuration
+typedef struct {
+    char country_code[NETIF_HALOW_COUNTRY_CODE_LEN];  ///< Regdomain code (e.g. "US", "AU_2020")
+    uint16_t tx_power_dbm;                  ///< TX power cap (0 = use regdomain max only)
+    uint8_t ps_mode;                        ///< MMWLAN_PS_DISABLED / MMWLAN_PS_ENABLED
+    uint8_t pmf_mode;                       ///< MMWLAN_PMF_REQUIRED / MMWLAN_PMF_DISABLED
+    uint32_t scan_dwell_ms;                 ///< Foreground scan dwell time per channel
+    uint8_t ndp_probe_enabled;              ///< NDP probe for internal/scan config
+    uint16_t bgscan_short_interval_s;
+    int8_t bgscan_signal_threshold_dbm;
+    uint16_t bgscan_long_interval_s;
+    int8_t rc_mcs;                          ///< TX MCS 0..9, or -1 (rate control default)
+    int8_t rc_bw_mhz;                       ///< TX BW 1/2/4/8 MHz, or -1 (default)
+    int8_t rc_gi;                           ///< GI: 0 short, 1 long, or -1 (default)
+} halow_wireless_config_t;
+#endif
+
 /// @brief Cellular configuration
 typedef struct {
     char apn[32];                           // APN (Access Point Name)
@@ -184,6 +232,7 @@ typedef struct {
     uint8_t authentication;                 // APN authentication
     uint8_t is_enable_roam;                 // Enable roaming
     uint8_t isp_selected;                   // ISP selected (0: Auto, 1: China Mobile, 2: China Unicom, 3: China Telecom, 4: American Verizon)
+    char plmn[8];                           // Manual PLMN code (MCC+MNC, 5-6 digits); empty = auto COPS=0
     char pin[32];                           // SIM PIN
     char puk[32];                           // SIM PUK
     uint8_t ppp_context_id;                 // PPP context ID (0: Auto, others: specified)
@@ -215,8 +264,10 @@ typedef struct {
     int rssi;                               ///< RSSI value of the AP
     char ssid[NETIF_SSID_VALUE_SIZE];       ///< SSID of the AP
     uint8_t bssid[6];                       ///< BSSID of the AP
-    uint8_t channel;                        ///< Channel number of the AP
+    uint8_t channel;                        ///< Channel number of the AP (legacy Wi-Fi)
     uint8_t security;                       ///< Security mode of the AP
+    uint32_t channel_freq_hz;               ///< Center frequency (Hz), for HaLow S1G
+    uint8_t bw_mhz;                         ///< Channel bandwidth (MHz), for HaLow S1G
 } wireless_scan_info_t;
 
 /// @brief Wireless scan result
@@ -240,6 +291,9 @@ typedef struct {
     cellular_info_t cellular_info;          // Cellular information (only for 4G network interface)
     cellular_config_t cellular_cfg;         // Cellular configuration (only for 4G network interface)
     wireless_config_t wireless_cfg;         // Wireless configuration (only for wireless network interface)
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    halow_wireless_config_t halow_cfg;      // HaLow extended config (only for hw netif)
+#endif
 
     char fw_version[NETIF_FW_VERSION_SIZE]; // Firmware version
     uint8_t if_mac[6];                      // Network interface MAC address
@@ -255,7 +309,10 @@ typedef struct {
 
     cellular_config_t cellular_cfg;         // Cellular configuration (only for 4G network interface)
     wireless_config_t wireless_cfg;         // Wireless configuration (only for wireless network interface)
-    
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    halow_wireless_config_t halow_cfg;      // HaLow extended config (only for hw netif)
+#endif
+
     uint8_t diy_mac[6];                     // Custom MAC address (all zeros means use default MAC address)
     netif_ip_mode_t ip_mode;                // IP mode
     uint8_t ip_addr[4];                     // IP address
@@ -371,24 +428,30 @@ int nm_ctrl_set_dns_server(int idx, uint8_t *dns_server);
 /// @return Error code
 int nm_ctrl_get_dns_server(int idx, uint8_t *dns_server);
 
-/// @brief Wireless scan
+/// @brief Wireless scan (default interface: Wi-Fi STA wl)
 /// @param callback Callback function
 /// @return Error code
 int nm_wireless_start_scan(wireless_scan_callback_t callback);
 
-/// @brief Get wireless scan result
-/// @param None
-/// @return Wireless scan result
+/// @brief Wireless scan on specified interface (wl/ap/hw)
+int nm_wireless_start_scan_ex(const char *if_name, wireless_scan_callback_t callback);
+
+/// @brief Get wireless scan result (default: wl)
 wireless_scan_result_t *nm_wireless_get_scan_result(void);
 
-/// @brief Update wireless scan result
-/// @param timeout Timeout time (unit: milliseconds)
-/// @return Error code
+/// @brief Get wireless scan result for specified interface
+wireless_scan_result_t *nm_wireless_get_scan_result_ex(const char *if_name);
+
+/// @brief Update wireless scan result (default: wl)
 int nm_wireless_update_scan_result(uint32_t timeout);
 
+/// @brief Update wireless scan result for specified interface
+int nm_wireless_update_scan_result_ex(const char *if_name, uint32_t timeout);
+
 /// @brief Print wireless scan result
+/// @param if_name Interface name (NULL for legacy Wi-Fi channel print)
 /// @param scan_result Scan result
-void nm_print_wireless_scan_result(wireless_scan_result_t *scan_result);
+void nm_print_wireless_scan_result(const char *if_name, wireless_scan_result_t *scan_result);
 
 #ifdef __cplusplus
 }

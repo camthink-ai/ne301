@@ -35,7 +35,7 @@ interface ExportFirmwareReq {
   firmware_type: string;
   filename: string;
 }
-export type FirmwareType = 'app' | 'web' | 'ai' | 'fsbl';
+export type FirmwareType = 'app' | 'web' | 'ai' | 'fsbl' | 'wifi';
 const systemApis = {
   getDeviceInfoReq: (config?: { skipErrorToast?: boolean; signal?: AbortSignal }) => request.get('/api/v1/device/info', config),
   setSystemTimeReq: (data: SetSystemTimeReq) => request.post('/api/v1/system/time', data),
@@ -65,6 +65,7 @@ const systemApis = {
   getLogsReq: () => request.get('/api/v1/system/logs'),
   exportLogsReq: () => request.get('/api/v1/system/logs/export'),
   getVersionsReq: () => request.get('/api/v1/device/firmware-versions'),
+  versionCheckReq: () => request.get('/api/v1/device/version-check'),
 };
 
 export default systemApis;

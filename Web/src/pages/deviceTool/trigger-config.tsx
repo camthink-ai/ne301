@@ -24,15 +24,16 @@ type TriggerConfigType = {
   pir_trigger: {
     enable: boolean;
     trigger_type:
-      | 'rising_edge'
-      | 'falling_edge'
-      | 'high_level'
-      | 'low_level'
-      | 'both_edges';
+    | 'rising_edge'
+    | 'falling_edge'
+    | 'high_level'
+    | 'low_level'
+    | 'both_edges';
     sensitivity_level: number;
     ignore_time_s: number;
     pulse_count: number;
     window_time_s: number;
+    disable_in_preview: boolean;
   };
   timer_trigger: {
     enable: boolean;
@@ -70,7 +71,7 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
   const { i18n } = useLingui();
   const { configTriggerConfigReq, getTriggerConfigReq } = deviceTool;
   const [intervalCaptureTime, setIntervalCaptureTime] = useState(10);
-  const [intervalCaptureTimeUnit, setIntervalCaptureTimeUnit] =    useState('hour');
+  const [intervalCaptureTimeUnit, setIntervalCaptureTimeUnit] = useState('hour');
   const [scheduledStartTime, setScheduledStartTime] = useState('08:00');
   const [savePirTriggerLoading, setSavePirTriggerLoading] = useState(false);
   const [PIRLoading, setPIRLoading] = useState(false);
@@ -95,6 +96,7 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
       ignore_time_s: 7,
       pulse_count: 1,
       window_time_s: 0,
+      disable_in_preview: true,
     },
     timer_trigger: {
       enable: false,
@@ -228,9 +230,9 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
 
   const handleIntervalCapture = async () => {
     if (!triggerConfig.timer_trigger) return;
-    const formateTime =      intervalCaptureTimeUnit === 'hour'
-        ? intervalCaptureTime * 60 * 60
-        : intervalCaptureTime * 60;
+    const formateTime = intervalCaptureTimeUnit === 'hour'
+      ? intervalCaptureTime * 60 * 60
+      : intervalCaptureTime * 60;
     try {
       const newConfig = {
         ...triggerConfig,
@@ -563,17 +565,17 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
                           || 'rising_edge'
                         }
                         onValueChange={value => setTriggerConfig({
-                            ...triggerConfig,
-                            pir_trigger: {
-                              ...triggerConfig.pir_trigger,
-                              trigger_type: value as
-                                | 'rising_edge'
-                                | 'falling_edge'
-                                | 'both_edges'
-                                | 'high_level'
-                                | 'low_level',
-                            },
-                          })}
+                          ...triggerConfig,
+                          pir_trigger: {
+                            ...triggerConfig.pir_trigger,
+                            trigger_type: value as
+                              | 'rising_edge'
+                              | 'falling_edge'
+                              | 'both_edges'
+                              | 'high_level'
+                              | 'low_level',
+                          },
+                        })}
                       >
                         <SelectTrigger className="border-0 shadow-none focus-visible:ring-0 focus-visible:border-transparent">
                           <SelectValue
@@ -644,12 +646,12 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
                           triggerConfig.pir_trigger?.ignore_time_s || 0
                         ).toString()}
                         onValueChange={value => setTriggerConfig({
-                            ...triggerConfig,
-                            pir_trigger: {
-                              ...triggerConfig.pir_trigger,
-                              ignore_time_s: Number(value),
-                            },
-                          })}
+                          ...triggerConfig,
+                          pir_trigger: {
+                            ...triggerConfig.pir_trigger,
+                            ignore_time_s: Number(value),
+                          },
+                        })}
                       >
                         <SelectTrigger className="border-0 shadow-none focus-visible:ring-0 focus-visible:border-transparent">
                           <SelectValue
@@ -689,12 +691,12 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
                           triggerConfig.pir_trigger?.pulse_count || 1
                         ).toString()}
                         onValueChange={value => setTriggerConfig({
-                            ...triggerConfig,
-                            pir_trigger: {
-                              ...triggerConfig.pir_trigger,
-                              pulse_count: Number(value),
-                            },
-                          })}
+                          ...triggerConfig,
+                          pir_trigger: {
+                            ...triggerConfig.pir_trigger,
+                            pulse_count: Number(value),
+                          },
+                        })}
                       >
                         <SelectTrigger className="border-0 shadow-none focus-visible:ring-0 focus-visible:border-transparent">
                           <SelectValue
@@ -735,12 +737,12 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
                           triggerConfig.pir_trigger?.window_time_s || 0
                         ).toString()}
                         onValueChange={value => setTriggerConfig({
-                            ...triggerConfig,
-                            pir_trigger: {
-                              ...triggerConfig.pir_trigger,
-                              window_time_s: Number(value),
-                            },
-                          })}
+                          ...triggerConfig,
+                          pir_trigger: {
+                            ...triggerConfig.pir_trigger,
+                            window_time_s: Number(value),
+                          },
+                        })}
                       >
                         <SelectTrigger className="border-0 shadow-none focus-visible:ring-0 focus-visible:border-transparent">
                           <SelectValue
@@ -753,6 +755,52 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
                               {index}
                             </SelectItem>
                           ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex justify-between gap-2 flex-1 pr-0">
+                      <div className="flex items-center gap-2">
+                        <Label className="text-sm text-text-primary shrink-0">
+                          {' '}
+                          {i18n._('sys.device_tool.disable_pir_in_preview')}
+                        </Label>
+                        <Tooltip mbEnhance>
+                          <TooltipTrigger>
+                            <div className="w-4 flex justify-center items-center">
+                              <SvgIcon className="w-4 h-4" icon="info" />
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-80 text-pretty">
+                            <p>{i18n._('sys.device_tool.disable_pir_in_preview_note')}</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </div>
+                      <Select
+                        value={
+                          (triggerConfig.pir_trigger?.disable_in_preview ?? true)
+                            ? 'yes'
+                            : 'no'
+                        }
+                        onValueChange={value => setTriggerConfig({
+                          ...triggerConfig,
+                          pir_trigger: {
+                            ...triggerConfig.pir_trigger,
+                            disable_in_preview: value === 'yes',
+                          },
+                        })}
+                      >
+                        <SelectTrigger className="border-0 shadow-none focus-visible:ring-0 focus-visible:border-transparent">
+                          <SelectValue
+                            placeholder={i18n._('sys.device_tool.trigger_in')}
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="yes">
+                            {i18n._('common.yes')}
+                          </SelectItem>
+                          <SelectItem value="no">
+                            {i18n._('common.no')}
+                          </SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -843,12 +891,12 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
                       triggerConfig.timer_trigger?.capture_mode || 'interval'
                     }
                     onValueChange={value => setTriggerConfig({
-                        ...triggerConfig,
-                        timer_trigger: {
-                          ...triggerConfig.timer_trigger,
-                          capture_mode: value,
-                        },
-                      })}
+                      ...triggerConfig,
+                      timer_trigger: {
+                        ...triggerConfig.timer_trigger,
+                        capture_mode: value,
+                      },
+                    })}
                   >
                     <SelectTrigger className="border-0 shadow-none focus-visible:ring-0 focus-visible:border-transparent">
                       <SelectValue

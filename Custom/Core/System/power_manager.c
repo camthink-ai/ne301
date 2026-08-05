@@ -152,12 +152,12 @@ int power_manager_release_by_handle(PowerManager *manager, PowerHandle handle)
     PowerState *ps = get_power_state_by_handle(manager, handle);
     if (!ps) return -1;
     osMutexAcquire(ps->lock, osWaitForever);
-    if (ps->ref_count <= 0) {
-        osMutexRelease(ps->lock);
-        return -2;
-    }
-    ps->ref_count--;
-    if (ps->ref_count == 0 && ps->is_on) {
+    // if (ps->ref_count <= 0) {
+    //     osMutexRelease(ps->lock);
+    //     return -2;
+    // }
+    if (ps->ref_count > 0) ps->ref_count--;
+    if (ps->ref_count == 0) {
         ps->power_off();
         ps->is_on = 0;
     }

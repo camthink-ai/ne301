@@ -13,6 +13,7 @@
 #include "Log/debug.h"
 #include "aicam_types.h"
 #include "sl_net_netif.h"
+#include "mm_halow_netif.h"
 #include "w5500_netif.h"
 #include "eg912u_gl_netif.h"
 #include "usb_ecm_netif.h"
@@ -56,6 +57,9 @@ static const if_name_type_t if_name_type_list[] = {
     {NETIF_NAME_LOCAL, NETIF_TYPE_LOCAL},
     {NETIF_NAME_WIFI_AP, NETIF_TYPE_WIRELESS},
     {NETIF_NAME_WIFI_STA, NETIF_TYPE_WIRELESS},
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    {NETIF_NAME_WIFI_HALOW, NETIF_TYPE_WIRELESS},
+#endif
 #if NETIF_4G_CAT1_IS_ENABLE
     {NETIF_NAME_4G_CAT1, NETIF_TYPE_4G},
 #endif
@@ -74,13 +78,13 @@ static const if_name_type_t if_name_type_list[] = {
 static osMutexId_t netif_manager_mutex = NULL;
 static const char *netif_type_str[] = {"local", "wireless", "ethernet", "4g", "unknown"};
 static const char *netif_state_str[] = {"deinit", "down", "up", "unknown"};
-static const char *netif_security_str[] = {"open", "wpa", "wpa2", "wep", "wpa_enterprise", "wpa2_enterprise", "wpa_wpa2_mixed", "wpa3", "wpa3_transition", "wpa3_enterprise", "wpa3_transition_enterprise", "unknown"};
+static const char *netif_security_str[] = {"open", "wpa", "wpa2", "wep", "wpa_enterprise", "wpa2_enterprise", "wpa_wpa2_mixed", "wpa3", "wpa3_transition", "wpa3_enterprise", "wpa3_transition_enterprise", "owe", "sae", "unknown"};
 static const char *netif_encryption_str[] = {"default", "no_encryption", "wep", "tkip", "ccmp", "eap_tls", "eap_ttls", "eap_fast", "peap_mschapv2", "eap_leap", "unknown"};
 
 void sntp_set_system_time(uint32_t sec)
 {
     rtc_set_timeStamp(sec);
-    LOG_SIMPLE("NTP set system time: %d\r\n", sec);
+    LOG_SIMPLE("NTP: %d s\r\n", sec);
 }
 
 void sntp_get_system_time(uint32_t *sec, uint32_t *us)
@@ -89,11 +93,142 @@ void sntp_get_system_time(uint32_t *sec, uint32_t *us)
     *us = 0;
 }
 
+static const char *wireless_scan_cb_if_name = NETIF_NAME_WIFI_STA;
+
 static void wireless_scan_callback_func(int recode, wireless_scan_result_t *scan_result)
 {
-    if (recode == 0) nm_print_wireless_scan_result(scan_result);   
-    else LOG_SIMPLE("wireless scan failed: %d\r\n", recode);
+    if (recode == 0) {
+        nm_print_wireless_scan_result(wireless_scan_cb_if_name, scan_result);
+    } else {
+        LOG_SIMPLE("wireless scan failed: %d\r\n", recode);
+    }
 }
+
+#if NETIF_WIFI_HALOW_IS_ENABLE
+static void netif_cli_halow_dpp_cb(const mm_halow_dpp_evt_info_t *info, void *user_arg)
+{
+    (void)user_arg;
+
+    if (info == NULL) {
+        return;
+    }
+
+    switch (info->event) {
+    case MM_HALOW_DPP_EVT_SUCCESS:
+        LOG_SIMPLE("HaLow DPP OK: ssid=%s sec=%s -> 'ifconfig hw up'\r\n",
+                   info->ssid != NULL ? info->ssid : "",
+                   info->security == WIRELESS_SAE ? "sae" : "open");
+        break;
+    case MM_HALOW_DPP_EVT_SESSION_OVERLAP:
+        LOG_SIMPLE("HaLow DPP: session overlap\r\n");
+        break;
+    case MM_HALOW_DPP_EVT_TIMEOUT:
+        LOG_SIMPLE("HaLow DPP: timeout\r\n");
+        break;
+    case MM_HALOW_DPP_EVT_STOPPED:
+        LOG_SIMPLE("HaLow DPP: stopped\r\n");
+        break;
+    case MM_HALOW_DPP_EVT_FAILED:
+    default:
+        LOG_SIMPLE("HaLow DPP: failed\r\n");
+        break;
+    }
+}
+#endif
+
+#if NETIF_WIFI_HALOW_IS_ENABLE
+static int halow_cli_parse_mcs(const char *s, int8_t *out)
+{
+    if (s == NULL || out == NULL) {
+        return -1;
+    }
+    if (strcmp(s, "none") == 0 || strcmp(s, "auto") == 0 || strcmp(s, "off") == 0) {
+        *out = -1;
+        return 0;
+    }
+    {
+        int v = atoi(s);
+        if (v < 0 || v > 9) {
+            return -1;
+        }
+        *out = (int8_t)v;
+    }
+    return 0;
+}
+
+static int halow_cli_parse_bw(const char *s, int8_t *out)
+{
+    if (s == NULL || out == NULL) {
+        return -1;
+    }
+    if (strcmp(s, "none") == 0 || strcmp(s, "auto") == 0 || strcmp(s, "off") == 0) {
+        *out = -1;
+        return 0;
+    }
+    {
+        int v = atoi(s);
+        if (v != 1 && v != 2 && v != 4 && v != 8) {
+            return -1;
+        }
+        *out = (int8_t)v;
+    }
+    return 0;
+}
+
+static int halow_cli_parse_gi(const char *s, int8_t *out)
+{
+    if (s == NULL || out == NULL) {
+        return -1;
+    }
+    if (strcmp(s, "none") == 0 || strcmp(s, "auto") == 0 || strcmp(s, "off") == 0) {
+        *out = -1;
+        return 0;
+    }
+    if (strcmp(s, "short") == 0 || strcmp(s, "0") == 0) {
+        *out = 0;
+        return 0;
+    }
+    if (strcmp(s, "long") == 0 || strcmp(s, "1") == 0) {
+        *out = 1;
+        return 0;
+    }
+    return -1;
+}
+
+static void halow_print_rate_info_lines(const halow_wireless_config_t *hc)
+{
+    char mcs[12];
+    char bw[16];
+    char gi[12];
+
+    if (hc == NULL) {
+        return;
+    }
+
+    if (hc->rc_mcs < 0) {
+        strncpy(mcs, "auto", sizeof(mcs));
+    } else {
+        snprintf(mcs, sizeof(mcs), "%d", (int)hc->rc_mcs);
+    }
+    if (hc->rc_bw_mhz < 0) {
+        strncpy(bw, "auto", sizeof(bw));
+    } else {
+        snprintf(bw, sizeof(bw), "%d MHz", (int)hc->rc_bw_mhz);
+    }
+    if (hc->rc_gi < 0) {
+        strncpy(gi, "auto", sizeof(gi));
+    } else if (hc->rc_gi == 0) {
+        strncpy(gi, "short", sizeof(gi));
+    } else {
+        strncpy(gi, "long", sizeof(gi));
+    }
+    mcs[sizeof(mcs) - 1] = '\0';
+    bw[sizeof(bw) - 1] = '\0';
+    gi[sizeof(gi) - 1] = '\0';
+
+    printf("HALOW_RATE_MCS: %s\r\nHALOW_RATE_BW: %s\r\nHALOW_RATE_GI: %s\r\n", mcs, bw, gi);
+}
+#endif
 
 static int netif_manager_cmd(int argc, char* argv[]) 
 {
@@ -124,12 +259,15 @@ static int netif_manager_cmd(int argc, char* argv[])
     }
 
     if (argc < 3) {
-        LOG_SIMPLE("Usage: ifconfig [name] [cmd]\r\nname: lo/wl/ap/wn/4g/ue \r\ncmd: init/up/down/deinit/cfg/info\r\n");
+        LOG_SIMPLE("Usage: ifconfig [name] [cmd]\r\nname: lo/wl/ap/hw/wn/4g/ue \r\ncmd: init/up/down/deinit/cfg/info\r\n");
         return -1;
     }
 
     if (strcmp(argv[1], NETIF_NAME_WIFI_STA) == 0) if_name = NETIF_NAME_WIFI_STA;
     else if (strcmp(argv[1], NETIF_NAME_WIFI_AP) == 0) if_name = NETIF_NAME_WIFI_AP;
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    else if (strcmp(argv[1], NETIF_NAME_WIFI_HALOW) == 0) if_name = NETIF_NAME_WIFI_HALOW;
+#endif
     else if (strcmp(argv[1], NETIF_NAME_LOCAL) == 0) if_name = NETIF_NAME_LOCAL;
 #if NETIF_ETH_WAN_IS_ENABLE
     else if (strcmp(argv[1], NETIF_NAME_ETH_WAN) == 0) if_name = NETIF_NAME_ETH_WAN;
@@ -153,25 +291,69 @@ static int netif_manager_cmd(int argc, char* argv[])
         nm_print_netif_info(if_name, NULL);
         ret = 0;
     } else if (strcmp(argv[2], "cfg") == 0) {
-        if (strcmp(if_name, NETIF_NAME_WIFI_STA) && strcmp(if_name, NETIF_NAME_WIFI_AP) && strcmp(if_name, NETIF_NAME_4G_CAT1) && strcmp(if_name, NETIF_NAME_ETH_WAN)) {
-            LOG_SIMPLE("Only wl/ap/4g/wn support cfg cmd\r\n");
+        if (strcmp(if_name, NETIF_NAME_WIFI_STA) && strcmp(if_name, NETIF_NAME_WIFI_AP)
+#if NETIF_WIFI_HALOW_IS_ENABLE
+            && strcmp(if_name, NETIF_NAME_WIFI_HALOW)
+#endif
+            && strcmp(if_name, NETIF_NAME_4G_CAT1) && strcmp(if_name, NETIF_NAME_ETH_WAN)) {
+            LOG_SIMPLE("Only wl/ap/hw/4g/wn support cfg cmd\r\n");
             return -1;
         }
         if (argc < 4) {
             LOG_SIMPLE("Usage: ifconfig [name] cfg [ssid] [pw]\r\nname: wl/ap\r\n");
             LOG_SIMPLE("Usage: ifconfig [name] cfg [apn]\r\nname: 4g\r\n");
             LOG_SIMPLE("Usage: ifconfig [name] cfg [ip_addr] [gw] [netmask]\r\nname: wn\r\n");
+#if NETIF_WIFI_HALOW_IS_ENABLE
+            LOG_SIMPLE("Usage: ifconfig hw cfg reg <CC>\r\n");
+#endif
             return -1;
         }
         // Get current configuration
         ret = nm_get_netif_cfg(if_name, &if_cfg);
         if (ret != 0) return ret;
+#if NETIF_WIFI_HALOW_IS_ENABLE
+        if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) == 0 &&
+            strcmp(argv[3], "reg") == 0) {
+            if (argc < 5 || strlen(argv[4]) < 2U) {
+                LOG_SIMPLE("Usage: ifconfig hw cfg reg <CC>\r\n");
+                return -1;
+            }
+            if (!mm_halow_regdomain_is_supported(argv[4])) {
+                LOG_SIMPLE("Regdomain %s not in firmware BCF (ifconfig hw reg_list)\r\n", argv[4]);
+                return -1;
+            }
+            strncpy(if_cfg.halow_cfg.country_code, argv[4],
+                    sizeof(if_cfg.halow_cfg.country_code) - 1);
+            if_cfg.halow_cfg.country_code[sizeof(if_cfg.halow_cfg.country_code) - 1] = '\0';
+            return nm_set_netif_cfg(if_name, &if_cfg);
+        }
+#endif
         // Update configuration
-        if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0 || strcmp(if_name, NETIF_NAME_WIFI_AP) == 0) {
-            strncpy(if_cfg.wireless_cfg.ssid, argv[3], NETIF_SSID_VALUE_SIZE);
-            if (argc > 4) {
-                strncpy(if_cfg.wireless_cfg.pw, argv[4], NETIF_PW_VALUE_SIZE);
-                if_cfg.wireless_cfg.security = WIRELESS_WPA_WPA2_MIXED;
+        if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0 || strcmp(if_name, NETIF_NAME_WIFI_AP) == 0
+#if NETIF_WIFI_HALOW_IS_ENABLE
+            || strcmp(if_name, NETIF_NAME_WIFI_HALOW) == 0
+#endif
+        ) {
+            strncpy(if_cfg.wireless_cfg.ssid, argv[3], NETIF_SSID_VALUE_SIZE - 1);
+            if_cfg.wireless_cfg.ssid[NETIF_SSID_VALUE_SIZE - 1] = '\0';
+            if (argc > 4 && argv[4][0] != '\0') {
+                strncpy(if_cfg.wireless_cfg.pw, argv[4], NETIF_PW_VALUE_SIZE - 1);
+                if_cfg.wireless_cfg.pw[NETIF_PW_VALUE_SIZE - 1] = '\0';
+#if NETIF_WIFI_HALOW_IS_ENABLE
+                if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) == 0) {
+                    if (argc > 5) {
+                        if (strcmp(argv[5], "open") == 0) if_cfg.wireless_cfg.security = WIRELESS_OPEN;
+                        else if (strcmp(argv[5], "owe") == 0) if_cfg.wireless_cfg.security = WIRELESS_OWE;
+                        else if (strcmp(argv[5], "sae") == 0) if_cfg.wireless_cfg.security = WIRELESS_SAE;
+                        else if_cfg.wireless_cfg.security = WIRELESS_SAE;
+                    } else {
+                        if_cfg.wireless_cfg.security = WIRELESS_SAE;
+                    }
+                } else
+#endif
+                {
+                    if_cfg.wireless_cfg.security = WIRELESS_WPA_WPA2_MIXED;
+                }
             } else {
                 memset(if_cfg.wireless_cfg.pw, 0, NETIF_PW_VALUE_SIZE);
                 if_cfg.wireless_cfg.security = WIRELESS_OPEN;
@@ -264,25 +446,146 @@ static int netif_manager_cmd(int argc, char* argv[])
         if (argc > 3) wakeup_mode = (sl_net_wakeup_mode_t)atoi(argv[3]);
         ret = sl_net_netif_romote_wakeup_mode_ctrl(wakeup_mode);
     } else if (strcmp(argv[2], "scan") == 0) {
-        if (strcmp(if_name, NETIF_NAME_WIFI_STA) && strcmp(if_name, NETIF_NAME_WIFI_AP)) {
-            LOG_SIMPLE("Only wl/ap support scan cmd\r\n");
+        if (strcmp(if_name, NETIF_NAME_WIFI_STA) && strcmp(if_name, NETIF_NAME_WIFI_AP)
+#if NETIF_WIFI_HALOW_IS_ENABLE
+            && strcmp(if_name, NETIF_NAME_WIFI_HALOW)
+#endif
+        ) {
+            LOG_SIMPLE("Only wl/ap/hw support scan cmd\r\n");
             return -1;
         }
-        ret = nm_wireless_start_scan(wireless_scan_callback_func);
+        wireless_scan_cb_if_name = if_name;
+        ret = nm_wireless_start_scan_ex(if_name, wireless_scan_callback_func);
         return ret;
     } else if (strcmp(argv[2], "scan_result") == 0) {
-        if (strcmp(if_name, NETIF_NAME_WIFI_STA) && strcmp(if_name, NETIF_NAME_WIFI_AP)) {
-            LOG_SIMPLE("Only wl/ap support scan_result cmd\r\n");
+        if (strcmp(if_name, NETIF_NAME_WIFI_STA) && strcmp(if_name, NETIF_NAME_WIFI_AP)
+#if NETIF_WIFI_HALOW_IS_ENABLE
+            && strcmp(if_name, NETIF_NAME_WIFI_HALOW)
+#endif
+        ) {
+            LOG_SIMPLE("Only wl/ap/hw support scan_result cmd\r\n");
             return -1;
         }
-        scan_result = nm_wireless_get_scan_result();
-        nm_print_wireless_scan_result(scan_result);
+        scan_result = nm_wireless_get_scan_result_ex(if_name);
+        nm_print_wireless_scan_result(if_name, scan_result);
     } else if (strcmp(argv[2], "scan_update") == 0) {
-        if (strcmp(if_name, NETIF_NAME_WIFI_STA) && strcmp(if_name, NETIF_NAME_WIFI_AP)) {
-            LOG_SIMPLE("Only wl/ap support scan_update cmd\r\n");
+        if (strcmp(if_name, NETIF_NAME_WIFI_STA) && strcmp(if_name, NETIF_NAME_WIFI_AP)
+#if NETIF_WIFI_HALOW_IS_ENABLE
+            && strcmp(if_name, NETIF_NAME_WIFI_HALOW)
+#endif
+        ) {
+            LOG_SIMPLE("Only wl/ap/hw support scan_update cmd\r\n");
             return -1;
         }
-        ret = nm_wireless_update_scan_result(3000);
+        ret = nm_wireless_update_scan_result_ex(if_name, 3000);
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    } else if (strcmp(argv[2], "reg") == 0) {
+        if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) != 0 || argc < 4) {
+            LOG_SIMPLE("Usage: ifconfig hw reg <CC>\r\n");
+            return -1;
+        }
+        if (!mm_halow_regdomain_is_supported(argv[3])) {
+            LOG_SIMPLE("Regdomain %s not in regulatory_db (ifconfig hw reg_list)\r\n", argv[3]);
+            return -1;
+        }
+        ret = mm_halow_set_regdomain(argv[3]);
+    } else if (strcmp(argv[2], "reg_list") == 0) {
+        if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) != 0) {
+            LOG_SIMPLE("Usage: ifconfig hw reg_list\r\n");
+            return -1;
+        }
+        ret = mm_halow_list_regdomains();
+    } else if (strcmp(argv[2], "txpwr") == 0) {
+        if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) != 0 || argc < 4) {
+            LOG_SIMPLE("Usage: ifconfig hw txpwr <dbm|0>\r\n");
+            return -1;
+        }
+        ret = mm_halow_set_tx_power((uint16_t)atoi(argv[3]));
+    } else if (strcmp(argv[2], "rate") == 0) {
+        int8_t mcs = -1;
+        int8_t bw = -1;
+        int8_t gi = -1;
+
+        if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) != 0) {
+            LOG_SIMPLE("Only hw supports rate cmd\r\n");
+            return -1;
+        }
+        if (argc < 4) {
+            ret = mm_halow_print_rate_override();
+        } else if (strcmp(argv[3], "off") == 0 || strcmp(argv[3], "none") == 0) {
+            ret = mm_halow_set_rate_override(-1, -1, -1);
+        } else {
+            if (halow_cli_parse_mcs(argv[3], &mcs) != 0) {
+                LOG_SIMPLE("Usage: ifconfig hw rate [mcs|none] [bw|none] [gi|none]\r\n");
+                LOG_SIMPLE("  mcs: 0-9 or none; bw: 1/2/4/8 or none; gi: short/long/none\r\n");
+                LOG_SIMPLE("  e.g. rate 7 | rate 7 8 short | rate off\r\n");
+                return -1;
+            }
+            if (argc > 4) {
+                if (halow_cli_parse_bw(argv[4], &bw) != 0) {
+                    LOG_SIMPLE("Invalid bw: %s (use 1/2/4/8 or none)\r\n", argv[4]);
+                    return -1;
+                }
+            }
+            if (argc > 5) {
+                if (halow_cli_parse_gi(argv[5], &gi) != 0) {
+                    LOG_SIMPLE("Invalid gi: %s (use short/long/none)\r\n", argv[5]);
+                    return -1;
+                }
+            }
+            ret = mm_halow_set_rate_override(mcs, bw, gi);
+        }
+    } else if (strcmp(argv[2], "ps") == 0) {
+        if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) != 0 || argc < 4) {
+            LOG_SIMPLE("Usage: ifconfig hw ps <0|1>\r\n");
+            return -1;
+        }
+        ret = mm_halow_set_power_save((uint8_t)atoi(argv[3]));
+    } else if (strcmp(argv[2], "scan_cfg") == 0) {
+        uint8_t ndp = 0;
+        if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) != 0 || argc < 4) {
+            LOG_SIMPLE("Usage: ifconfig hw scan_cfg <dwell_ms> [ndp 0|1]\r\n");
+            return -1;
+        }
+        if (argc > 4) ndp = (uint8_t)atoi(argv[4]);
+        ret = mm_halow_set_scan_config((uint32_t)atoi(argv[3]), ndp);
+    } else if (strcmp(argv[2], "version") == 0) {
+        if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) != 0) {
+            LOG_SIMPLE("Only hw supports version cmd\r\n");
+            return -1;
+        }
+        ret = mm_halow_print_version();
+    } else if (strcmp(argv[2], "bcf_info") == 0) {
+        if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) != 0) {
+            LOG_SIMPLE("Only hw supports bcf_info cmd\r\n");
+            return -1;
+        }
+        if (argc >= 4) {
+            ret = mm_halow_print_bcf_info(argv[3]);
+        } else {
+            ret = mm_halow_print_bcf_info(NULL);
+        }
+    } else if (strcmp(argv[2], "dpp") == 0) {
+        uint32_t timeout_ms = 120000U;
+        if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) != 0) {
+            LOG_SIMPLE("Only hw supports dpp cmd\r\n");
+            return -1;
+        }
+        if (argc >= 4 && strcmp(argv[3], "stop") == 0) {
+            ret = mm_halow_dpp_stop();
+        } else {
+            if (argc >= 4) {
+                timeout_ms = (uint32_t)atoi(argv[3]) * 1000U;
+            }
+            ret = mm_halow_dpp_start(timeout_ms, netif_cli_halow_dpp_cb, NULL);
+        }
+    } else if (strcmp(argv[2], "dpp_stop") == 0) {
+        if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) != 0) {
+            LOG_SIMPLE("Only hw supports dpp_stop cmd\r\n");
+            return -1;
+        }
+        ret = mm_halow_dpp_stop();
+#endif
     } else {
         LOG_SIMPLE("Invalid netif cmd: %s\r\n", argv[2]);
         return -1;
@@ -328,6 +631,9 @@ void netif_manager_change_default_if(void)
 #endif
         if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0) default_if = sl_net_client_netif_ptr();
         else if (strcmp(if_name, NETIF_NAME_WIFI_AP) == 0) default_if = sl_net_ap_netif_ptr();
+#if NETIF_WIFI_HALOW_IS_ENABLE
+        else if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) == 0) default_if = mm_halow_netif_ptr();
+#endif
         if (default_if != NULL && default_if != netif_get_default()) {
             (void)netifapi_netif_set_default(default_if);
             LOG_DRV_INFO("Set default netif: %s\r\n", if_name);
@@ -403,14 +709,21 @@ void netif_manager_change_nat_route(void)
 int netif_manager_ctrl(const char *if_name, netif_cmd_t cmd, void *param)
 {   
     int ret = -1;
+    uint32_t start_tick = 0, end_tick = 0;
     struct netif *lo_netif = NULL;
     netif_info_t *netif_info = NULL;
     netif_state_t last_state = NETIF_STATE_MAX;
     if (netif_manager_mutex == NULL) return AICAM_ERROR_NOT_INITIALIZED;
     
+    start_tick = HAL_GetTick();
     if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0 || strcmp(if_name, NETIF_NAME_WIFI_AP) == 0) {
         sl_net_netif_ctrl(if_name, NETIF_CMD_STATE, &last_state);
         ret = sl_net_netif_ctrl(if_name, cmd, param);
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    } else if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) == 0) {
+        mm_halow_netif_ctrl(if_name, NETIF_CMD_STATE, &last_state);
+        ret = mm_halow_netif_ctrl(if_name, cmd, param);
+#endif
 #if NETIF_4G_CAT1_IS_ENABLE
     } else if (strcmp(if_name, NETIF_NAME_4G_CAT1) == 0) {
         eg912u_netif_ctrl(if_name, NETIF_CMD_STATE, &last_state);
@@ -466,6 +779,12 @@ int netif_manager_ctrl(const char *if_name, netif_cmd_t cmd, void *param)
         netif_manager_change_nat_route();
     #endif
     }
+
+    if (cmd == NETIF_CMD_INIT || cmd == NETIF_CMD_UP) {
+        end_tick = HAL_GetTick();
+        printf("%s %s: %ld / %ld ms\r\n", if_name, (cmd == NETIF_CMD_INIT) ? "init" : "up", end_tick - start_tick, end_tick);
+    }
+
     return ret;
 }
 
@@ -654,15 +973,29 @@ void nm_print_netif_info(const char *if_name, netif_info_t *netif_info)
     printf("TYPE: %s\r\n", netif_type_str[netif_info->type]);
     printf("FW_VERSION: %s\r\n", netif_info->fw_version);
     if (netif_info->type == NETIF_TYPE_WIRELESS) {
-        if (name_for_print && strcmp(name_for_print, NETIF_NAME_WIFI_STA) == 0) {
+        const char *print_if = (if_name != NULL) ? if_name : netif_info->if_name;
+        if (print_if != NULL && strcmp(print_if, NETIF_NAME_WIFI_STA) == 0) {
             printf("BSSID: "NETIF_MAC_STR_FMT"\r\n", NETIF_MAC_PARAMETER(netif_info->wireless_cfg.bssid));
         }
         printf("SSID: %s\r\n", netif_info->wireless_cfg.ssid);
         printf("PW: %s\r\n", netif_info->wireless_cfg.pw);
-        printf("SECURITY: %s\r\n", netif_security_str[netif_info->wireless_cfg.security]);
+        if (netif_info->wireless_cfg.security < WIRELESS_SECURITY_MAX) {
+            printf("SECURITY: %s\r\n", netif_security_str[netif_info->wireless_cfg.security]);
+        } else {
+            printf("SECURITY: unknown\r\n");
+        }
         printf("ENCRYPTION: %s\r\n", netif_encryption_str[netif_info->wireless_cfg.encryption]);
         printf("CHANNEL: %d\r\n", netif_info->wireless_cfg.channel);
-        if (name_for_print && strcmp(name_for_print, NETIF_NAME_WIFI_AP) == 0) {
+#if NETIF_WIFI_HALOW_IS_ENABLE
+        if (print_if != NULL && strcmp(print_if, NETIF_NAME_WIFI_HALOW) == 0) {
+            printf("HALOW_REG: %s\r\n", netif_info->halow_cfg.country_code);
+            printf("HALOW_TX_PWR: %u dBm (0=reg max)\r\n", netif_info->halow_cfg.tx_power_dbm);
+            printf("HALOW_PS: %u\r\n", netif_info->halow_cfg.ps_mode);
+            printf("HALOW_SCAN_DWELL: %lu ms\r\n", (unsigned long)netif_info->halow_cfg.scan_dwell_ms);
+            halow_print_rate_info_lines(&netif_info->halow_cfg);
+        }
+#endif
+        if (print_if != NULL && strcmp(print_if, NETIF_NAME_WIFI_AP) == 0) {
             printf("MAX CLIENT NUM: %d\r\n", netif_info->wireless_cfg.max_client_num);
         }
     } else if (netif_info->type == NETIF_TYPE_4G) {
@@ -675,6 +1008,7 @@ void nm_print_netif_info(const char *if_name, netif_info_t *netif_info)
         printf("AUTH: %d\r\n", netif_info->cellular_cfg.authentication);
         printf("ROAMING: %d\r\n", netif_info->cellular_cfg.is_enable_roam);
         printf("ISP SELECTED: %d\r\n", netif_info->cellular_cfg.isp_selected);
+        printf("PLMN: %s\r\n", netif_info->cellular_cfg.plmn);
         printf("PPP CONTEXT ID: %d\r\n", netif_info->cellular_cfg.ppp_context_id);
         printf("OPERATOR: %s\r\n", netif_info->cellular_info.operator);
         printf("SIM STATUS: %s\r\n", netif_info->cellular_info.sim_status);
@@ -725,6 +1059,9 @@ int nm_get_netif_cfg(const char *if_name, netif_config_t *netif_cfg)
     netif_cfg->host_name = netif_info->host_name;
     netif_cfg->ip_mode = netif_info->ip_mode;
     memcpy(&netif_cfg->wireless_cfg, &netif_info->wireless_cfg, sizeof(netif_cfg->wireless_cfg));
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    memcpy(&netif_cfg->halow_cfg, &netif_info->halow_cfg, sizeof(netif_cfg->halow_cfg));
+#endif
     memcpy(&netif_cfg->cellular_cfg, &netif_info->cellular_cfg, sizeof(netif_cfg->cellular_cfg));
     memcpy(&netif_cfg->diy_mac, &netif_info->if_mac, sizeof(netif_cfg->diy_mac));
     memcpy(&netif_cfg->ip_addr, &netif_info->ip_addr, sizeof(netif_cfg->ip_addr));
@@ -911,53 +1248,128 @@ int nm_ctrl_get_dns_server(int idx, uint8_t *dns_server)
 /// @return Error code
 int nm_wireless_start_scan(wireless_scan_callback_t callback)
 {
+    return nm_wireless_start_scan_ex(NETIF_NAME_WIFI_STA, callback);
+}
+
+int nm_wireless_start_scan_ex(const char *if_name, wireless_scan_callback_t callback)
+{
     int ret = 0;
 
-    ret = sl_net_start_scan(callback);
+    if (if_name == NULL) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) == 0) {
+        ret = mm_halow_start_scan(callback);
+    } else
+#endif
+    if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0 || strcmp(if_name, NETIF_NAME_WIFI_AP) == 0) {
+        ret = sl_net_start_scan(callback);
+    } else {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
     if (ret != 0) {
-        LOG_DRV_ERROR("wireless scan failed(ret = %d)!", ret);
+        LOG_DRV_ERROR("wireless scan failed on %s (ret = %d)!", if_name, ret);
         return ret;
     }
     return AICAM_OK;
 }
 
-/// @brief Get wireless scan result
-/// @param None
-/// @return Wireless scan result
 wireless_scan_result_t *nm_wireless_get_scan_result(void)
 {
-    return sl_net_get_strorage_scan_result();
+    return nm_wireless_get_scan_result_ex(NETIF_NAME_WIFI_STA);
 }
 
-/// @brief Update wireless scan result
-/// @param timeout Timeout time (unit: milliseconds)
-/// @return Error code
+wireless_scan_result_t *nm_wireless_get_scan_result_ex(const char *if_name)
+{
+    if (if_name == NULL) {
+        return NULL;
+    }
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) == 0) {
+        return mm_halow_get_storage_scan_result();
+    }
+#endif
+    if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0 || strcmp(if_name, NETIF_NAME_WIFI_AP) == 0) {
+        return sl_net_get_strorage_scan_result();
+    }
+    return NULL;
+}
+
 int nm_wireless_update_scan_result(uint32_t timeout)
+{
+    return nm_wireless_update_scan_result_ex(NETIF_NAME_WIFI_STA, timeout);
+}
+
+int nm_wireless_update_scan_result_ex(const char *if_name, uint32_t timeout)
 {
     int ret = 0;
 
-    ret = sl_net_update_strorage_scan_result(timeout);
+    if (if_name == NULL) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    if (strcmp(if_name, NETIF_NAME_WIFI_HALOW) == 0) {
+        ret = mm_halow_update_storage_scan_result(timeout);
+    } else
+#endif
+    if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0 || strcmp(if_name, NETIF_NAME_WIFI_AP) == 0) {
+        ret = sl_net_update_strorage_scan_result(timeout);
+    } else {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
     if (ret != 0) {
-        LOG_DRV_ERROR("wireless update scan result failed(ret = %d)!", ret);
+        LOG_DRV_ERROR("wireless update scan on %s failed(ret = %d)!", if_name, ret);
         return ret;
     }
     return AICAM_OK;
 }
 
-/// @brief Print wireless scan result
-/// @param scan_result Scan result
-void nm_print_wireless_scan_result(wireless_scan_result_t *scan_result)
+void nm_print_wireless_scan_result(const char *if_name, wireless_scan_result_t *scan_result)
 {
     int i = 0;
-    if (scan_result == NULL) return;
+    uint8_t is_halow = 0;
+
+    if (scan_result == NULL) {
+        return;
+    }
+
+#if NETIF_WIFI_HALOW_IS_ENABLE
+    if (if_name != NULL && strcmp(if_name, NETIF_NAME_WIFI_HALOW) == 0) {
+        is_halow = 1;
+    }
+#endif
 
     printf("\r\n================================== SCAN RESULT ==================================\r\n");
     printf("Scan Result Count: %d\r\n", scan_result->scan_count);
     if (scan_result->scan_count > 0) {
-        printf("%-24s %-16s %12s %14s %7s\r\n", "SSID", "SECURITY", "BSSID", "CHANNEL", "RSSI");
+        if (is_halow) {
+            printf("%-24s %-16s %12s %12s %10s %7s\r\n", "SSID", "SECURITY", "BSSID", "FREQ_HZ", "BW_MHZ", "RSSI");
+        } else {
+            printf("%-24s %-16s %12s %14s %7s\r\n", "SSID", "SECURITY", "BSSID", "CHANNEL", "RSSI");
+        }
         for (i = 0; i < scan_result->scan_count; i++) {
-            printf("%-24s %-16s "NETIF_MAC_STR_FMT" %6d %8ddBm\r\n", scan_result->scan_info[i].ssid, netif_security_str[scan_result->scan_info[i].security],
-                    NETIF_MAC_PARAMETER(scan_result->scan_info[i].bssid), scan_result->scan_info[i].channel, scan_result->scan_info[i].rssi);
+            const char *sec = "unknown";
+            if (scan_result->scan_info[i].security < WIRELESS_SECURITY_MAX) {
+                sec = netif_security_str[scan_result->scan_info[i].security];
+            }
+            if (is_halow) {
+                printf("%-24s %-16s "NETIF_MAC_STR_FMT" %12lu %10u %7ddBm\r\n",
+                       scan_result->scan_info[i].ssid, sec,
+                       NETIF_MAC_PARAMETER(scan_result->scan_info[i].bssid),
+                       (unsigned long)scan_result->scan_info[i].channel_freq_hz,
+                       scan_result->scan_info[i].bw_mhz,
+                       scan_result->scan_info[i].rssi);
+            } else {
+                printf("%-24s %-16s "NETIF_MAC_STR_FMT" %6d %8ddBm\r\n",
+                       scan_result->scan_info[i].ssid, sec,
+                       NETIF_MAC_PARAMETER(scan_result->scan_info[i].bssid),
+                       scan_result->scan_info[i].channel, scan_result->scan_info[i].rssi);
+            }
         }
     }
     printf("================================================================================\r\n\r\n");

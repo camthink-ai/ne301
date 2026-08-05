@@ -120,6 +120,12 @@ typedef struct {
     
     // Event flags for waiting on specific events
     osEventFlagsId_t event_flags;
+
+    /* Per-msg_id ack tracking: each PUBLISHED event pushes the msg_id here,
+     * so callers can pipeline-publish N messages then drain N acks and know
+     * exactly which one failed (vs. event_flags which collapses to 1 bit). */
+    osMessageQueueId_t ack_msg_queue;
+#define MQTT_ACK_QUEUE_DEPTH    32
     
     // Auto subscription status
     aicam_bool_t receive_topic_subscribed;
@@ -206,7 +212,7 @@ static aicam_result_t mqtt_client_init_si91x(const ms_mqtt_config_t *config)
 static aicam_result_t mqtt_client_start_ms(void)
 {
     int result = ms_mqtt_client_start(g_mqtt_service.mqtt_client.ms_client);
-    printf("mqtt start time: %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
+    printf("MQ_START: %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
     if (result != 0) {
         LOG_SVC_ERROR("Failed to start MS MQTT client: %d", result);
         return AICAM_ERROR;
@@ -612,7 +618,7 @@ static void mqtt_client_event_handler(ms_mqtt_event_data_t *event_data, void *us
             g_mqtt_service.stats.current_connections = 1;
             LOG_SVC_DEBUG("MQTT connected to broker");
 
-            printf("mqtt connected time: %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
+            printf("MQ_CNT: %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
             
             // Set MQTT network connected flag
             service_set_mqtt_net_connected(AICAM_TRUE);
@@ -653,6 +659,17 @@ static void mqtt_client_event_handler(ms_mqtt_event_data_t *event_data, void *us
         case MQTT_EVENT_PUBLISHED:
             g_mqtt_service.stats.messages_published++;
             LOG_SVC_DEBUG("MQTT message published: msg_id=%d", event_data->msg_id);
+            /* Push msg_id to ack queue so pipelined callers can match which
+             * publish was confirmed. Best-effort: if queue is full (callers
+             * not draining), drop oldest to make room. */
+            if (g_mqtt_service.ack_msg_queue) {
+                int mid = (int)event_data->msg_id;
+                if (osMessageQueuePut(g_mqtt_service.ack_msg_queue, &mid, 0, 0) != osOK) {
+                    int dropped;
+                    (void)osMessageQueueGet(g_mqtt_service.ack_msg_queue, &dropped, NULL, 0);
+                    (void)osMessageQueuePut(g_mqtt_service.ack_msg_queue, &mid, 0, 0);
+                }
+            }
             break;
             
         case MQTT_EVENT_SUBSCRIBED:
@@ -1206,7 +1223,17 @@ aicam_result_t mqtt_service_init(void *config)
         buffer_free(mqtt_config);
         return AICAM_ERROR_NO_MEMORY;
     }
-    
+
+    /* Per-msg_id ack queue (static control block for ThreadX port). */
+    g_mqtt_service.ack_msg_queue = osMessageQueueNew(MQTT_ACK_QUEUE_DEPTH, sizeof(int), NULL);
+    if (!g_mqtt_service.ack_msg_queue) {
+        LOG_SVC_ERROR("Failed to create MQTT ack msg queue");
+        osEventFlagsDelete(g_mqtt_service.event_flags);
+        g_mqtt_service.event_flags = NULL;
+        buffer_free(mqtt_config);
+        return AICAM_ERROR_NO_MEMORY;
+    }
+
     g_mqtt_service.initialized = AICAM_TRUE;
     
     LOG_SVC_INFO("MQTT Service initialized successfully");
@@ -1392,6 +1419,12 @@ aicam_result_t mqtt_service_deinit(void)
     if (g_mqtt_service.event_flags) {
         osEventFlagsDelete(g_mqtt_service.event_flags);
         g_mqtt_service.event_flags = NULL;
+    }
+
+    // Delete ack msg queue
+    if (g_mqtt_service.ack_msg_queue) {
+        osMessageQueueDelete(g_mqtt_service.ack_msg_queue);
+        g_mqtt_service.ack_msg_queue = NULL;
     }
     
     // Clear event callbacks
@@ -2440,6 +2473,27 @@ aicam_result_t mqtt_service_wait_for_event(ms_mqtt_event_id_t event_id, aicam_bo
     return AICAM_OK;
 }
 
+aicam_result_t mqtt_service_get_acked_msg_id(int *out_msg_id, uint32_t timeout_ms)
+{
+    if (!out_msg_id) return AICAM_ERROR_INVALID_PARAM;
+    if (!g_mqtt_service.initialized || !g_mqtt_service.ack_msg_queue) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    /* QoS 0 has no puback — publish success IS the ack. Return a sentinel
+     * so callers know to treat all pending publishes as confirmed. */
+    if (g_mqtt_service.config.data_report_qos == 0) {
+        *out_msg_id = -1;
+        return AICAM_OK;
+    }
+    int mid = 0;
+    osStatus_t st = osMessageQueueGet(g_mqtt_service.ack_msg_queue, &mid, NULL, timeout_ms);
+    if (st != osOK) {
+        return AICAM_ERROR_TIMEOUT;
+    }
+    *out_msg_id = mid;
+    return AICAM_OK;
+}
+
 /**
  * @brief Clear event flag for specific event
  * @param event_id Event ID to clear
@@ -2450,7 +2504,7 @@ aicam_result_t mqtt_service_clear_event_flag(ms_mqtt_event_id_t event_id)
     if (!g_mqtt_service.initialized || !g_mqtt_service.event_flags) {
         return AICAM_ERROR_NOT_INITIALIZED;
     }
-    
+
     uint32_t flag = event_id_to_flag(event_id);
     if (flag == 0) {
         return AICAM_ERROR_INVALID_PARAM;
@@ -3396,9 +3450,9 @@ int mqtt_service_publish_image_with_ai(const char *topic,
         cJSON_AddItemToObject(root, "metadata", meta_json);
     }
 
-    //Add device info
+    //Add device info (lightweight — cached, no storage scan)
     device_info_config_t* device_info = (device_info_config_t*)buffer_calloc(1, sizeof(device_info_config_t));
-    aicam_result_t ret = device_service_get_info(device_info);
+    aicam_result_t ret = device_service_get_cached_info(device_info);
     if (ret != AICAM_OK) {
         LOG_SVC_ERROR("Failed to get device information: %d", ret);
         buffer_free(device_info);

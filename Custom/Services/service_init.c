@@ -19,6 +19,7 @@
 #include "rtmp_service.h"
 #include "rtsp_service.h"
 #include "webhook_service.h"
+#include "upload_coordinator.h"
 #include "Services/Video/video_stream_hub.h"
 #include "cmsis_os2.h"
 
@@ -35,6 +36,11 @@ typedef osMutexId_t service_mutex_t;
 
 // Event flag group
 static osEventFlagsId_t g_service_ready_flags = NULL;
+
+/* Set by service_start(): true if communication/mqtt/webhook were skipped
+ * this wake (LOW_POWER + upload mode doesn't need network). Read by
+ * system_service at sleep time to decide whether to wait for MQTT. */
+static aicam_bool_t g_network_services_skipped = AICAM_FALSE;
 
 /* ==================== Service Module Registry ==================== */
 
@@ -62,6 +68,13 @@ typedef struct {
     
     // Power mode control
     aicam_bool_t required_in_low_power;  // Required in low power mode
+    /* Skip init() on a low-power essential-only wake (RTC/PIR/Button-short/...).
+     * Use for services whose init is heavy AND unused on a capture-only wake.
+     * Distinct from required_in_low_power (which gates *start*): a service may
+     * need init in low power (e.g. device_service registers file ops used by
+     * upload_coordinator) but not start. Only set for leaf services that init
+     * AFTER system_service (which loads power_mode from NVS). */
+    aicam_bool_t skip_init_in_low_power;
     
     // Service dependencies
     const char *depends_on[4];           // Services this depends on (max 4)
@@ -192,6 +205,7 @@ static const service_module_t g_service_registry[] = {
         .auto_start = AICAM_TRUE,
         .init_priority = 6,
         .required_in_low_power = AICAM_FALSE,  // Web does not need to be in low power mode
+        .skip_init_in_low_power = AICAM_TRUE, // init reads ~88KB web asset.bin from flash into RAM — wasted on a capture-only wake (start is gated too)
         .depends_on = {"communication_service"},  // Depends on communication service
         .depends_count = 1
     },
@@ -254,6 +268,24 @@ static const service_module_t g_service_registry[] = {
         .required_in_low_power = AICAM_TRUE,
         .depends_on = {"communication_service"},
         .depends_count = 1
+    },
+    {
+        .name = "upload_coordinator",
+        .state = SERVICE_STATE_UNINITIALIZED,
+        .init_func = upload_coordinator_init,
+        .start_func = upload_coordinator_start,
+        .stop_func = upload_coordinator_stop,
+        .deinit_func = upload_coordinator_deinit,
+        .get_state_func = upload_coordinator_get_state,
+        .config = NULL,
+        .auto_start = AICAM_TRUE,
+        .init_priority = 11,
+        .required_in_low_power = AICAM_TRUE,
+        /* No hard service dependency: init only needs NVS (available pre-service)
+         * and file ops (registered during device_service init, not start).
+         * Runtime channel/sd probes gracefully tolerate "not ready" → false. */
+        .depends_on = {},
+        .depends_count = 0
     }
 };
 
@@ -377,9 +409,9 @@ static aicam_result_t init_service_module(service_module_t *module)
     
     module->state = SERVICE_STATE_INITIALIZING;
     module->init_time = SERVICE_GET_TIMESTAMP();
-    
+
     LOG_SVC_INFO("Initializing service: %s", module->name);
-    
+
     aicam_result_t result = module->init_func(module->config);
     
     if (result == AICAM_OK) {
@@ -575,10 +607,25 @@ aicam_result_t service_init(void)
     // Initialize all services in priority order
     for (uint32_t i = 0; i < g_service_mgr.module_count; i++) {
         service_module_t *module = &g_service_mgr.modules[i];
-        
+
+        /* Low-power essential-only wake (RTC/PIR/Button-short/...): skip the
+         * init of services flagged skip_init_in_low_power. web_service is the
+         * main one — its init reads the ~88KB web asset.bin from flash into
+         * RAM, pure waste on a capture-only wake (start is already gated, so
+         * those assets would never be served). The && short-circuits, so the
+         * power-mode/wakeup getters are only evaluated for flagged modules —
+         * which (by contract) init after system_service, so the getters return
+         * real values by then. */
+        if (module->skip_init_in_low_power
+            && system_service_get_current_power_mode() == POWER_MODE_LOW_POWER
+            && system_service_requires_only_essential_services(system_service_get_wakeup_source_type())) {
+            LOG_SVC_INFO("Skipping init '%s' in low power essential-only wake", module->name);
+            continue;
+        }
+
         aicam_result_t result = init_service_module(module);
         if (result != AICAM_OK) {
-            LOG_SVC_WARN("Service '%s' initialization failed, continuing with others", 
+            LOG_SVC_WARN("Service '%s' initialization failed, continuing with others",
                           module->name);
         }
     }
@@ -613,17 +660,52 @@ aicam_result_t service_start(void)
     wakeup_source_type_t current_wakeup_source = system_service_get_wakeup_source_type();
     LOG_SVC_INFO("Starting Service Layer (wakeup source: %s)...",
                 current_wakeup_source == WAKEUP_SOURCE_RTC ? "RTC" : current_wakeup_source == WAKEUP_SOURCE_BUTTON ? "BUTTON" : current_wakeup_source == WAKEUP_SOURCE_PIR ? "PIR" : "OTHER");
-    
+
+    /* Ask upload_coordinator whether this wake cycle actually needs the
+     * network stack. Only honored in LOW_POWER mode AND for wake sources
+     * that only need essential services (RTC/PIR/Button short/IO). For
+     * OTHER / BUTTON_LONG (AP enable) the full service stack - including
+     * web - must come up, so we never skip communication there. */
+    aicam_bool_t need_network = upload_coordinator_needs_network();
+    aicam_bool_t essential_only = system_service_requires_only_essential_services(current_wakeup_source);
+    aicam_bool_t skip_network_services =
+        (current_power_mode == POWER_MODE_LOW_POWER) && essential_only && !need_network;
+    g_network_services_skipped = skip_network_services;   /* read by system_service at sleep time */
+    LOG_SVC_INFO("Starting Service Layer (network needed: %s, essential_only: %d, skip: %s)...",
+                need_network ? "YES" : "NO",
+                (int)essential_only,
+                skip_network_services ? "YES" : "NO");
+    if (skip_network_services) {
+        printf("[BOOT] Skipping network services (capture mode doesn't need upload this wake)\r\n");
+    }
+
+    /* Wake-capture netif restriction: on the low-power wake-capture path (not
+     * skipping network, essential-only), if the capture-upload config names a
+     * specific upload netif, bring up only that one. For "default" upload
+     * network (req == NONE) we keep the full path: ALL auto_start_* netifs init
+     * - only after init do we know which are actually present/plugged in, and
+     * the connection decision picks among them. Full-speed boots and skip-
+     * network wakes also leave it at default (all). */
+    if (!skip_network_services && essential_only &&
+        current_power_mode == POWER_MODE_LOW_POWER) {
+        communication_type_t req = upload_coordinator_get_required_comm_type();
+        if (req != COMM_TYPE_NONE) {
+            communication_service_set_required_type(req);
+            // printf("[BOOT] Wake-capture using single netif: %s\r\n",
+            //        communication_type_to_string(req));
+        }
+    }
+
     SERVICE_MUTEX_LOCK(g_service_mgr.mutex);
-    
+
     // Start services based on power mode and auto_start flag
     for (uint32_t i = 0; i < g_service_mgr.module_count; i++) {
         service_module_t *module = &g_service_mgr.modules[i];
-        
+
         if (module->state != SERVICE_STATE_INITIALIZED || !module->auto_start || !module->start_func) {
             continue;
         }
-        
+
         // Low power mode: only start essential services unless wakeup source requires all services
         if (current_power_mode == POWER_MODE_LOW_POWER && system_service_requires_only_essential_services(current_wakeup_source)) {
             if (!module->required_in_low_power) {
@@ -631,7 +713,21 @@ aicam_result_t service_start(void)
                 continue;
             }
         }
-        
+
+        /* Network bring-up skip (LOW_POWER only): when upload_coordinator
+         * says this wake doesn't need to upload, skip communication/mqtt/
+         * webhook (the multi-second network bring-up). upload_coordinator
+         * itself stays up so it can enqueue the capture. In FULL_SPEED this
+         * never triggers - web/OTA/stream need the network. */
+        if (skip_network_services &&
+            (strcmp(module->name, "communication_service") == 0 ||
+             strcmp(module->name, "mqtt_service") == 0 ||
+             strcmp(module->name, "webhook_service") == 0)) {
+            LOG_SVC_INFO("Skipping '%s' (network not needed this wake)", module->name);
+            /* Leave state as INITIALIZED so next wake can start it normally. */
+            continue;
+        }
+
         aicam_result_t result = start_service_module(module);
         if (result != AICAM_OK) {
             LOG_SVC_WARN("Service '%s' start failed, continuing with others", 
@@ -1008,14 +1104,22 @@ aicam_result_t service_wait_for_ready(uint32_t flags, aicam_bool_t wait_all, uin
     LOG_SVC_DEBUG("Waiting for service(s) ready: flags=0x%08X, wait_all=%d, timeout=%u ms", 
                  flags, wait_all, timeout_ms);
     
-    //check flag every bit is ready
-    for (uint32_t i = 0; i < 32; i++) {
-        if (flags & (1 << i)) {
-            if (!(osEventFlagsGet(g_service_ready_flags) & (1 << i))) {
-                LOG_SVC_WARN("Service %d is not ready", i);
-            }
-        }
-    }
+    //check flag every bit is ready. Log each not-ready bit ONCE per not-ready
+    //stretch (static reported mask, cleared when the bit goes ready) —
+    //service_wait_for_ready is called repeatedly (upload channel wait, direct
+    //publish, netif ready, ...) and re-logging the same not-ready bits every
+    //call spams the console.
+    // static uint32_t s_reported_not_ready = 0;
+    // for (uint32_t i = 0; i < 32; i++) {
+    //     uint32_t bit = (1 << i);
+    //     if (!(flags & bit)) continue;
+    //     if (osEventFlagsGet(g_service_ready_flags) & bit) {
+    //         s_reported_not_ready &= ~bit;   /* ready now — allow re-report if it drops later */
+    //     } else if (!(s_reported_not_ready & bit)) {
+    //         LOG_SVC_WARN("Service %d is not ready", i);
+    //         s_reported_not_ready |= bit;
+    //     }
+    // }
     
     // Use osFlagsNoClear to keep flags set after wait (service ready state is persistent)
     uint32_t option = (wait_all ? osFlagsWaitAll : osFlagsWaitAny) | osFlagsNoClear;
@@ -1071,8 +1175,13 @@ uint32_t service_get_ready_flags(void)
     if (!g_service_ready_flags) {
         return 0;
     }
-    
+
     return osEventFlagsGet(g_service_ready_flags);
+}
+
+aicam_bool_t service_network_services_skipped(void)
+{
+    return g_network_services_skipped;
 }
 
 /* ==================== Service Ready Manual Control API ==================== */
@@ -1170,6 +1279,26 @@ aicam_result_t service_set_mqtt_net_connected(aicam_bool_t connected)
         LOG_SVC_INFO("MQTT network marked as disconnected");
     }
     
+    return AICAM_OK;
+}
+
+/**
+ * @brief Set the "all netifs failed" signal. See header for details.
+ */
+aicam_result_t service_set_netif_all_failed(aicam_bool_t failed)
+{
+    if (!g_service_ready_flags) {
+        LOG_SVC_ERROR("Service ready flags not initialized, cannot set NETIF_ALL_FAILED");
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    if (failed) {
+        uint32_t result = osEventFlagsSet(g_service_ready_flags, SERVICE_READY_NETIF_ALL_FAILED);
+        if (result & osFlagsError) {
+            LOG_SVC_ERROR("Failed to set NETIF_ALL_FAILED flag: 0x%08X", result);
+            return AICAM_ERROR;
+        }
+        LOG_SVC_WARN("All netifs failed signal raised - upload waiters should abort");
+    }
     return AICAM_OK;
 }
 

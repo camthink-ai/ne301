@@ -60,6 +60,7 @@ typedef struct {
 } rtc_t;
 
 RTC_TIME_S rtc_get_time(void);
+uint64_t rtc_get_wakeup_timeStamp(void);
 uint64_t rtc_get_timeStamp(void);
 uint64_t rtc_get_local_timestamp(void);
 uint64_t rtc_get_timestamp_ms(void);

@@ -1,0 +1,8 @@
+# Copyright 2024 Morse Micro
+# SPDX-License-Identifier: Apache-2.0
+version = 1
+
+[[annotations]]
+path = "**/*.a"
+SPDX-FileCopyrightText = "Copyright 2021-2024 Morse Micro"
+SPDX-License-Identifier = "LicenseRef-MorseMicroBDL"

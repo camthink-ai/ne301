@@ -41,7 +41,8 @@ extern CRC_HandleTypeDef hcrc;
 void MX_CRC_Init(void);
 
 /* USER CODE BEGIN Prototypes */
-
+uint32_t CRC_Calculate(void *pBuffer, uint32_t BufferLength);
+uint32_t CRC_Accumulate(uint32_t crcValue, void *pBuffer, uint32_t BufferLength);
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

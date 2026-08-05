@@ -10,7 +10,11 @@ const longTimeTaskList = [
   '/api/v1/device/config/export',
   '/api/v1/system/ota/upload',
   '/api/v1/system/ota/upgrade-local',
-  '/api/v1/system/restart'
+  '/api/v1/system/restart',
+  '/api/v1/files/upload',
+  '/api/v1/files/download',
+  '/api/v1/files/list',       // may be slow after upload (LittleFS metadata flush)
+  '/api/v1/device/storage/format',  // lfs_format + lfs_mount on full flash
 ]
 
 const debouncedTimeoutError = debounce(2000, (message: string) => {
@@ -45,10 +49,10 @@ request.interceptors.request.use(
         _t: Date.now(),
       }
     }
-    // Dynamically set timeout: 60s for long tasks, 20s for others
+    // Dynamically set timeout: 10min for long tasks (upload/download), 30s for others
     const url = (config.url || '') as string
     const isLongTask = longTimeTaskList.some((p) => url.includes(p))
-    config.timeout = isLongTask ? 300000 : 30000
+    config.timeout = isLongTask ? 900000 : 30000
 
     return config
   },

@@ -1,6 +1,6 @@
 /**
  * @file api_webhook_module.c
- * @brief Webhook API Module — config get/set + test push
+ * @brief Webhook API Module - config get/set + test push
  */
 
 #include "api_webhook_module.h"

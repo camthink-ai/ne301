@@ -1,6 +1,6 @@
 /**
  * @file rtsp_server.h
- * @brief RTSP protocol server — TCP listener, request parsing, response generation
+ * @brief RTSP protocol server - TCP listener, request parsing, response generation
  */
 
 #ifndef RTSP_SERVER_H

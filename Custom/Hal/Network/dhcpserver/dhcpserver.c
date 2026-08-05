@@ -116,7 +116,12 @@ int dhcps_del_client_by_mac(uint8_t *mac)
     dhcps_client_t *client = NULL;
 
     client = dhcps_get_client_by_mac(mac);
-    if (client != NULL) client->is_active = 0;
+    if (client != NULL) {
+        client->is_active = 0;
+        client->is_used   = 0;
+        client->Client_Address.addr = 0;
+        memset(client->Client_Mac, 0, sizeof(client->Client_Mac));
+    }
     return 0;
 }
 
@@ -858,6 +863,10 @@ static void handle_dhcp(void *arg,
             DHCPS_LOG("dhcps: handle_dhcp-> DHCPD_STATE_NAK\n");
 						#endif
             send_nak(pmsg_dhcps, malloc_len);
+        break;
+
+        case DHCPS_STATE_RELEASE://6
+            dhcps_del_client_by_mac(pmsg_dhcps->chaddr);
         break;
 
         default :

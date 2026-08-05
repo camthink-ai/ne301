@@ -75,6 +75,7 @@ export default function CellularNetworkPage() {
         authentication: 0,
         enable_roaming: false,
         operator: 0,
+        plmn: '',
         save: true
     });
     const isChinese = (str: string): boolean => /^[\u4e00-\u9fa5]+$/.test(str)
@@ -415,6 +416,11 @@ export default function CellularNetworkPage() {
                                         <SelectItem value="4">{i18n._('sys.system_management.cellular_operator_verizon') ?? 'American Verizon'}</SelectItem>
                                     </SelectContent>
                                 </Select>
+                            </div>
+                            <Separator />
+                            <div className="flex justify-between">
+                                <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.cellular_plmn') ?? 'PLMN'}</Label>
+                                <Input variant="ghost" onChange={(e) => setSaveCellularData((prev) => ({ ...prev, plmn: (e.target as HTMLInputElement).value }))} placeholder="e.g. 46000" value={saveCellularData?.plmn} className="text-sm text-text-primary w-[120px]" maxLength={6} />
                             </div>
                             <Separator />
                             <div className="flex justify-between items-center gap-2">

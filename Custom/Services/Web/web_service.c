@@ -21,8 +21,12 @@
 #include "api_rtmp_module.h"
 #include "api_rtsp_module.h"
 #include "api_webhook_module.h"
+#include "api_capture_module.h"
 #include "api_preview_module.h"
 #include "api_isp_module.h"
+#include "api_file_module.h"
+#include "web_recovery.h"
+#include "mem_map.h"
 #include <string.h>
 
 /* ==================== Web Service Context ==================== */
@@ -36,7 +40,7 @@ typedef struct {
 } web_service_context_t;
 
 static web_service_context_t g_web_service = {0};
-#define WEB_ASSETS_FLASH_ADDRESS 0x70400000
+#define WEB_ASSETS_FLASH_ADDRESS WEB_BASE
 
 
 /* ==================== Web Service Implementation ==================== */
@@ -87,14 +91,19 @@ aicam_result_t web_service_init(void *config)
     web_api_register_rtmp_module();
     web_api_register_rtsp_module();
     web_api_register_webhook_module();
+    web_api_register_capture_module();
     web_api_register_preview_module();
     web_api_register_isp_module();
+    web_api_register_file_module();
 
     // Initialize static resources
     result = web_asset_adapter_init((const uint8_t*)WEB_ASSETS_FLASH_ADDRESS);
     if (result != AICAM_OK) {
-        LOG_CORE_ERROR("Failed to initialize static resources: %d", result);
-        return result;
+        // The web asset firmware is missing/corrupt (e.g. after an OTA moved the
+        // web partition address). Don't abort the whole service — fall back to
+        // the built-in recovery page so the user can reflash the web firmware.
+        LOG_CORE_WARN("Failed to initialize static resources: %d, entering recovery mode", result);
+        web_recovery_activate();
     }
     
     // Initialize WebSocket stream server

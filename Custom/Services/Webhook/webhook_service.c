@@ -23,6 +23,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/* Verbose [WEBHOOK] diagnostic logs. Default OFF — set to 1 to trace service
+ * start and push task lifecycle. Operational errors use LOG_SVC_* regardless. */
+#define WEBHOOK_DEBUG 0
+#if WEBHOOK_DEBUG
+#define WEBHOOK_LOG(...) printf("[WEBHOOK] " __VA_ARGS__)
+#else
+#define WEBHOOK_LOG(...) ((void)0)
+#endif
+
 /* ==================== Configuration ==================== */
 
 #define WEBHOOK_TASK_STACK      (4096 * 4)
@@ -236,12 +245,12 @@ aicam_result_t webhook_service_start(void)
     g_webhook.task_handle = osThreadNew(webhook_push_task, NULL, &attr);
     if (!g_webhook.task_handle) {
         LOG_SVC_ERROR("Webhook: Failed to create push task");
-        printf("[WEBHOOK] ERROR: Failed to create push task\r\n");
+        WEBHOOK_LOG("ERROR: Failed to create push task\r\n");
         g_webhook.running = AICAM_FALSE;
         return AICAM_ERROR;
     }
 
-    printf("[WEBHOOK] service started, task handle=%p\r\n", (void*)g_webhook.task_handle);
+    WEBHOOK_LOG("service started, task handle=%p\r\n", (void*)g_webhook.task_handle);
     LOG_SVC_INFO("Webhook service started");
     return AICAM_OK;
 }
@@ -446,7 +455,7 @@ aicam_result_t webhook_service_wait_pending(uint32_t timeout_ms)
 static void webhook_push_task(void *arg)
 {
     (void)arg;
-    printf("[WEBHOOK] push task started (stack=%d)\r\n", WEBHOOK_TASK_STACK);
+    WEBHOOK_LOG("push task started (stack=%d)\r\n", WEBHOOK_TASK_STACK);
     LOG_SVC_INFO("Webhook push task started (stack=%d)", WEBHOOK_TASK_STACK);
 
     while (g_webhook.running) {
@@ -574,7 +583,7 @@ static aicam_result_t webhook_do_push(const uint8_t *jpeg_data, uint32_t jpeg_si
 
     device_info_config_t *dev_info = (device_info_config_t *)buffer_calloc(1, sizeof(device_info_config_t));
     if (dev_info) {
-        if (device_service_get_info(dev_info) == AICAM_OK) {
+        if (device_service_get_cached_info(dev_info) == AICAM_OK) {
             cJSON *dev = cJSON_CreateObject();
             if (dev) {
                 cJSON_AddStringToObject(dev, "device_name", dev_info->device_name);
