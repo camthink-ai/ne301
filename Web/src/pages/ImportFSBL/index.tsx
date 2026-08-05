@@ -18,13 +18,25 @@ export default function ImportFSBL() {
     const { i18n } = useLingui();
     const { uploadOTAFileReq, updateOTAReq, restartDevice, getDeviceInfoReq } = systemApis;
     const [fsblFile, setFsblFile] = useState<File | null>(null);
-    const [uploadLoading, setUploadLoading] = useState(false);
     const [isBurning, setIsBurning] = useState(false);
     const [isRestarting, setIsRestarting] = useState(false);
 
+    // Selecting a file only stores it locally. The actual burn starts on "confirm burn".
     const uploadFSBL = async (file: File) => {
+        setFsblFile(file);
+    };
+
+    const handleUpdate = async () => {
+        if (!fsblFile) {
+            toast.error(i18n._('sys.system_management.please_select_firmware_file'));
+            return;
+        }
+        const file = fsblFile;
         try {
-            setUploadLoading(true);
+            setIsBurning(true);
+            setIsRestarting(true);
+            // /ota/upload writes the firmware to flash (the actual burn); upgrade-local
+            // finalizes it, then restart activates it. All of this runs on "confirm burn".
             await uploadOTAFileReq(file, 'fsbl');
             await updateOTAReq({
                 filename: file.name,
@@ -34,23 +46,6 @@ export default function ImportFSBL() {
                 allow_downgrade: true,
                 auto_upgrade: true,
             });
-            setFsblFile(file);
-        } catch (error) {
-            console.error('uploadFSBL', error);
-            throw error;
-        } finally {
-            setUploadLoading(false);
-        }
-    };
-
-    const handleUpdate = async () => {
-        if (!fsblFile) {
-            toast.error(i18n._('sys.system_management.please_select_firmware_file'));
-            return;
-        }
-        try {
-            setIsBurning(true);
-            setIsRestarting(true);
             await restartDevice({ delay_seconds: 1 }, { skipErrorToast: true });
             await sleep(8000);
             const result = await retryFetch(
@@ -59,14 +54,13 @@ export default function ImportFSBL() {
                 10,
             );
             if (result) {
+                setIsBurning(false);
                 toast.success(i18n._('sys.system_management.update_success'));
             }
         } catch (error) {
             console.error('handleUpdate', error);
-            throw error;
         } finally {
             setIsRestarting(false);
-            setIsBurning(false);
         }
     };
 
@@ -96,7 +90,7 @@ export default function ImportFSBL() {
                 <WifiReloadMask
                   isLoading={isRestarting}
                   loadingText={i18n._('sys.system_management.firmware_upgrade_desc')}
-                  maskText={i18n._('sys.system_management.firmware_upgrade_success')}
+                  maskText={i18n._('sys.system_management.network_disconnected')}
                 />
             )}
             <Card className="md:max-w-xl mx-4 w-full">
@@ -114,7 +108,6 @@ export default function ImportFSBL() {
                       maxFiles={1}
                       maxSize={MAX_SIZE}
                       multiple={false}
-                      loading={uploadLoading}
                       onFileChange={uploadFSBL}
                     />
 
@@ -122,7 +115,7 @@ export default function ImportFSBL() {
                         <Button
                           variant="primary"
                           className="w-1/2 md:w-auto"
-                          disabled={!fsblFile || uploadLoading || isBurning}
+                          disabled={!fsblFile || isBurning}
                           onClick={() => handleUpdate()}
                         >
                             {i18n._('sys.system_management.confirm_burn')}
