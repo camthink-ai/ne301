@@ -40,20 +40,43 @@ declare const JMuxer: {
 // @ts-expect-error: importScripts is only available in worker context and jmuxer is UMD
 importScripts('/libs/jmuxer.min.js');
 
-const jmuxer: JMuxer = new JMuxer();
+const jmuxer: JMuxer = new JMuxer({ fps: 25 });
+let animationFrameId: number | null = null;
+let jmuxerCmd: MessageEvent<VideoWorkerMessage>[] = [];
 
 function receiveMessage(event: MessageEvent<VideoWorkerMessage>): void {
-    const msg = event.data;
-    switch (msg.cmd) {
-        case 'stop':
-            jmuxer.destroy();
-            // eslint-disable-next-line no-restricted-globals
-            self.close();
+    if (animationFrameId === null) {
+        animationFrameId = requestAnimationFrame(dealJmuxerCmd);
+    }
+    jmuxerCmd.push(event);
+}
+
+function dealJmuxerCmd(): void {
+    while (jmuxerCmd.length > 0) {
+        const event = jmuxerCmd.shift();
+        if (event === undefined) {
             break;
-        case 'video':
-            if (msg.data) {
-                const videoBytes = msg.data instanceof Uint8Array ? msg.data : new Uint8Array(msg.data);
-                if (videoBytes.byteLength > 0) {
+        }
+        const msg = event.data;
+
+        switch (msg.cmd) {
+            case 'stop':
+                jmuxer.destroy();
+                if (animationFrameId !== null) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                }
+                jmuxerCmd = [];
+                // eslint-disable-next-line no-restricted-globals
+                self.close();
+                return;
+            case 'video':
+                if (msg.data) {
+                    const videoBytes: Uint8Array = msg.data instanceof Uint8Array
+                        ? msg.data
+                        : new Uint8Array(msg.data);
+                    if (videoBytes.byteLength === 0) break;
+
                     jmuxer.feed({
                         video: videoBytes,
                         time: msg.videoTime,
@@ -61,11 +84,13 @@ function receiveMessage(event: MessageEvent<VideoWorkerMessage>): void {
                         userData: msg.userData,
                     });
                 }
-            }
-            break;
-        default:
-            break;
+                break;
+            default:
+                break;
+        }
     }
+
+    animationFrameId = null;
 }
 
 onmessage = receiveMessage;
