@@ -15,7 +15,7 @@ import systemSettings from '@/services/api/systemSettings';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Input } from '@/components/ui/input';
 import WifiReloadMask from '@/components/wifi-reload-mask';
-import { sleep, retryFetch } from '@/utils';
+import { sleep } from '@/utils';
 import { useCommunicationData } from '@/store/communicationData';
 
 type WifiData = {
@@ -28,6 +28,13 @@ type WifiData = {
     is_known: boolean;
     last_connected_time: number;
 }
+
+// When refreshing/reconnecting, poll the STA interface instead of failing fast on a
+// transient 500. Only surface "network disconnected" after this timeout elapses.
+const POLL_TIMEOUT = 20000;
+const POLL_INTERVAL = 1000;
+const POLL_REQUEST_TIMEOUT = 2000;
+
 export default function WifiNetworkPage() {
     const { i18n } = useLingui();
     const isMobile = useIsMobile();
@@ -166,7 +173,7 @@ export default function WifiNetworkPage() {
                     interface: 'wl'
                 }).then(resolve).catch(reject);
             })
-            await reloadMask(setWifiFn, 3000, 3, i18n._('sys.system_management.connecting_network'));
+            await reloadMask(setWifiFn, i18n._('sys.system_management.connecting_network'));
         } catch (error) {
             console.error('handleConnectWifi', error);
         } finally {
@@ -196,7 +203,7 @@ export default function WifiNetworkPage() {
             await scanWifi();
             await sleep(3000);
         };
-        reloadMask(waitScanWifi, 3000, 3, i18n._('sys.system_management.scanning_network'));
+        reloadMask(waitScanWifi, i18n._('sys.system_management.scanning_network'));
     }
     const handleDeleteWifi = async (wifiData: WifiData) => {
         try {
@@ -207,27 +214,51 @@ export default function WifiNetworkPage() {
         }
     }
 
-    const reloadMask = async (fetchFn: () => Promise<any>, loadingTime: number, loadCount: number, _loadingText: string) => {
+    // Raw STA request used while reconnecting. It throws on failure so the poll loop
+    // below can retry, and suppresses error toasts so a reconnecting device does not
+    // spam "500" notifications on every attempt.
+    const pollNetworkSTA = async (timeoutMs: number) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const res = await getNetworkSTAReq({ skipErrorToast: true, signal: controller.signal });
+            setCurrentWifiData(res.data);
+            setKnownWifiDataList(res.data.scan_results.known_networks);
+            setOtherWifiDataList(res.data.scan_results.unknown_networks);
+            return res;
+        } finally {
+            clearTimeout(timeoutId);
+        }
+    }
+
+    const reloadMask = async (fetchFn: () => Promise<any>, _loadingText: string) => {
         setLoadingText(_loadingText);
         setIsReloading(true);
         setShowWifiReloadMask(true);
-        fetchFn().then(async () => {
-            const result = await retryFetch(getNetworkSTA, loadingTime, loadCount);
-            if (result) {
-                setShowWifiReloadMask(false);
+        try {
+            await fetchFn();
+        } catch (error) {
+            console.error('reloadMask fetchFn', error);
+        }
+        // Poll the STA interface until it responds again or the timeout elapses.
+        // Only keep the "network disconnected" mask visible if polling truly times out.
+        let reconnected = false;
+        const start = Date.now();
+        /* eslint-disable no-await-in-loop -- sequential polling is intentional */
+        while (Date.now() - start < POLL_TIMEOUT) {
+            try {
+                await pollNetworkSTA(POLL_REQUEST_TIMEOUT);
+                reconnected = true;
+                break;
+            } catch {
+                await sleep(POLL_INTERVAL);
             }
-        }).catch(async (error) => {
-            if (error.status && error.status === 200) {
-                const result = await retryFetch(getNetworkSTA, loadingTime, loadCount);
-                if (result) {
-                    setShowWifiReloadMask(false);
-                }
-            }
-            throw error;
-        })
-            .finally(() => {
-                setIsReloading(false);
-            });
+        }
+        /* eslint-enable no-await-in-loop */
+        if (reconnected) {
+            setShowWifiReloadMask(false);
+        }
+        setIsReloading(false);
     }
     return (
         <div className="mt-2">

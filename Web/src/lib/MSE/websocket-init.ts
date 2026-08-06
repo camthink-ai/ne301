@@ -5,9 +5,6 @@ let currentUrl: string | null = null;
 let shouldReconnect = false;
 
 let retryCount = 0;
-const maxRetryCount = 3;
-const retryWindowMs = 60 * 1000;
-let firstRetryTime: number | null = null;
 const baseDelay = 1000; // ms
 let retryTimer: number | null = null;
  
@@ -41,6 +38,10 @@ function teardown(resetUrl = false): void {
     if (ws) {
         const socket = ws;
         ws = null;
+        socket.onopen = null;
+        socket.onclose = null;
+        socket.onerror = null;
+        socket.onmessage = null;
         safeClose(socket);
     }
 
@@ -52,27 +53,7 @@ function teardown(resetUrl = false): void {
 }
 
 function scheduleReconnect(): void {
-    if (!shouldReconnect || !currentUrl) {
-        return;
-    }
-
-    const now = Date.now();
-    
-    // If this is the first reconnection, record the timestamp
-    if (firstRetryTime === null) {
-        firstRetryTime = now;
-    }
-    
-    // Check if more than 1 minute have passed
-    if (now - firstRetryTime >= retryWindowMs) {
-        // If more than 10 minutes have passed, reset the count and timestamp
-        retryCount = 0;
-        firstRetryTime = now;
-    }
-    
-    // Check the number of reconnection attempts in the last 1 minute
-    if (retryCount >= maxRetryCount) {
-        ctx.postMessage({ type: 'close', code: 4999, reason: 'Max retries reached in 10 minutes' });
+    if (!shouldReconnect || !currentUrl || retryTimer !== null) {
         return;
     }
 
@@ -83,6 +64,7 @@ function scheduleReconnect(): void {
     clearRetryTimer();
     retryTimer = setTimeout(() => {
         attemptConnect(currentUrl!);
+        retryTimer = null;
     }, delay) as unknown as number;
 }
 
@@ -93,16 +75,18 @@ function attemptConnect(url: string): void {
         // Notify main thread: connection is starting (used to show loading UI)
         ctx.postMessage({ type: 'connecting' });
         ws = new WebSocket(url);
-        ws.binaryType = 'arraybuffer';
+        const socket = ws;
+        socket.binaryType = 'arraybuffer';
 
-        ws.onopen = () => {
+        socket.onopen = () => {
+            if (ws !== socket) return;
             retryCount = 0;
-            firstRetryTime = null; // Reset the time window
             clearRetryTimer();
             ctx.postMessage({ type: 'open' });
         };
 
-        ws.onclose = (event: CloseEvent) => {
+        socket.onclose = (event: CloseEvent) => {
+            if (ws !== socket) return;
             const wasManual = !shouldReconnect;
             teardown(!shouldReconnect);
 
@@ -111,20 +95,20 @@ function attemptConnect(url: string): void {
                 return;
             }
 
-            // 1000-1006: Normal/Strategic close does not reconnect
-            if (event.code >= 1000 && event.code <= 1005) {
+            if (event.reason === 'Connection replaced') {
                 ctx.postMessage({ type: 'close', code: event.code, reason: event.reason });
                 return;
             }
             scheduleReconnect();
         };
 
-        ws.onerror = () => {
+        socket.onerror = () => {
+            if (ws !== socket) return;
             ctx.postMessage({ type: 'error', error: 'WebSocket error' });
-            scheduleReconnect();
         };
 
-        ws.onmessage = (event: MessageEvent) => {
+        socket.onmessage = (event: MessageEvent) => {
+            if (ws !== socket) return;
             const payload = event.data;
             const message = { type: 'video-data', payload } as const;
             if (payload instanceof ArrayBuffer) {
@@ -160,7 +144,6 @@ function attemptConnect(url: string): void {
             shouldReconnect = true;
             currentUrl = url;
             retryCount = 0;
-            firstRetryTime = null; // Reset the time window
             clearRetryTimer();
             attemptConnect(url);
             break;
