@@ -138,6 +138,17 @@ export default class H264Player {
 
     private isConnected: boolean = false;
 
+    private healthCheckTimer: number | null = null;
+
+    private lastValidFrameAt: number = 0;
+
+    private connectionStartedAt: number = 0;
+
+    private lastHealthPlaybackTime: number = 0;
+
+    private playbackStallStartedAt: number = 0;
+
+    private recoveryInFlight: boolean = false;
     // private hederBits: Uint8Array = new Uint8Array(0);
 
     public packetCount: number = 0;
@@ -286,6 +297,7 @@ export default class H264Player {
 
                         const frameData = this.dealVideoData(msg.payload);
                         if (frameData) {
+                            this.lastValidFrameAt = Date.now();
                             this.packetCount++;
                             this.decoderWorker?.postMessage(frameData);
                         }
@@ -345,6 +357,7 @@ export default class H264Player {
         });
         this.videoPlayer.setVideoElement(this.videoElement);
         this.setupProgressHandler();
+        this.startHealthCheck();
         return this;
     }
 
@@ -374,6 +387,9 @@ export default class H264Player {
             await sleep(500);
         }
         this.isStarted = true;
+        this.connectionStartedAt = Date.now();
+        this.lastValidFrameAt = 0;
+        this.playbackStallStartedAt = 0;
         this.initWorkers();
         this.wsConnect(url);
         this.decodeWorker?.postMessage({ type: 'init' });
@@ -382,6 +398,7 @@ export default class H264Player {
 
     destroy(): void {
         this.stopPlay();
+        this.stopHealthCheck();
         if (this.webSocketWorker) {
             this.wsDisconnect();
             try {
@@ -432,6 +449,59 @@ export default class H264Player {
         this.isStarted = false;
     }
     
+    private startHealthCheck(): void {
+        this.stopHealthCheck();
+        this.lastHealthPlaybackTime = this.videoElement?.currentTime ?? 0;
+        this.healthCheckTimer = window.setInterval(() => {
+            if (!this.isStarted || !this.wsUrl || this.recoveryInFlight) return;
+
+            const now = Date.now();
+            if (document.visibilityState === 'hidden') {
+                this.connectionStartedAt = now;
+                this.lastValidFrameAt = this.lastValidFrameAt > 0 ? now : 0;
+                this.playbackStallStartedAt = 0;
+                return;
+            }
+
+            const referenceTime = this.lastValidFrameAt || this.connectionStartedAt;
+            const timeoutMs = this.lastValidFrameAt > 0 ? 5000 : 8000;
+            if (referenceTime > 0 && now - referenceTime >= timeoutMs) {
+                this.triggerRecovery();
+                return;
+            }
+
+            const playbackTime = this.videoElement?.currentTime ?? 0;
+            if (this.lastValidFrameAt > 0
+                && Math.abs(playbackTime - this.lastHealthPlaybackTime) < 0.01) {
+                if (this.playbackStallStartedAt === 0) this.playbackStallStartedAt = now;
+                if (now - this.playbackStallStartedAt >= 5000) this.triggerRecovery();
+            } else {
+                this.lastHealthPlaybackTime = playbackTime;
+                this.playbackStallStartedAt = 0;
+            }
+        }, 1000);
+    }
+
+    private stopHealthCheck(): void {
+        if (this.healthCheckTimer !== null) {
+            clearInterval(this.healthCheckTimer);
+            this.healthCheckTimer = null;
+        }
+    }
+
+    private triggerRecovery(): void {
+        if (this.recoveryInFlight) return;
+        this.recoveryInFlight = true;
+        this.connectionStartedAt = Date.now();
+        this.lastValidFrameAt = 0;
+        this.playbackStallStartedAt = 0;
+        this.hardRestart()
+            .catch((error) => console.error('Video stream recovery failed', error))
+            .finally(() => {
+                this.recoveryInFlight = false;
+            });
+    }
+
     /**
      * Restart video stream after model upload / device pipeline reset
      */

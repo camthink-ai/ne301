@@ -54,6 +54,14 @@ class MsMediaSource {
 
     private readonly LIVE_SYNC_COOLDOWN_MS = 150;
 
+    // iOS WebKit renders playbackRate catch-up unreliably, so live preview uses
+    // low-frequency seeks to the live edge and tolerates short rebuffer events.
+    private readonly IOS_LIVE_TARGET_LATENCY = 0.4;
+
+    private readonly IOS_SEEK_COOLDOWN_MS = 1000;
+
+    private readonly IOS_STALL_REBUFFER_MS = 2000;
+
     private lastLiveSyncMs = 0;
 
     private lastPlaybackTime = 0;
@@ -64,7 +72,17 @@ class MsMediaSource {
 
     private hasStartedPlayback = false;
 
+    // iOS WebKit flag (auto-detected, overridable in tests). When true the player
+    // prefers low-frequency seeks over playbackRate ramps for live catch-up.
+    private isIOSWebKit: boolean = typeof navigator !== 'undefined'
+        && (/iPad|iPhone|iPod/.test(navigator.userAgent)
+            || (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints ?? 0) > 1));
+
+    private stallStartedMs: number | null = null;
+
     private boundOnVideoStall: (() => void) | null = null;
+
+    private readonly boundVideoErrorCallback = (event: Event) => this.videoErrorCallback(event);
 
     // Buffer management optimization
     private readonly MAX_FRAME_BUFFER_SIZE: number = 60;
@@ -116,6 +134,11 @@ class MsMediaSource {
             return;
         }
 
+        if (this.isIOSWebKit) {
+            this.syncIOSLivePreview(liveEdge, bufferTime, now);
+            return;
+        }
+
         // Hard catch-up only for a real backlog; ordinary jitter is absorbed by
         // the live cache instead of causing repeated seeks.
         if (bufferTime > 1.2) {
@@ -138,6 +161,32 @@ class MsMediaSource {
                 this.videoElement.playbackRate = rate;
             }
         } else if (this.videoElement.playbackRate !== 1) {
+            this.videoElement.playbackRate = 1;
+        }
+    }
+
+    /**
+     * iOS WebKit live catch-up: seek to the live edge instead of ramping the
+     * playbackRate, and only promote a short stall to a full rebuffer once it has
+     * persisted past the tolerance window.
+     */
+    private syncIOSLivePreview(liveEdge: number, bufferTime: number, now: number): void {
+        if (!this.videoElement) return;
+
+        if (this.stallStartedMs !== null && now - this.stallStartedMs >= this.IOS_STALL_REBUFFER_MS) {
+            this.stallStartedMs = null;
+            this.waitingForBuffer = true;
+            return;
+        }
+
+        if (bufferTime > 0.55 && now - this.lastLiveSyncMs >= this.IOS_SEEK_COOLDOWN_MS) {
+            this.videoElement.currentTime = Math.max(0, liveEdge - this.IOS_LIVE_TARGET_LATENCY);
+            this.videoElement.playbackRate = 1;
+            this.lastLiveSyncMs = now;
+            this.videoElement.play();
+        }
+
+        if (this.videoElement.playbackRate !== 1) {
             this.videoElement.playbackRate = 1;
         }
     }
@@ -172,6 +221,7 @@ class MsMediaSource {
         if (t !== this.lastPlaybackTime) {
             this.lastPlaybackTime = t;
             this.lastPlaybackCheckMs = Date.now();
+            this.stallStartedMs = null;
         }
     }
 
@@ -192,7 +242,7 @@ class MsMediaSource {
 
         try {
             // create video
-            this.videoElement?.addEventListener("error", this.videoErrorCallback.bind(this));
+            this.videoElement?.addEventListener("error", this.boundVideoErrorCallback);
 
             // create mse
             this.mediaSource = new MediaSourceCtor();
@@ -272,8 +322,10 @@ class MsMediaSource {
 
             // Try to reinitialize MSE (preserve existing mimeCodec and videoElement)
             const codec = this.mimeCodec;
+            const video = this.videoElement;
             // First completely clean up to avoid residual state
             this.uninitMse();
+            if (video) this.setVideoElement(video);
             this.initFlag = MsMediaSource.statusIdel;
             if (codec && this.videoElement) {
                 // Slight delay to avoid immediate rebuild in the same event loop as error trigger
@@ -502,6 +554,12 @@ class MsMediaSource {
         }
         this.videoElement = video;
         this.boundOnVideoStall = () => {
+            if (this.isIOSWebKit) {
+                // Debounce short iOS rebuffer events; syncIOSLivePreview promotes a
+                // persistent stall to a full rebuffer after the tolerance window.
+                if (this.stallStartedMs === null) this.stallStartedMs = Date.now();
+                return;
+            }
             this.waitingForBuffer = true;
             this.recoverIfNeeded();
         };
@@ -520,6 +578,7 @@ class MsMediaSource {
         this.lastPlaybackCheckMs = 0;
         this.waitingForBuffer = true;
         this.hasStartedPlayback = false;
+        this.stallStartedMs = null;
         if (this.sourceBuffer && !this.sourceBuffer.updating && this.mediaSource && this.mediaSource.readyState === 'open') {
             try {
                 const { buffered } = this.sourceBuffer;
@@ -550,7 +609,7 @@ class MsMediaSource {
                 this.videoElement.removeEventListener('stalled', this.boundOnVideoStall);
                 this.boundOnVideoStall = null;
             }
-            this.videoElement.removeEventListener("error", this.videoErrorCallback);
+            this.videoElement.removeEventListener("error", this.boundVideoErrorCallback);
             window.URL.revokeObjectURL(this.videoElement.src);
             this.videoElement.src = "";
         }
