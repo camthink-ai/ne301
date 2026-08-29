@@ -830,6 +830,15 @@ static void main_pipe_frame_event()
             buffer_release_isr(buffer, &g_camera.pipe1_dq);
         }
     }else if(buffer1 != NULL && buffer1->data != NULL){
+        /*
+         * buffer1 was marked BUFFER_READY above but the DCMIPP is about to
+         * DMA into it; demote it so it cannot be handed out mid-write. Only
+         * when buffer == NULL: otherwise buffer_acquire already promoted a
+         * different buffer, and a second PROCESSING buffer would break
+         * find_processing_buffer.
+         */
+        if (buffer == NULL)
+            buffer1->state = BUFFER_PROCESSING;
         ret = HAL_DCMIPP_PIPE_SetMemoryAddress(CMW_CAMERA_GetDCMIPPHandle(), DCMIPP_PIPE1,
                                                 DCMIPP_MEMORY_ADDRESS_0, (uint32_t) buffer1->data);
         if(ret == HAL_OK){
@@ -874,6 +883,9 @@ static void ancillary_pipe_frame_event()
             buffer_release_isr(buffer, &g_camera.pipe2_dq);
         }
     }else if(buffer1 != NULL && buffer1->data != NULL){
+        /* Same demote as main_pipe_frame_event above. */
+        if (buffer == NULL)
+            buffer1->state = BUFFER_PROCESSING;
         ret = HAL_DCMIPP_PIPE_SetMemoryAddress(CMW_CAMERA_GetDCMIPPHandle(), DCMIPP_PIPE2,
                                                 DCMIPP_MEMORY_ADDRESS_0, (uint32_t) buffer1->data);
         if(ret == HAL_OK){
