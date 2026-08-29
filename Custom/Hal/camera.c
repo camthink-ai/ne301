@@ -1083,6 +1083,18 @@ static int pipe_stop_common(camera_t *camera, uint32_t pipe_id, pipe_buffer_t **
             *pipe_buffer = NULL;
             return AICAM_OK;
         }else{
+            /*
+             * The pipe is still running but the frame interrupt was disabled
+             * above; re-arm it or no frame event ever fires again and
+             * camera_start short-circuits on the unchanged pipe_state.
+             */
+            if (hdcmipp != NULL) {
+                if (pipe_id == DCMIPP_PIPE1) {
+                    __HAL_DCMIPP_ENABLE_IT(hdcmipp, DCMIPP_IT_PIPE1_FRAME | DCMIPP_IT_PIPE1_VSYNC);
+                } else if (pipe_id == DCMIPP_PIPE2) {
+                    __HAL_DCMIPP_ENABLE_IT(hdcmipp, DCMIPP_IT_PIPE2_FRAME | DCMIPP_IT_PIPE2_VSYNC);
+                }
+            }
             LOG_DRV_ERROR("pipe%lu stop failed: %d\r\n", pipe_id, ret);
             return AICAM_ERROR;
         }
