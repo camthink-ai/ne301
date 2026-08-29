@@ -1346,6 +1346,12 @@ static int camera_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsig
                 ret = AICAM_ERROR_INVALID_PARAM;
                 break;
             }
+            /* One buffer cannot work: the frame event needs somewhere to write
+               while a consumer holds the published frame. */
+            if(((pipe_params_t *)ubuf)->buffer_nb < 2){
+                ret = AICAM_ERROR_INVALID_PARAM;
+                break;
+            }
             memcpy(&camera->pipe1_param, ubuf, sizeof(pipe_params_t));
             ret = DCMIPP_Pipe1Init(camera);
             break;
@@ -1356,6 +1362,12 @@ static int camera_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsig
                 break;
             }
             if(ubuf == NULL || arg != sizeof(pipe_params_t)){
+                ret = AICAM_ERROR_INVALID_PARAM;
+                break;
+            }
+            /* One buffer cannot work: the frame event needs somewhere to write
+               while a consumer holds the published frame. */
+            if(((pipe_params_t *)ubuf)->buffer_nb < 2){
                 ret = AICAM_ERROR_INVALID_PARAM;
                 break;
             }
