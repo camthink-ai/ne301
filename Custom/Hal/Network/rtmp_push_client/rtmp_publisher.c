@@ -55,30 +55,41 @@ static const uint8_t* find_nal_start(const uint8_t *data, uint32_t size, uint32_
             const uint8_t *next_start = nal_start;
             
             // Find next start code
-            while (next_start < end - 3) {
-                if (next_start[0] == 0 && next_start[1] == 0 && 
+            while (end - next_start >= 4) {
+                if (next_start[0] == 0 && next_start[1] == 0 &&
                     next_start[2] == 0 && next_start[3] == 1) {
                     break;
                 }
                 next_start++;
             }
-            
-            *nal_size = next_start - nal_start;
+
+            // None found: this NAL runs to the end of the buffer
+            if (end - next_start < 4) {
+                next_start = end;
+            }
+
+            *nal_size = (uint32_t)(next_start - nal_start);
             return nal_start;
         } else if (p[0] == 0 && p[1] == 0 && p[2] == 1) {
             // Found 3-byte start code
             const uint8_t *nal_start = p + 3;
             const uint8_t *next_start = nal_start;
             
-            // Find next start code
-            while (next_start < end - 2) {
-                if (next_start[0] == 0 && next_start[1] == 0 && 
-                    (next_start[2] == 1 || (next_start[2] == 0 && next_start[3] == 1))) {
+            // Find next start code; the length guard keeps next_start[3]
+            // inside the buffer
+            while (end - next_start >= 3) {
+                if (next_start[0] == 0 && next_start[1] == 0 &&
+                    (next_start[2] == 1 ||
+                     (end - next_start >= 4 && next_start[2] == 0 && next_start[3] == 1))) {
                     break;
                 }
                 next_start++;
             }
-            
+
+            if (end - next_start < 3) {
+                next_start = end;
+            }
+
             *nal_size = (uint32_t)(next_start - nal_start);
             return nal_start;
         }
