@@ -42,11 +42,10 @@
 #define RTMP_SEND_TASK_STACK_SIZE       (4096 * 2)
 #define RTMP_SEND_TASK_PRIORITY         osPriorityNormal
 
-// Auto-start. The service never read rtmp_enable, so a reboot left the
-// push idle until something called the API.
 #define RTMP_AUTOSTART_TASK_STACK_SIZE  (4096 * 2)
 #define RTMP_AUTOSTART_TASK_PRIORITY    osPriorityNormal
-#define RTMP_AUTOSTART_STA_TIMEOUT_MS   120000  // WiFi assoc + DHCP after a cold boot
+#define RTMP_AUTOSTART_STA_SLICE_MS     30000   // one wait slice for STA
+#define RTMP_AUTOSTART_STA_BUDGET_MS    900000  // give up after 15 min without STA
 #define RTMP_AUTOSTART_MAX_ATTEMPTS     5
 #define RTMP_AUTOSTART_RETRY_MS         5000
 
@@ -724,11 +723,25 @@ static void rtmp_autostart_task(void *argument)
 {
     (void)argument;
 
-    aicam_result_t result = service_wait_for_ready(SERVICE_READY_STA, AICAM_TRUE,
-                                                   RTMP_AUTOSTART_STA_TIMEOUT_MS);
+    // Slices rather than one shot: a slow or initially failed association
+    // still gets its push when the link finally comes up.
+    aicam_result_t result = AICAM_ERROR;
+    uint32_t waited_ms = 0;
+    while (waited_ms < RTMP_AUTOSTART_STA_BUDGET_MS) {
+        if (!g_rtmp_ctx.autostart_task_running || !g_rtmp_ctx.running) {
+            break;
+        }
+        result = service_wait_for_ready(SERVICE_READY_STA, AICAM_TRUE,
+                                        RTMP_AUTOSTART_STA_SLICE_MS);
+        if (result == AICAM_OK) {
+            break;
+        }
+        waited_ms += RTMP_AUTOSTART_STA_SLICE_MS;
+    }
+
     if (result != AICAM_OK) {
-        LOG_SVC_WARN("RTMP auto-start: STA not ready within %d ms (%d), leaving push idle",
-                     RTMP_AUTOSTART_STA_TIMEOUT_MS, result);
+        LOG_SVC_WARN("RTMP auto-start: no STA after %lu ms (%d), leaving push idle",
+                     (unsigned long)waited_ms, result);
     } else {
         for (uint32_t attempt = 1; attempt <= RTMP_AUTOSTART_MAX_ATTEMPTS; attempt++) {
             if (!g_rtmp_ctx.autostart_task_running || !g_rtmp_ctx.running) {
