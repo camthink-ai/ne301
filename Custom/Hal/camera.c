@@ -1084,14 +1084,23 @@ static int pipe_stop_common(camera_t *camera, uint32_t pipe_id, pipe_buffer_t **
             return AICAM_OK;
         }else{
             /*
-             * The pipe is still running but the frame interrupt was disabled
-             * above; re-arm it or no frame event ever fires again and
-             * camera_start short-circuits on the unchanged pipe_state.
+             * The stop failed and PIPEN says which half. If the pipe is still
+             * enabled, DCMIPP_Stop timed out with the capture request already
+             * cleared: DMA may still be active so the buffers must stay, and
+             * re-enabling the interrupt alone would not bring frames back --
+             * re-assert the capture request so the pipe genuinely keeps
+             * running for the caller's retry. If the pipe is disabled, the
+             * capture drained but the CSI virtual channel failed to stop; the
+             * HAL pipe state cannot be rebuilt from here, so just report it.
              */
             if (hdcmipp != NULL) {
-                if (pipe_id == DCMIPP_PIPE1) {
+                if (pipe_id == DCMIPP_PIPE1 &&
+                    (hdcmipp->Instance->P1FSCR & DCMIPP_P1FSCR_PIPEN) != 0U) {
+                    SET_BIT(hdcmipp->Instance->P1FCTCR, DCMIPP_P1FCTCR_CPTREQ);
                     __HAL_DCMIPP_ENABLE_IT(hdcmipp, DCMIPP_IT_PIPE1_FRAME | DCMIPP_IT_PIPE1_VSYNC);
-                } else if (pipe_id == DCMIPP_PIPE2) {
+                } else if (pipe_id == DCMIPP_PIPE2 &&
+                           (hdcmipp->Instance->P2FSCR & DCMIPP_P2FSCR_PIPEN) != 0U) {
+                    SET_BIT(hdcmipp->Instance->P2FCTCR, DCMIPP_P2FCTCR_CPTREQ);
                     __HAL_DCMIPP_ENABLE_IT(hdcmipp, DCMIPP_IT_PIPE2_FRAME | DCMIPP_IT_PIPE2_VSYNC);
                 }
             }
