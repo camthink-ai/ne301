@@ -906,6 +906,15 @@ aicam_result_t rtmp_service_start_stream(void)
 
     osMutexAcquire(g_rtmp_ctx.mutex, osWaitForever);
 
+    // Revalidate under the mutex: a concurrent caller may have started the
+    // stream between the check above and here.
+    if (g_rtmp_ctx.stream_state != RTMP_STREAM_STATE_IDLE &&
+        g_rtmp_ctx.stream_state != RTMP_STREAM_STATE_ERROR) {
+        osMutexRelease(g_rtmp_ctx.mutex);
+        LOG_SVC_WARN("Stream already active, state: %d", g_rtmp_ctx.stream_state);
+        return AICAM_ERROR_BUSY;
+    }
+
     LOG_SVC_INFO("Starting RTMP stream (%s mode)", 
                  g_rtmp_ctx.config.async_send ? "async" : "sync");
     g_rtmp_ctx.stream_state = RTMP_STREAM_STATE_CONNECTING;
