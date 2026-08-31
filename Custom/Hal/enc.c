@@ -423,10 +423,13 @@ static int ENC_H264_SetQpFloor(enc_t *enc, int qp_floor)
     if (ret != H264ENC_OK)
         return ret;
 
-    /* qpHdr must stay inside [qpMin, qpMax] or the setter rejects the call */
+    /* qpHdr and qpMax must stay >= qpMin or the setter rejects the call;
+       constant-QP mode pins qpMax to the configured QP. */
     rate.qpMin = qp_floor;
     if (rate.qpHdr < qp_floor)
         rate.qpHdr = qp_floor;
+    if (rate.qpMax < qp_floor)
+        rate.qpMax = qp_floor;
 
     return H264EncSetRateCtrl(p_ctx->hdl, &rate);
 }
