@@ -747,8 +747,10 @@ static void rtmp_autostart_task(void *argument)
             if (!g_rtmp_ctx.autostart_task_running || !g_rtmp_ctx.running) {
                 break;
             }
-            // Someone called the API first; leave their stream alone.
-            if (g_rtmp_ctx.stream_state != RTMP_STREAM_STATE_IDLE) {
+            // Someone called the API first; leave their stream alone. ERROR
+            // is retryable, matching rtmp_service_start_stream's entry check.
+            if (g_rtmp_ctx.stream_state != RTMP_STREAM_STATE_IDLE &&
+                g_rtmp_ctx.stream_state != RTMP_STREAM_STATE_ERROR) {
                 LOG_SVC_INFO("RTMP auto-start: stream already active, standing down");
                 break;
             }
