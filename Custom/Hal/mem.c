@@ -85,7 +85,6 @@ static void mem_pool_destroy(mem_handle_t handle)
         return;
     }
     osMutexDelete(handle->mtx_id);
-    free(handle);
 }
 
 static void *mem_pool_alloc(mem_handle_t handle, size_t size)
