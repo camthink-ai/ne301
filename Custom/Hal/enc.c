@@ -423,6 +423,14 @@ static int ENC_H264_SetQpFloor(enc_t *enc, int qp_floor)
     if (ret != H264ENC_OK)
         return ret;
 
+    /* Snapshot the configured bounds on the first escalation so recovery
+       restores them exactly (VBR runs with qpMin 10, not the header QP). */
+    if (enc->qp_floor_step == 0) {
+        enc->qp_orig_min = rate.qpMin;
+        enc->qp_orig_max = rate.qpMax;
+        enc->qp_orig_hdr = rate.qpHdr;
+    }
+
     /* qpHdr and qpMax must stay >= qpMin or the setter rejects the call;
        constant-QP mode pins qpMax to the configured QP. */
     rate.qpMin = qp_floor;
@@ -430,6 +438,23 @@ static int ENC_H264_SetQpFloor(enc_t *enc, int qp_floor)
         rate.qpHdr = qp_floor;
     if (rate.qpMax < qp_floor)
         rate.qpMax = qp_floor;
+
+    return H264EncSetRateCtrl(p_ctx->hdl, &rate);
+}
+
+static int ENC_H264_RestoreQp(enc_t *enc)
+{
+    struct VENC_Context *p_ctx = &VENC_Instance;
+    H264EncRateCtrl rate;
+    int ret;
+
+    ret = H264EncGetRateCtrl(p_ctx->hdl, &rate);
+    if (ret != H264ENC_OK)
+        return ret;
+
+    rate.qpMin = enc->qp_orig_min;
+    rate.qpMax = enc->qp_orig_max;
+    rate.qpHdr = enc->qp_orig_hdr;
 
     return H264EncSetRateCtrl(p_ctx->hdl, &rate);
 }
@@ -550,7 +575,7 @@ static void encProcess(void *argument)
         if (encode_ret == 0) {
             enc->startup_failures = 0;
             if (!enc->first_frame_done && enc->qp_floor_step) {
-                if (ENC_H264_SetQpFloor(enc, enc->params.rate_ctrl_dq) == H264ENC_OK)
+                if (ENC_H264_RestoreQp(enc) == H264ENC_OK)
                     LOG_DRV_WARN("encoder cold start cleared at QP floor %d, quality restored\r\n",
                                  enc->params.rate_ctrl_dq + enc->qp_floor_step * ENC_STARTUP_QP_STEP);
                 enc->qp_floor_step = 0;
