@@ -766,8 +766,9 @@ static void rtmp_autostart_task(void *argument)
         }
     }
 
+    // Leave the handle set: osThreadExit() in this CMSIS wrapper only
+    // terminates, and the control block is freed by osThreadTerminate().
     g_rtmp_ctx.autostart_task_running = AICAM_FALSE;
-    g_rtmp_ctx.autostart_task_handle = NULL;
     osThreadExit();
 }
 
@@ -791,7 +792,12 @@ aicam_result_t rtmp_service_start(void)
     // See rtmp_autostart_task() for why this is not done inline.
     video_stream_mode_config_t vs_config;
     if (json_config_get_video_stream_mode(&vs_config) == AICAM_OK && vs_config.rtmp_enable) {
-        if (g_rtmp_ctx.autostart_task_handle == NULL) {
+        // Reap a previous task that exited on its own before starting anew.
+        if (g_rtmp_ctx.autostart_task_handle != NULL) {
+            osThreadTerminate(g_rtmp_ctx.autostart_task_handle);
+            g_rtmp_ctx.autostart_task_handle = NULL;
+        }
+        {
             const osThreadAttr_t autostart_task_attr = {
                 .name = "rtmp_autostart",
                 .stack_size = sizeof(rtmp_autostart_task_stack),
