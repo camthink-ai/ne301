@@ -301,7 +301,6 @@ static int draw_blend_colorrect_hw(uint8_t *p_dst, int dst_width, int dst_height
         }
         default:
             LOG_DRV_ERROR("Unsupported color mode\r\n");
-            hal_mem_free(p_fg);
             return HAL_ERROR;
     }
 
