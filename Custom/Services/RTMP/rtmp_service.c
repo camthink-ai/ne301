@@ -42,6 +42,13 @@
 #define RTMP_SEND_TASK_STACK_SIZE       (4096 * 2)
 #define RTMP_SEND_TASK_PRIORITY         osPriorityNormal
 
+#define RTMP_AUTOSTART_TASK_STACK_SIZE  (4096 * 2)
+#define RTMP_AUTOSTART_TASK_PRIORITY    osPriorityNormal
+#define RTMP_AUTOSTART_STA_SLICE_MS     30000   // one wait slice for STA
+#define RTMP_AUTOSTART_STA_BUDGET_MS    900000  // give up after 15 min without STA
+#define RTMP_AUTOSTART_MAX_ATTEMPTS     5
+#define RTMP_AUTOSTART_RETRY_MS         5000
+
 /* ==================== Frame Queue for Async Send ==================== */
 
 typedef struct {
@@ -62,6 +69,7 @@ typedef struct {
 } rtmp_send_queue_t;
 
 static uint8_t rtmp_send_task_stack[RTMP_SEND_TASK_STACK_SIZE] ALIGN_32 IN_PSRAM;
+static uint8_t rtmp_autostart_task_stack[RTMP_AUTOSTART_TASK_STACK_SIZE] ALIGN_32 IN_PSRAM;
 
 /* ==================== Service Context ==================== */
 
@@ -111,6 +119,9 @@ typedef struct {
     osThreadId_t send_task_handle;
     aicam_bool_t send_task_running;
     aicam_bool_t task_need_cleanup;
+
+    osThreadId_t autostart_task_handle;
+    aicam_bool_t autostart_task_running;
 } rtmp_service_context_t;
 
 static rtmp_service_context_t g_rtmp_ctx = {0};
@@ -700,6 +711,67 @@ aicam_result_t rtmp_service_init(void *config)
     return AICAM_OK;
 }
 
+/**
+ * @brief Start the configured push once the network is actually up
+ *
+ * Own task: service_start() holds the manager mutex across every start_func
+ * (service_init.c:617-641), and the wait must be on the latched
+ * SERVICE_READY_STA flag because communication_service_start() returns while
+ * netif init is still asynchronous (communication_service.c:1001-1017).
+ */
+static void rtmp_autostart_task(void *argument)
+{
+    (void)argument;
+
+    // Slices rather than one shot: a slow or initially failed association
+    // still gets its push when the link finally comes up.
+    aicam_result_t result = AICAM_ERROR;
+    uint32_t waited_ms = 0;
+    while (waited_ms < RTMP_AUTOSTART_STA_BUDGET_MS) {
+        if (!g_rtmp_ctx.autostart_task_running || !g_rtmp_ctx.running) {
+            break;
+        }
+        result = service_wait_for_ready(SERVICE_READY_STA, AICAM_TRUE,
+                                        RTMP_AUTOSTART_STA_SLICE_MS);
+        if (result == AICAM_OK) {
+            break;
+        }
+        waited_ms += RTMP_AUTOSTART_STA_SLICE_MS;
+    }
+
+    if (result != AICAM_OK) {
+        LOG_SVC_WARN("RTMP auto-start: no STA after %lu ms (%d), leaving push idle",
+                     (unsigned long)waited_ms, result);
+    } else {
+        for (uint32_t attempt = 1; attempt <= RTMP_AUTOSTART_MAX_ATTEMPTS; attempt++) {
+            if (!g_rtmp_ctx.autostart_task_running || !g_rtmp_ctx.running) {
+                break;
+            }
+            // Someone called the API first; leave their stream alone. ERROR
+            // is retryable, matching rtmp_service_start_stream's entry check.
+            if (g_rtmp_ctx.stream_state != RTMP_STREAM_STATE_IDLE &&
+                g_rtmp_ctx.stream_state != RTMP_STREAM_STATE_ERROR) {
+                LOG_SVC_INFO("RTMP auto-start: stream already active, standing down");
+                break;
+            }
+            result = rtmp_service_start_stream();
+            if (result == AICAM_OK) {
+                LOG_SVC_WARN("RTMP auto-start: push started from rtmp_enable on attempt %lu",
+                             (unsigned long)attempt);
+                break;
+            }
+            LOG_SVC_WARN("RTMP auto-start: attempt %lu failed (%d)",
+                         (unsigned long)attempt, result);
+            osDelay(RTMP_AUTOSTART_RETRY_MS);
+        }
+    }
+
+    // Leave the handle set: osThreadExit() in this CMSIS wrapper only
+    // terminates, and the control block is freed by osThreadTerminate().
+    g_rtmp_ctx.autostart_task_running = AICAM_FALSE;
+    osThreadExit();
+}
+
 aicam_result_t rtmp_service_start(void)
 {
     if (!g_rtmp_ctx.initialized) {
@@ -717,7 +789,32 @@ aicam_result_t rtmp_service_start(void)
     g_rtmp_ctx.running = AICAM_TRUE;
     g_rtmp_ctx.service_state = SERVICE_STATE_RUNNING;
 
-    // Note: Streaming is started via API, not automatically
+    // See rtmp_autostart_task() for why this is not done inline.
+    video_stream_mode_config_t vs_config;
+    if (json_config_get_video_stream_mode(&vs_config) == AICAM_OK && vs_config.rtmp_enable) {
+        // Reap a previous task that exited on its own before starting anew.
+        if (g_rtmp_ctx.autostart_task_handle != NULL) {
+            osThreadTerminate(g_rtmp_ctx.autostart_task_handle);
+            g_rtmp_ctx.autostart_task_handle = NULL;
+        }
+        {
+            const osThreadAttr_t autostart_task_attr = {
+                .name = "rtmp_autostart",
+                .stack_size = sizeof(rtmp_autostart_task_stack),
+                .stack_mem = rtmp_autostart_task_stack,
+                .priority = RTMP_AUTOSTART_TASK_PRIORITY,
+            };
+            g_rtmp_ctx.autostart_task_running = AICAM_TRUE;
+            g_rtmp_ctx.autostart_task_handle =
+                osThreadNew(rtmp_autostart_task, NULL, &autostart_task_attr);
+            if (!g_rtmp_ctx.autostart_task_handle) {
+                g_rtmp_ctx.autostart_task_running = AICAM_FALSE;
+                LOG_SVC_ERROR("Failed to create RTMP auto-start task");
+            }
+        }
+    } else {
+        LOG_SVC_INFO("RTMP: rtmp_enable not set, push left idle");
+    }
 
     LOG_SVC_INFO("RTMP service started");
     return AICAM_OK;
@@ -730,6 +827,13 @@ aicam_result_t rtmp_service_stop(void)
     }
 
     LOG_SVC_INFO("Stopping RTMP service");
+
+    // Retire the auto-start task first so it cannot resurrect the stream.
+    if (g_rtmp_ctx.autostart_task_handle) {
+        g_rtmp_ctx.autostart_task_running = AICAM_FALSE;
+        osThreadTerminate(g_rtmp_ctx.autostart_task_handle);
+        g_rtmp_ctx.autostart_task_handle = NULL;
+    }
 
     // Stop streaming first
     rtmp_service_stop_stream();
@@ -807,6 +911,15 @@ aicam_result_t rtmp_service_start_stream(void)
     }
 
     osMutexAcquire(g_rtmp_ctx.mutex, osWaitForever);
+
+    // Revalidate under the mutex: a concurrent caller may have started the
+    // stream between the check above and here.
+    if (g_rtmp_ctx.stream_state != RTMP_STREAM_STATE_IDLE &&
+        g_rtmp_ctx.stream_state != RTMP_STREAM_STATE_ERROR) {
+        osMutexRelease(g_rtmp_ctx.mutex);
+        LOG_SVC_WARN("Stream already active, state: %d", g_rtmp_ctx.stream_state);
+        return AICAM_ERROR_BUSY;
+    }
 
     LOG_SVC_INFO("Starting RTMP stream (%s mode)", 
                  g_rtmp_ctx.config.async_send ? "async" : "sync");
