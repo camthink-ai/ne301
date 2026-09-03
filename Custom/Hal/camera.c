@@ -830,6 +830,15 @@ static void main_pipe_frame_event()
             buffer_release_isr(buffer, &g_camera.pipe1_dq);
         }
     }else if(buffer1 != NULL && buffer1->data != NULL){
+        /*
+         * buffer1 was marked BUFFER_READY above but the DCMIPP is about to
+         * DMA into it; demote it so it cannot be handed out mid-write. Only
+         * when buffer == NULL: otherwise buffer_acquire already promoted a
+         * different buffer, and a second PROCESSING buffer would break
+         * find_processing_buffer.
+         */
+        if (buffer == NULL)
+            buffer1->state = BUFFER_PROCESSING;
         ret = HAL_DCMIPP_PIPE_SetMemoryAddress(CMW_CAMERA_GetDCMIPPHandle(), DCMIPP_PIPE1,
                                                 DCMIPP_MEMORY_ADDRESS_0, (uint32_t) buffer1->data);
         if(ret == HAL_OK){
@@ -874,6 +883,9 @@ static void ancillary_pipe_frame_event()
             buffer_release_isr(buffer, &g_camera.pipe2_dq);
         }
     }else if(buffer1 != NULL && buffer1->data != NULL){
+        /* Same demote as main_pipe_frame_event above. */
+        if (buffer == NULL)
+            buffer1->state = BUFFER_PROCESSING;
         ret = HAL_DCMIPP_PIPE_SetMemoryAddress(CMW_CAMERA_GetDCMIPPHandle(), DCMIPP_PIPE2,
                                                 DCMIPP_MEMORY_ADDRESS_0, (uint32_t) buffer1->data);
         if(ret == HAL_OK){
@@ -1071,6 +1083,27 @@ static int pipe_stop_common(camera_t *camera, uint32_t pipe_id, pipe_buffer_t **
             *pipe_buffer = NULL;
             return AICAM_OK;
         }else{
+            /*
+             * The stop failed and PIPEN says which half. If the pipe is still
+             * enabled, DCMIPP_Stop timed out with the capture request already
+             * cleared: DMA may still be active so the buffers must stay, and
+             * re-enabling the interrupt alone would not bring frames back --
+             * re-assert the capture request so the pipe genuinely keeps
+             * running for the caller's retry. If the pipe is disabled, the
+             * capture drained but the CSI virtual channel failed to stop; the
+             * HAL pipe state cannot be rebuilt from here, so just report it.
+             */
+            if (hdcmipp != NULL) {
+                if (pipe_id == DCMIPP_PIPE1 &&
+                    (hdcmipp->Instance->P1FSCR & DCMIPP_P1FSCR_PIPEN) != 0U) {
+                    SET_BIT(hdcmipp->Instance->P1FCTCR, DCMIPP_P1FCTCR_CPTREQ);
+                    __HAL_DCMIPP_ENABLE_IT(hdcmipp, DCMIPP_IT_PIPE1_FRAME | DCMIPP_IT_PIPE1_VSYNC);
+                } else if (pipe_id == DCMIPP_PIPE2 &&
+                           (hdcmipp->Instance->P2FSCR & DCMIPP_P2FSCR_PIPEN) != 0U) {
+                    SET_BIT(hdcmipp->Instance->P2FCTCR, DCMIPP_P2FCTCR_CPTREQ);
+                    __HAL_DCMIPP_ENABLE_IT(hdcmipp, DCMIPP_IT_PIPE2_FRAME | DCMIPP_IT_PIPE2_VSYNC);
+                }
+            }
             LOG_DRV_ERROR("pipe%lu stop failed: %d\r\n", pipe_id, ret);
             return AICAM_ERROR;
         }
@@ -1322,6 +1355,12 @@ static int camera_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsig
                 ret = AICAM_ERROR_INVALID_PARAM;
                 break;
             }
+            /* One buffer cannot work: the frame event needs somewhere to write
+               while a consumer holds the published frame. */
+            if(((pipe_params_t *)ubuf)->buffer_nb < 2){
+                ret = AICAM_ERROR_INVALID_PARAM;
+                break;
+            }
             memcpy(&camera->pipe1_param, ubuf, sizeof(pipe_params_t));
             ret = DCMIPP_Pipe1Init(camera);
             break;
@@ -1332,6 +1371,12 @@ static int camera_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsig
                 break;
             }
             if(ubuf == NULL || arg != sizeof(pipe_params_t)){
+                ret = AICAM_ERROR_INVALID_PARAM;
+                break;
+            }
+            /* One buffer cannot work: the frame event needs somewhere to write
+               while a consumer holds the published frame. */
+            if(((pipe_params_t *)ubuf)->buffer_nb < 2){
                 ret = AICAM_ERROR_INVALID_PARAM;
                 break;
             }
