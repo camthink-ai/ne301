@@ -1,0 +1,15 @@
+{
+  "name": "ne301-docs",
+  "private": true,
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "python3 ../Script/gen_web_api_docs.py && vitepress build",
+    "preview": "vitepress preview",
+    "sync": "python3 ../Script/gen_web_api_docs.py",
+    "check": "python3 ../Script/gen_web_api_docs.py --check"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.3",
+    "vue": "^3.5.13"
+  }
+}

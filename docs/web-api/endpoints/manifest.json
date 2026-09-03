@@ -1,0 +1,936 @@
+{
+  "base_path": "/api/v1",
+  "total_endpoints": 142,
+  "modules": {
+    "ai_management": {
+      "source": "Custom/Services/Web/api/api_ai_management_module.c",
+      "source_sha256": "7a01183c3b14be2e",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/ai/status",
+          "handler": "ai_management_status_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/ai/toggle",
+          "handler": "ai_management_switch_inference_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/ai/pipeline/start",
+          "handler": "ai_management_start_pipeline_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/ai/pipeline/stop",
+          "handler": "ai_management_stop_pipeline_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/ai/params",
+          "handler": "ai_management_get_thresholds_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/ai/params",
+          "handler": "ai_management_set_thresholds_handler",
+          "require_auth": true
+        }
+      ]
+    },
+    "auth": {
+      "source": "Custom/Services/Web/api/api_auth_module.c",
+      "source_sha256": "d866579fde8b0901",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/v1/login",
+          "handler": "login_handler",
+          "require_auth": false
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/change-password",
+          "handler": "change_password_handler",
+          "require_auth": true
+        }
+      ]
+    },
+    "device": {
+      "source": "Custom/Services/Web/api/api_device_module.c",
+      "source_sha256": "ca84da4e3822bff9",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/device/info",
+          "handler": "device_info_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/device/firmware-versions",
+          "handler": "firmware_versions_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/device/storage",
+          "handler": "device_storage_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/device/storage/config",
+          "handler": "device_storage_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/device/image/config",
+          "handler": "device_image_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/device/image/config",
+          "handler": "device_image_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/device/sys-clk/config",
+          "handler": "device_sys_clk_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/device/sys-clk/config",
+          "handler": "device_sys_clk_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/device/light/config",
+          "handler": "device_light_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/device/light/config",
+          "handler": "device_light_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/device/light/control",
+          "handler": "device_light_control_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/device/camera/config",
+          "handler": "device_camera_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/device/camera/config",
+          "handler": "device_camera_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/time",
+          "handler": "system_time_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/device/name",
+          "handler": "device_name_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/logs",
+          "handler": "system_logs_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/logs/export",
+          "handler": "system_logs_export_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/restart",
+          "handler": "system_restart_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/factory-reset",
+          "handler": "system_factory_reset_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/device/config/export",
+          "handler": "device_config_export_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/device/config/import",
+          "handler": "device_config_import_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/device/preference/stream_tab",
+          "handler": "device_pref_stream_tab_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/device/preference/stream_tab",
+          "handler": "device_pref_stream_tab_handler",
+          "require_auth": true
+        }
+      ]
+    },
+    "isp": {
+      "source": "Custom/Services/Web/api/api_isp_module.c",
+      "source_sha256": "bafa92c9942d4967",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/params",
+          "handler": "api_isp_get_all_params",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/sensor",
+          "handler": "api_isp_get_sensor_info",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/statistics",
+          "handler": "api_isp_get_statistics",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/aec",
+          "handler": "api_isp_get_aec",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/isp/aec",
+          "handler": "api_isp_set_aec",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/aec/manual",
+          "handler": "api_isp_get_manual_exposure",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/isp/aec/manual",
+          "handler": "api_isp_set_manual_exposure",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/awb",
+          "handler": "api_isp_get_awb",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/isp/awb",
+          "handler": "api_isp_set_awb",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/demosaicing",
+          "handler": "api_isp_get_demosaicing",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/isp/demosaicing",
+          "handler": "api_isp_set_demosaicing",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/stat_removal",
+          "handler": "api_isp_get_stat_removal",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/isp/stat_removal",
+          "handler": "api_isp_set_stat_removal",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/black_level",
+          "handler": "api_isp_get_black_level",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/isp/black_level",
+          "handler": "api_isp_set_black_level",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/bad_pixel",
+          "handler": "api_isp_get_bad_pixel",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/isp/bad_pixel",
+          "handler": "api_isp_set_bad_pixel",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/gain",
+          "handler": "api_isp_get_gain",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/isp/gain",
+          "handler": "api_isp_set_gain",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/color_conv",
+          "handler": "api_isp_get_color_conv",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/isp/color_conv",
+          "handler": "api_isp_set_color_conv",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/contrast",
+          "handler": "api_isp_get_contrast",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/isp/contrast",
+          "handler": "api_isp_set_contrast",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/gamma",
+          "handler": "api_isp_get_gamma",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/isp/gamma",
+          "handler": "api_isp_set_gamma",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/stat_area",
+          "handler": "api_isp_get_stat_area",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/isp/stat_area",
+          "handler": "api_isp_set_stat_area",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/lux_ref",
+          "handler": "api_isp_get_lux_ref",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/isp/lux_ref",
+          "handler": "api_isp_set_lux_ref",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/sensor_delay",
+          "handler": "api_isp_get_sensor_delay",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/isp/sensor_delay",
+          "handler": "api_isp_set_sensor_delay",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/isp/config/save",
+          "handler": "api_isp_save_config",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/isp/config/load",
+          "handler": "api_isp_load_config",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/isp/config/export",
+          "handler": "api_isp_export_config",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/isp/config/import",
+          "handler": "api_isp_import_config",
+          "require_auth": true
+        }
+      ]
+    },
+    "model_validation": {
+      "source": "Custom/Services/Web/api/api_model_validation_module.c",
+      "source_sha256": "4865b8c0fe42b38a",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/v1/model/validation/upload",
+          "handler": "model_validation_upload_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/model/reload",
+          "handler": "model_reload_handler",
+          "require_auth": true
+        }
+      ]
+    },
+    "mqtt": {
+      "source": "Custom/Services/Web/api/api_mqtt_module.c",
+      "source_sha256": "2ce36ec1b35a094e",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/apps/mqtt/config",
+          "handler": "mqtt_config_get_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/apps/mqtt/config",
+          "handler": "mqtt_config_set_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/apps/mqtt/connect",
+          "handler": "mqtt_connect_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/apps/mqtt/disconnect",
+          "handler": "mqtt_disconnect_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/apps/mqtt/publish/data",
+          "handler": "mqtt_publish_data_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/apps/mqtt/publish/status",
+          "handler": "mqtt_publish_status_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/apps/mqtt/publish/json",
+          "handler": "mqtt_publish_data_json_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/device/capture",
+          "handler": "mqtt_capture_handler",
+          "require_auth": true
+        }
+      ]
+    },
+    "network": {
+      "source": "Custom/Services/Web/api/api_network_module.c",
+      "source_sha256": "e3dcaca6bd01fa07",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/status",
+          "handler": "network_status_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/wifi/sta",
+          "handler": "network_wifi_sta_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/wifi/ap",
+          "handler": "network_wifi_ap_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/wifi/config",
+          "handler": "network_wifi_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/wifi/scan",
+          "handler": "network_scan_refresh_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/wifi/disconnect",
+          "handler": "network_disconnect_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/wifi/delete",
+          "handler": "network_delete_known_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/wifi",
+          "handler": "network_wifi_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/scan",
+          "handler": "network_scan_refresh_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/disconnect",
+          "handler": "network_disconnect_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/delete",
+          "handler": "network_delete_known_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/comm/types",
+          "handler": "network_comm_types_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/comm/switch",
+          "handler": "network_comm_switch_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/comm/prefer",
+          "handler": "network_comm_prefer_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/comm/prefer",
+          "handler": "network_comm_prefer_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/comm/priority",
+          "handler": "network_comm_priority_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/cellular/status",
+          "handler": "network_cellular_status_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/cellular/settings",
+          "handler": "network_cellular_settings_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/cellular/settings",
+          "handler": "network_cellular_settings_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/cellular/save",
+          "handler": "network_cellular_save_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/cellular/connect",
+          "handler": "network_cellular_connect_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/cellular/disconnect",
+          "handler": "network_cellular_disconnect_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/cellular/info",
+          "handler": "network_cellular_info_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/cellular/refresh",
+          "handler": "network_cellular_refresh_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/cellular/at",
+          "handler": "network_cellular_at_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/poe/status",
+          "handler": "network_poe_status_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/poe/connect",
+          "handler": "network_poe_connect_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/poe/disconnect",
+          "handler": "network_poe_disconnect_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/poe/info",
+          "handler": "network_poe_info_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/poe/config",
+          "handler": "network_poe_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/poe/config",
+          "handler": "network_poe_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/poe/validate",
+          "handler": "network_poe_validate_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/poe/apply",
+          "handler": "network_poe_apply_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/poe/save",
+          "handler": "network_poe_save_handler",
+          "require_auth": true
+        }
+      ]
+    },
+    "ota": {
+      "source": "Custom/Services/Web/api/api_ota_module.c",
+      "source_sha256": "7bb3b663ef2d5a87",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/v1/system/ota/precheck",
+          "handler": "ota_precheck_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/ota/upload",
+          "handler": "ota_upload_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/ota/upgrade-local",
+          "handler": "ota_upgrade_local_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/ota/export",
+          "handler": "ota_export_firmware_handler",
+          "require_auth": true
+        }
+      ]
+    },
+    "preview": {
+      "source": "Custom/Services/Web/api/api_preview_module.c",
+      "source_sha256": "7c345732b66f2eb2",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/preview/status",
+          "handler": "preview_status_handler",
+          "require_auth": false
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/preview/start",
+          "handler": "preview_start_handler",
+          "require_auth": false
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/preview/stop",
+          "handler": "preview_stop_handler",
+          "require_auth": false
+        }
+      ]
+    },
+    "rtmp": {
+      "source": "Custom/Services/Web/api/api_rtmp_module.c",
+      "source_sha256": "0fc505a66307fbdf",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/apps/rtmp/config",
+          "handler": "rtmp_config_get_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/apps/rtmp/config",
+          "handler": "rtmp_config_set_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/apps/rtmp/start",
+          "handler": "rtmp_start_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/apps/rtmp/stop",
+          "handler": "rtmp_stop_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/apps/rtmp/status",
+          "handler": "rtmp_status_handler",
+          "require_auth": true
+        }
+      ]
+    },
+    "rtsp": {
+      "source": "Custom/Services/Web/api/api_rtsp_module.c",
+      "source_sha256": "d1499fbbfea7a1d1",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/apps/rtsp/config",
+          "handler": "rtsp_config_get_handler",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/apps/rtsp/config",
+          "handler": "rtsp_config_set_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/apps/rtsp/status",
+          "handler": "rtsp_status_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/apps/rtsp/clients",
+          "handler": "rtsp_clients_get_handler",
+          "require_auth": true
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/v1/apps/rtsp/clients/*",
+          "handler": "rtsp_client_kick_handler",
+          "require_auth": true
+        }
+      ]
+    },
+    "webhook": {
+      "source": "Custom/Services/Web/api/api_webhook_module.c",
+      "source_sha256": "937a3ebaa7f8ff31",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/apps/webhook/config",
+          "handler": "webhook_config_get_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/apps/webhook/config",
+          "handler": "webhook_config_set_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/apps/webhook/test",
+          "handler": "webhook_test_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/apps/webhook/ca-cert",
+          "handler": "webhook_ca_cert_get_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/apps/webhook/ca-cert",
+          "handler": "webhook_ca_cert_set_handler",
+          "require_auth": true
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/v1/apps/webhook/ca-cert",
+          "handler": "webhook_ca_cert_delete_handler",
+          "require_auth": true
+        }
+      ]
+    },
+    "work_mode": {
+      "source": "Custom/Services/Web/api/api_work_mode_module.c",
+      "source_sha256": "210c8214fc142aed",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/work-mode/status",
+          "handler": "work_mode_status_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/work-mode/switch",
+          "handler": "work_mode_switch_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/work-mode/triggers",
+          "handler": "work_mode_triggers_get_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/work-mode/triggers",
+          "handler": "work_mode_triggers_set_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/work-mode/video-stream/config",
+          "handler": "work_mode_video_stream_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/power-mode/status",
+          "handler": "power_mode_status_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/power-mode/switch",
+          "handler": "power_mode_switch_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/power-mode/config",
+          "handler": "power_mode_config_get_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/power-mode/config",
+          "handler": "power_mode_config_set_handler",
+          "require_auth": true
+        }
+      ]
+    }
+  }
+}

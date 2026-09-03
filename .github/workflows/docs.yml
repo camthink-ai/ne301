@@ -1,0 +1,123 @@
+name: Docs (GitHub Pages)
+
+# Web API 文档站：部署 + 代码/文档同步检查
+#
+# 同步机制（两层）：
+#   1. PR 检查   : Web API 代码变更时，端点参考必须重新生成并随 PR 提交，
+#                  否则 check job 失败，阻止合并；若 docs/ 无任何变更则额外告警。
+#   2. main 部署 : push 到 main 后重新生成端点文档并构建部署，
+#                  即使开发者遗漏本地生成步骤，线上页面也与代码一致。
+#
+# 首次使用需在仓库 Settings → Pages → Build and deployment → Source
+# 选择 "GitHub Actions"。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'Script/gen_web_api_docs.py'
+      - 'Custom/Services/Web/**'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'Script/gen_web_api_docs.py'
+      - 'Custom/Services/Web/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------- PR: 文档与 API 代码同步检查 ----------
+  docs-sync-check:
+    if: github.event_name == 'pull_request'
+    name: Check docs sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout (merge commit)
+        uses: actions/checkout@v4
+        with:
+          # base..head diff 需要完整历史
+          fetch-depth: 0
+
+      - name: Regenerate endpoint reference
+        run: python3 Script/gen_web_api_docs.py
+
+      - name: Fail if endpoint docs are stale
+        run: |
+          if ! git diff --exit-code -- docs/web-api/endpoints; then
+            echo "::error::Web API 代码已变更，但 docs/web-api/endpoints/ 下的端点参考未同步。"
+            echo "::error::请运行 python3 Script/gen_web_api_docs.py（或 cd docs && npm run sync），提交生成结果后更新本 PR。"
+            git diff --stat -- docs/web-api/endpoints
+            exit 1
+          fi
+          echo "端点参考与代码同步 ✔"
+
+      - name: Warn if API code changed without any docs change
+        if: always()
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          API_FILES=$(git diff --name-only "$BASE" "$HEAD" -- Custom/Services/Web | wc -l)
+          DOC_FILES=$(git diff --name-only "$BASE" "$HEAD" -- docs | wc -l)
+          if [ "$API_FILES" -gt 0 ] && [ "$DOC_FILES" -eq 0 ]; then
+            echo "::warning::本 PR 修改了 Web API 代码（Custom/Services/Web，$API_FILES 个文件），但 docs/ 下没有任何文档变更。请确认模块详解等手写文档是否需要同步更新。"
+          fi
+
+  # ---------- main: 构建并部署到 GitHub Pages ----------
+  build:
+    if: github.event_name != 'pull_request'
+    name: Build docs site
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package.json
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: docs
+
+      - name: Build site (regenerates endpoint docs from source)
+        run: npm run build
+        working-directory: docs
+
+      - name: UploadPagesArtifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
