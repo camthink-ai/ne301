@@ -1,64 +1,62 @@
 ---
-title: Network Management Guide
+title: 网络管理详解
 ---
 
-<!-- Curated from Custom/Services/Web/api/NETWORK_API_DOC.md. The authoritative
-     endpoint list lives in the [auto-generated reference](./endpoints/network.md).
-     Update this page when API behavior changes. -->
+<!-- 整理自 Custom/Services/Web/api/NETWORK_API_DOC.md，端点清单请以 [自动生成的端点参考](./endpoints/network.md) 为准。API 行为变更时请同步更新本页。 -->
 
-# Network Web API
+# 网络通讯 Web API 文档
 
-## API Structure Overview
+## API 结构概览
 
 ```
-Base path: /api/v1/system/network
+基础路径: /api/v1/system/network
 
-┌─ /status                  GET     lightweight comm overview (status bar)
+┌─ /status                  GET     通讯概览（状态栏用，轻量）
 │
 ├─ /wifi/
-│   ├── sta                 GET     WiFi client status + network list
-│   ├── ap                  GET     WiFi hotspot (AP) configuration
-│   ├── config              POST    configure WiFi (STA/AP)
-│   ├── scan                POST    trigger a network scan
-│   ├── disconnect          POST    disconnect WiFi
-│   └── delete              POST    remove a known network
+│   ├── sta                 GET     WiFi客户端状态 + 网络列表
+│   ├── ap                  GET     WiFi热点配置
+│   ├── config              POST    配置WiFi（STA/AP）
+│   ├── scan                POST    触发网络扫描
+│   ├── disconnect          POST    断开WiFi连接
+│   └── delete              POST    删除已知网络
 │
 ├─ /comm/
-│   ├── types               GET     details of all comm types
-│   ├── switch              POST    switch comm type
-│   ├── prefer              GET/POST preferred type setting
-│   └── priority            POST    apply priority
+│   ├── types               GET     所有通讯类型详情
+│   ├── switch              POST    切换通讯类型
+│   ├── prefer              GET/POST 首选类型设置
+│   └── priority            POST    应用优先级
 │
 ├─ /cellular/
-│   ├── status              GET     cellular status
-│   ├── settings            GET/POST cellular settings
-│   ├── info                GET     detailed modem info
-│   ├── connect             POST    connect cellular
-│   ├── disconnect          POST    disconnect cellular
-│   ├── save                POST    save cellular settings
-│   ├── refresh             POST    refresh modem info
-│   └── at                  POST    send an AT command
+│   ├── status              GET     蜂窝状态
+│   ├── settings            GET/POST 蜂窝设置
+│   ├── info                GET     蜂窝详细信息
+│   ├── connect             POST    连接蜂窝
+│   ├── disconnect          POST    断开蜂窝
+│   ├── save                POST    保存蜂窝设置
+│   ├── refresh             POST    刷新蜂窝信息
+│   └── at                  POST    发送AT指令
 │
 └─ /poe/
-    ├── status              GET     PoE status
-    ├── connect             POST    connect PoE
-    └── disconnect          POST    disconnect PoE
+    ├── status              GET     PoE状态
+    ├── connect             POST    连接PoE
+    └── disconnect          POST    断开PoE
 ```
 
 ---
 
-## 1. Communication Overview (Lightweight)
+## 1. 通讯概览（轻量级）
 
 ### GET /network/status
 
-**Purpose**: status bar display and page routing.
+**用途**: 状态栏显示、页面路由判断
 
-**Characteristics**:
-- Lightweight, returns only essential information
-- Does not include WiFi scan results (call `/wifi/sta` for those)
-- Does not include AP configuration (call `/wifi/ap` for that)
+**特点**: 
+- 轻量级，仅返回必要信息
+- 不包含 WiFi 扫描结果（需调用 `/wifi/sta`）
+- 不包含 AP 配置（需调用 `/wifi/ap`）
 
-**Response example**:
+**响应示例**:
 ```json
 {
   "code": 0,
@@ -83,7 +81,7 @@ Base path: /api/v1/system/network
 }
 ```
 
-**When not connected**:
+**无连接时**:
 ```json
 {
   "data": {
@@ -100,7 +98,7 @@ Base path: /api/v1/system/network
 }
 ```
 
-**Frontend routing logic**:
+**前端路由逻辑**:
 ```javascript
 const { current_comm_type } = data;
 switch (current_comm_type) {
@@ -108,15 +106,15 @@ switch (current_comm_type) {
         showConnectionSelectionPage(data.current_comm_info.suggested_type);
         break;
     case "wifi":
-        // call GET /wifi/sta when entering the WiFi page
+        // 进入WiFi页面时调用 GET /wifi/sta
         loadWiFiPage();
         break;
     case "cellular":
-        // call GET /cellular/status when entering the cellular page
+        // 进入蜂窝页面时调用 GET /cellular/status
         loadCellularPage();
         break;
     case "poe":
-        // call GET /poe/status when entering the PoE page
+        // 进入PoE页面时调用 GET /poe/status
         loadPoEPage();
         break;
 }
@@ -124,13 +122,13 @@ switch (current_comm_type) {
 
 ---
 
-## 2. WiFi Client API
+## 2. WiFi 客户端 API
 
 ### GET /network/wifi/sta
 
-**Purpose**: data for the WiFi management page.
+**用途**: WiFi管理页面数据
 
-**Response example**:
+**响应示例**:
 ```json
 {
   "code": 0,
@@ -172,33 +170,33 @@ switch (current_comm_type) {
 }
 ```
 
-**Page layout**:
+**页面显示**:
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  WiFi Management                                            │
+│  WiFi管理                                                   │
 ├─────────────────────────────────────────────────────────────┤
-│  Current connection                                         │
-│  ├─ Network: {ssid}                                         │
-│  ├─ Signal:  {rssi} dBm                                     │
-│  └─ IP:      {ip_address}                                   │
+│  当前连接                                                   │
+│  ├─ 网络名称: {ssid}                                       │
+│  ├─ 信号强度: {rssi} dBm                                   │
+│  └─ IP地址: {ip_address}                                   │
 ├─────────────────────────────────────────────────────────────┤
-│  Known networks ({known_count})                             │
-│  └─ {ssid} {rssi}dBm [Connect] [Delete]                     │
+│  已知网络 ({known_count})                                  │
+│  └─ {ssid} {rssi}dBm [连接] [删除]                         │
 ├─────────────────────────────────────────────────────────────┤
-│  Available networks ({unknown_count})          [Refresh]    │
-│  └─ {ssid} {rssi}dBm {security} [Connect]                   │
+│  可用网络 ({unknown_count})              [刷新]            │
+│  └─ {ssid} {rssi}dBm {security} [连接]                     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 3. WiFi Hotspot (AP) API
+## 3. WiFi 热点 API
 
 ### GET /network/wifi/ap
 
-**Purpose**: data for the hotspot settings page.
+**用途**: 热点设置页面数据
 
-**Response example**:
+**响应示例**:
 ```json
 {
   "code": 0,
@@ -218,13 +216,13 @@ switch (current_comm_type) {
 
 ---
 
-## 4. WiFi Configuration API
+## 4. WiFi 配置 API
 
 ### POST /network/wifi/config
 
-**Purpose**: connect to WiFi or configure the hotspot.
+**用途**: 连接WiFi或配置热点
 
-**Request parameters**:
+**请求参数**:
 ```json
 {
   "interface": "wl",
@@ -234,29 +232,29 @@ switch (current_comm_type) {
 }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| interface | string | yes | `wl` = client (STA), `ap` = hotspot |
-| ssid | string | yes | network name (1-31 chars) |
-| password | string | no | password (8-63 chars; omit for open networks) |
-| bssid | string | no | target BSSID |
-| ap_sleep_time | number | no | hotspot sleep time (AP mode only) |
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| interface | string | 是 | `wl`=客户端, `ap`=热点 |
+| ssid | string | 是 | 网络名称 (1-31字符) |
+| password | string | 否 | 密码 (8-63字符，开放网络留空) |
+| bssid | string | 否 | 目标BSSID |
+| ap_sleep_time | number | 否 | 热点休眠时间（仅AP模式） |
 
 ---
 
 ### POST /network/wifi/scan
 
-**Purpose**: refresh the network list.
+**用途**: 刷新网络列表
 
-**Request**: `{}`
+**请求**: `{}`
 
-**Note**: wait 2-3 seconds after calling, then call `GET /wifi/sta` for results.
+**注意**: 调用后等待2-3秒，再调用 `GET /wifi/sta` 获取结果
 
 ---
 
 ### POST /network/wifi/disconnect
 
-**Request**:
+**请求**:
 ```json
 {"interface": "wl"}
 ```
@@ -265,9 +263,9 @@ switch (current_comm_type) {
 
 ### POST /network/wifi/delete
 
-**Purpose**: remove a saved network.
+**用途**: 删除已保存的网络
 
-**Request**:
+**请求**:
 ```json
 {
   "ssid": "NetworkName",
@@ -277,13 +275,13 @@ switch (current_comm_type) {
 
 ---
 
-## 5. Comm Type Management
+## 5. 通讯类型管理
 
 ### GET /network/comm/types
 
-**Purpose**: details of all communication types.
+**用途**: 获取所有通讯类型详情
 
-**Response example**:
+**响应示例**:
 ```json
 {
   "code": 0,
@@ -335,20 +333,20 @@ switch (current_comm_type) {
 }
 ```
 
-**Priority**:
-| Priority | Type | Notes |
-|----------|------|-------|
-| 3 | PoE | highest |
-| 2 | WiFi | medium |
-| 1 | Cellular | lowest |
+**优先级**:
+| 优先级 | 类型 | 说明 |
+|--------|------|------|
+| 3 | PoE | 最高优先级 |
+| 2 | WiFi | 中等优先级 |
+| 1 | Cellular | 最低优先级 |
 
 ---
 
 ### POST /network/comm/switch
 
-**Purpose**: switch the communication type.
+**用途**: 切换通讯类型
 
-**Request**:
+**请求**:
 ```json
 {
   "type": "cellular",
@@ -356,7 +354,7 @@ switch (current_comm_type) {
 }
 ```
 
-**Response**:
+**响应**:
 ```json
 {
   "code": 0,
@@ -369,27 +367,27 @@ switch (current_comm_type) {
 }
 ```
 
-**Frontend switch flow**:
+**前端切换流程**:
 ```javascript
 async function switchCommType(targetType) {
-    // 1. confirmation dialog
-    if (!confirm(`Switch to ${targetType}?`)) return;
-
-    // 2. show loading
-    showLoading("Switching...");
-
-    // 3. call the API
+    // 1. 确认对话框
+    if (!confirm(`确认切换到 ${targetType}？`)) return;
+    
+    // 2. 显示加载中
+    showLoading("正在切换...");
+    
+    // 3. 调用API
     const result = await fetch('/api/v1/system/network/comm/switch', {
         method: 'POST',
         body: JSON.stringify({ type: targetType })
     });
-
-    // 4. handle the result
+    
+    // 4. 处理结果
     const data = await result.json();
     hideLoading();
-
+    
     if (data.data.success) {
-        showSuccess(`Switched to ${targetType}`);
+        showSuccess(`已切换到 ${targetType}`);
         refreshStatus();
     } else {
         showError(data.data.error);
@@ -401,23 +399,23 @@ async function switchCommType(targetType) {
 
 ### GET/POST /network/comm/prefer
 
-**GET response**:
+**GET 响应**:
 ```json
 {"preferred_type": "none", "auto_priority": true}
 ```
 
-**POST request**:
+**POST 请求**:
 ```json
 {"preferred_type": "wifi", "auto_priority": false}
 ```
 
 ---
 
-## 6. Cellular API
+## 6. 蜂窝网络 API
 
 ### GET /network/cellular/status
 
-**Response example**:
+**响应示例**:
 ```json
 {
   "code": 0,
@@ -441,7 +439,7 @@ async function switchCommType(targetType) {
 
 ### GET/POST /network/cellular/settings
 
-**POST request**:
+**POST 请求**:
 ```json
 {
   "apn": "cmnet",
@@ -454,17 +452,17 @@ async function switchCommType(targetType) {
 }
 ```
 
-| Field | Description |
-|-------|-------------|
+| 字段 | 说明 |
+|------|------|
 | authentication | 0=None, 1=PAP, 2=CHAP |
 
 ---
 
 ### GET /network/cellular/info
 
-**Purpose**: cellular detail dialog.
+**用途**: 蜂窝详情弹窗
 
-**Response example**:
+**响应示例**:
 ```json
 {
   "code": 0,
@@ -501,14 +499,14 @@ async function switchCommType(targetType) {
 
 ### POST /network/cellular/at
 
-**Purpose**: send an AT command (for debugging).
+**用途**: 发送AT指令（调试用）
 
-**Request**:
+**请求**:
 ```json
 {"command": "AT+CSQ", "timeout_ms": 5000}
 ```
 
-**Response**:
+**响应**:
 ```json
 {
   "success": true,
@@ -523,7 +521,7 @@ async function switchCommType(targetType) {
 
 ### GET /network/poe/status
 
-**Response example**:
+**响应示例**:
 ```json
 {
   "code": 0,
@@ -536,7 +534,7 @@ async function switchCommType(targetType) {
 }
 ```
 
-**When unavailable**:
+**不可用时**:
 ```json
 {
   "data": {
@@ -549,7 +547,7 @@ async function switchCommType(targetType) {
 
 ---
 
-## Error Response Format
+## 错误响应格式
 
 ```json
 {
@@ -559,54 +557,55 @@ async function switchCommType(targetType) {
 }
 ```
 
-| Code | Meaning |
-|------|---------|
-| -1 | generic error |
-| -2 | invalid parameter |
-| -3 | service unavailable |
-| -4 | method not allowed |
+| 错误码 | 说明 |
+|--------|------|
+| -1 | 通用错误 |
+| -2 | 参数无效 |
+| -3 | 服务不可用 |
+| -4 | 方法不允许 |
 
 ---
 
-## Frontend Page → API Mapping
+## 前端页面与API映射
 
-| Page | Primary API | Data used |
-|------|-------------|-----------|
-| **Status bar** | `GET /status` | `current_comm_type`, dropdown menu |
-| **No-connection page** | `GET /status` | `suggested_type` highlight |
-| **WiFi networks page** | `GET /wifi/sta` | scan results, connection state |
-| **WiFi hotspot page** | `GET /wifi/ap` | hotspot configuration |
-| **Cellular settings page** | `GET /cellular/status` | connection settings |
-| **Cellular detail dialog** | `GET /cellular/info` | full modem info |
-| **PoE page** | `GET /poe/status` | connection state |
-| **Type switching** | `POST /comm/switch` | switch operation |
+| 页面 | 主要API | 数据用途 |
+|------|---------|----------|
+| **状态栏** | `GET /status` | `current_comm_type`, 下拉菜单 |
+| **无连接页** | `GET /status` | `suggested_type` 高亮推荐 |
+| **WiFi网络页** | `GET /wifi/sta` | 扫描结果、连接状态 |
+| **WiFi热点页** | `GET /wifi/ap` | 热点配置 |
+| **蜂窝设置页** | `GET /cellular/status` | 连接设置 |
+| **蜂窝详情弹窗** | `GET /cellular/info` | 完整模组信息 |
+| **PoE页** | `GET /poe/status` | 连接状态 |
+| **类型切换** | `POST /comm/switch` | 切换操作 |
 
 ---
 
-## Typical Call Flows
+## 调用流程示例
 
-### App startup
+### 应用启动
 ```
-1. GET /status         → current comm state
-2. route to the page matching current_comm_type
-3. e.g. current_comm_type="wifi" → GET /wifi/sta
-```
-
-### Switching comm type
-```
-1. GET /comm/types     → list of switchable types
-2. user picks a target type
-3. show confirmation dialog
-4. POST /comm/switch   → perform the switch
-5. GET /status         → refresh the status bar
+1. GET /status         → 获取当前通讯状态
+2. 根据 current_comm_type 路由到对应页面
+3. 如 current_comm_type="wifi" → GET /wifi/sta
 ```
 
-### Connecting to a new WiFi network
+### 切换通讯类型
 ```
-1. GET /wifi/sta       → network list
-2. POST /wifi/scan     → refresh scan (optional)
-3. wait 2-3 seconds
-4. GET /wifi/sta       → latest list
-5. POST /wifi/config   → connect to the selected network
-6. GET /wifi/sta       → confirm connection state
+1. GET /comm/types     → 获取可切换类型列表
+2. 用户选择目标类型
+3. 显示确认对话框
+4. POST /comm/switch   → 执行切换
+5. GET /status         → 刷新状态栏
 ```
+
+### WiFi连接新网络
+```
+1. GET /wifi/sta       → 获取网络列表
+2. POST /wifi/scan     → 刷新扫描（可选）
+3. 等待2-3秒
+4. GET /wifi/sta       → 获取最新列表
+5. POST /wifi/config   → 连接选中网络
+6. GET /wifi/sta       → 确认连接状态
+```
+

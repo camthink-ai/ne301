@@ -1,19 +1,19 @@
 ---
-title: Webhook 端点参考
+title: Webhook Endpoints
 ---
 
-<!-- GENERATED FILE - 由 Script/gen_web_api_docs.py 自动生成，请勿手工编辑 -->
+<!-- GENERATED FILE - do not edit manually. Regenerate with Script/gen_web_api_docs.py -->
 
-# Webhook 端点参考
+# Webhook Endpoints
 
-事件回调通知配置
+Event callback notification configuration
 
-源文件: [`Custom/Services/Web/api/api_webhook_module.c`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/api_webhook_module.c)
+Source: [`Custom/Services/Web/api/api_webhook_module.c`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/api_webhook_module.c)
 
-共 **6** 个端点。鉴权列 ✅ 表示需要携带 [认证凭据](../authentication.md)。
+**6** endpoints. The ✅ marker in the Auth column means the request must carry [credentials](../authentication.md).
 
-| 方法 | 路径 | 鉴权 | 处理函数 |
-|------|------|:----:|----------|
+| Method | Path | Auth | Handler |
+|--------|------|:----:|---------|
 | `GET` | `/api/v1/apps/webhook/config` | ✅ | `webhook_config_get_handler` |
 | `POST` | `/api/v1/apps/webhook/config` | ✅ | `webhook_config_set_handler` |
 | `POST` | `/api/v1/apps/webhook/test` | ✅ | `webhook_test_handler` |

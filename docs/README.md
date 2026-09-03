@@ -1,23 +1,28 @@
 # NE301 文档站
 
-基于 [VitePress](https://vitepress.dev/) 的文档站点，通过 GitHub Actions 部署到
+基于 [VitePress](https://vitepress.dev/) 的双语文档站（**默认英文**，中文在 `/zh/`，
+导航栏可切换），通过 GitHub Actions 部署到
 GitHub Pages：<https://camthink-ai.github.io/ne301/>
 
 ## 目录结构
 
 ```
 docs/
-├── .vitepress/config.mts   # 站点配置（导航 / 侧边栏）
-├── index.md                # 首页
-├── misc/                   # 文档索引与专题文档入口
-├── web-api/                # Web API 文档（手写部分）
+├── .vitepress/config.mts   # 站点配置（双 locale、导航 / 侧边栏）
+├── index.md                # 英文首页（默认语言，挂根路径）
+├── misc/                   # 英文文档索引
+├── web-api/                # Web API 文档（英文手写部分）
 │   ├── index.md            # API 总览：基础路径、响应格式、错误码
 │   ├── authentication.md   # 认证与快速开始
 │   ├── network.md          # 网络管理模块详解
-│   ├── capture.md          # 抓拍与上传模块详解
-│   └── endpoints/          # ⚙ 自动生成，勿手改
-├── api/                    # 既有专题 API 文档（RTMP / PIR / PoE）
-└── design/                 # 设计文档
+│   └── endpoints/          # ⚙ 自动生成（英文），勿手改
+├── zh/                     # 简体中文（/zh/ 路径）
+│   ├── index.md            # 中文首页
+│   ├── misc/
+│   └── web-api/            # 中文手写页 + endpoints/（⚙ 自动生成）
+├── api/                    # 既有专题 API 文档（中文，两侧边栏共用）
+├── design/                 # 设计文档（中文）
+└── public/                 # 原样发布的静态文件（logo、manifest 副本）
 ```
 
 ## 本地开发
@@ -30,9 +35,10 @@ npm run dev        # http://localhost:5173/ne301/
 
 ## Web API 端点参考的自动生成
 
-`docs/web-api/endpoints/` 下的页面由 `Script/gen_web_api_docs.py` 扫描固件源码
-`Custom/Services/Web/api/*.c` 中的路由注册表自动生成，包含每个端点的方法、
-路径、鉴权要求与处理函数，同时输出 `manifest.json` 供程序化使用（线上副本：
+`docs/web-api/endpoints/`（英文）与 `docs/zh/web-api/endpoints/`（中文）下的
+页面由 `Script/gen_web_api_docs.py` 扫描固件源码 `Custom/Services/Web/api/*.c`
+中的路由注册表自动生成，包含每个端点的方法、路径、鉴权要求与处理函数，
+同时输出 `manifest.json` 供程序化使用（线上副本：
 `/ne301/web-api/endpoints-manifest.json`）。模块在上游删除后，其旧端点页会被
 自动清理，不会残留。
 
@@ -57,12 +63,12 @@ cd docs && npm run sync
 
 ### 手写文档维护约定
 
-- 模块详解（`network.md`、`capture.md` 等）在 API 行为变化时人工更新，
+- 模块详解（`network.md` 等）在 API 行为变化时人工更新，**中英两份需同步修改**，
   页首注明来源源码文件；
 - 新增 API 模块（新的 `api_xxx_module.c`）时：
-  1. 运行生成脚本（`Module_Meta` 中可选地补充模块中文名与简介）；
-  2. 在 `docs/web-api/index.md` 的模块一览表中补一行；
-  3. 侧边栏自动收录新生成的端点页，无需改配置。
+  1. 运行生成脚本（`Module_Meta` 中可选地补充模块中英文名称与简介）；
+  2. 在 `docs/web-api/index.md` 与 `docs/zh/web-api/index.md` 的模块表中各补一行；
+  3. 双语侧边栏自动收录新生成的端点页，无需改配置。
 
 ## 首次启用部署
 

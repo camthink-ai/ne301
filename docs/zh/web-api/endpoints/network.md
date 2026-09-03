@@ -1,19 +1,19 @@
 ---
-title: Network Management Endpoints
+title: 网络管理 端点参考
 ---
 
-<!-- GENERATED FILE - do not edit manually. Regenerate with Script/gen_web_api_docs.py -->
+<!-- GENERATED FILE - 由 Script/gen_web_api_docs.py 自动生成，请勿手工编辑 -->
 
-# Network Management Endpoints
+# 网络管理 端点参考
 
-WiFi / cellular / PoE configuration and status
+WiFi / 蜂窝 / PoE 网络配置与状态
 
-Source: [`Custom/Services/Web/api/api_network_module.c`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/api_network_module.c)
+源文件: [`Custom/Services/Web/api/api_network_module.c`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/api_network_module.c)
 
-**34** endpoints. The ✅ marker in the Auth column means the request must carry [credentials](../authentication.md).
+共 **34** 个端点。鉴权列 ✅ 表示需要携带[认证凭据](../authentication.md)。
 
-| Method | Path | Auth | Handler |
-|--------|------|:----:|---------|
+| 方法 | 路径 | 鉴权 | 处理函数 |
+|------|------|:----:|----------|
 | `GET` | `/api/v1/system/network/status` | ✅ | `network_status_handler` |
 | `GET` | `/api/v1/system/network/wifi/sta` | ✅ | `network_wifi_sta_handler` |
 | `GET` | `/api/v1/system/network/wifi/ap` | ✅ | `network_wifi_ap_handler` |

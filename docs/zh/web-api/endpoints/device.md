@@ -1,19 +1,19 @@
 ---
-title: Device Management Endpoints
+title: 设备管理 端点参考
 ---
 
-<!-- GENERATED FILE - do not edit manually. Regenerate with Script/gen_web_api_docs.py -->
+<!-- GENERATED FILE - 由 Script/gen_web_api_docs.py 自动生成，请勿手工编辑 -->
 
-# Device Management Endpoints
+# 设备管理 端点参考
 
-Device info, time, logs and maintenance
+设备信息、时间、日志与维护操作
 
-Source: [`Custom/Services/Web/api/api_device_module.c`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/api_device_module.c)
+源文件: [`Custom/Services/Web/api/api_device_module.c`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/api_device_module.c)
 
-**23** endpoints. The ✅ marker in the Auth column means the request must carry [credentials](../authentication.md).
+共 **23** 个端点。鉴权列 ✅ 表示需要携带[认证凭据](../authentication.md)。
 
-| Method | Path | Auth | Handler |
-|--------|------|:----:|---------|
+| 方法 | 路径 | 鉴权 | 处理函数 |
+|------|------|:----:|----------|
 | `GET` | `/api/v1/device/info` | ✅ | `device_info_handler` |
 | `GET` | `/api/v1/device/firmware-versions` | ✅ | `firmware_versions_handler` |
 | `GET` | `/api/v1/device/storage` | ✅ | `device_storage_handler` |

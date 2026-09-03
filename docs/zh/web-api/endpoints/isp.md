@@ -1,19 +1,19 @@
 ---
-title: ISP Tuning Endpoints
+title: 图像调优 (ISP) 端点参考
 ---
 
-<!-- GENERATED FILE - do not edit manually. Regenerate with Script/gen_web_api_docs.py -->
+<!-- GENERATED FILE - 由 Script/gen_web_api_docs.py 自动生成，请勿手工编辑 -->
 
-# ISP Tuning Endpoints
+# 图像调优 (ISP) 端点参考
 
-Image quality parameter get/set
+图像效果参数的读取与设置
 
-Source: [`Custom/Services/Web/api/api_isp_module.c`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/api_isp_module.c)
+源文件: [`Custom/Services/Web/api/api_isp_module.c`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/api_isp_module.c)
 
-**35** endpoints. The ✅ marker in the Auth column means the request must carry [credentials](../authentication.md).
+共 **35** 个端点。鉴权列 ✅ 表示需要携带[认证凭据](../authentication.md)。
 
-| Method | Path | Auth | Handler |
-|--------|------|:----:|---------|
+| 方法 | 路径 | 鉴权 | 处理函数 |
+|------|------|:----:|----------|
 | `GET` | `/api/v1/isp/params` | ✅ | `api_isp_get_all_params` |
 | `GET` | `/api/v1/isp/sensor` | ✅ | `api_isp_get_sensor_info` |
 | `GET` | `/api/v1/isp/statistics` | ✅ | `api_isp_get_statistics` |

@@ -1,19 +1,19 @@
 ---
-title: OTA 升级 端点参考
+title: OTA Upgrade Endpoints
 ---
 
-<!-- GENERATED FILE - 由 Script/gen_web_api_docs.py 自动生成，请勿手工编辑 -->
+<!-- GENERATED FILE - do not edit manually. Regenerate with Script/gen_web_api_docs.py -->
 
-# OTA 升级 端点参考
+# OTA Upgrade Endpoints
 
-固件在线升级
+Firmware over-the-air upgrade
 
-源文件: [`Custom/Services/Web/api/api_ota_module.c`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/api_ota_module.c)
+Source: [`Custom/Services/Web/api/api_ota_module.c`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/api_ota_module.c)
 
-共 **4** 个端点。鉴权列 ✅ 表示需要携带 [认证凭据](../authentication.md)。
+**4** endpoints. The ✅ marker in the Auth column means the request must carry [credentials](../authentication.md).
 
-| 方法 | 路径 | 鉴权 | 处理函数 |
-|------|------|:----:|----------|
+| Method | Path | Auth | Handler |
+|--------|------|:----:|---------|
 | `POST` | `/api/v1/system/ota/precheck` | ✅ | `ota_precheck_handler` |
 | `POST` | `/api/v1/system/ota/upload` | ✅ | `ota_upload_handler` |
 | `POST` | `/api/v1/system/ota/upgrade-local` | ✅ | `ota_upgrade_local_handler` |

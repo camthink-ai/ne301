@@ -1,19 +1,19 @@
-# Web API 总览
+# Web API Overview
 
-NE301 设备内置 HTTP 服务，提供完整的 RESTful API 用于设备配置、状态查询与流媒体控制。前端管理界面（`Web/`）即基于这些 API 构建。
+The NE301 device embeds an HTTP server exposing a complete RESTful API for device configuration, status queries and streaming control. The bundled web UI (`Web/`) is built on top of these APIs.
 
-## 基础信息
+## Basics
 
-| 项目 | 说明 |
-|------|------|
-| 基础路径 | `/api/v1` |
-| 数据格式 | 请求与响应均为 `application/json`（文件上传等除外） |
-| 认证方式 | [HTTP Basic Auth](./authentication.md) |
-| 端点总数 | 142（[自动提取自源码](./endpoints/)） |
+| Item | Description |
+|------|-------------|
+| Base path | `/api/v1` |
+| Data format | `application/json` for both requests and responses (except file uploads) |
+| Authentication | [HTTP Basic Auth](./authentication.md) |
+| Endpoint count | [auto-extracted from source, see endpoint reference](./endpoints/) |
 
-## 统一响应格式
+## Unified Response Format
 
-所有 API 返回统一的 JSON 结构：
+All APIs return a uniform JSON structure:
 
 ```json
 {
@@ -23,60 +23,60 @@ NE301 设备内置 HTTP 服务，提供完整的 RESTful API 用于设备配置�
 }
 ```
 
-- `code`：`0` 表示成功，非 `0` 为业务错误码，见下表；
-- `message`：人类可读的描述；
-- `data`：业务数据，结构因接口而异。
+- `code`: `0` on success, non-zero business error code otherwise (see table below);
+- `message`: human-readable description;
+- `data`: payload, structure varies per endpoint.
 
-## 业务错误码
+## Business Error Codes
 
-错误码定义于 `Custom/Services/Web/api/api_business_error.h`，从 1000 起避免与系统错误码冲突。
+Error codes are defined in `Custom/Services/Web/api/api_business_error.h`, starting at 1000 to avoid clashing with system error codes.
 
-| 区间 | 分类 | 常见错误码 |
-|------|------|-----------|
-| 0 | 成功 | `0` 无错误 |
-| 1001–1099 | 认证与授权 | `1001` 密码无效 · `1003` 未授权 · `1004` 会话过期 · `1005` Token 无效 · `1007` 权限不足 |
-| 1101–1199 | 参数校验 | `1101` 参数无效 · `1102` 缺少参数 · `1103` 参数越界 · `1104` 格式错误 |
-| 1201–1299 | 设备与硬件 | `1201` 设备离线 · `1202` 设备忙 · `1204` 摄像头错误 · `1206` 硬件错误 |
-| 1301–1399 | 网络通讯 | `1301` 网络错误 · `1302` 网络超时 · `1304` MQTT 未连接 · `1305` WiFi 未连接 |
-| 1401–1499 | 存储 | `1401` 存储已满 · `1403` 文件不存在 · `1407` 空间不足 · `1408` 目录非空 |
-| 1501–1599 | AI 与模型 | `1501` 模型未加载 · `1502` 模型无效 · `1503` 模型重载失败 · `1505` 推理超时 |
-| 1601–1699 | 配置 | `1601` 配置无效 · `1602` 配置不存在 · `1604` 配置更新失败 |
-| 1701–1799 | 操作 | `1701` 操作超时 · `1702` 操作失败 · `1705` 操作进行中 · `1706` AT 指令失败 |
-| 1801–1899 | OTA 与固件 | `1801` 固件无效 · `1804` OTA 进行中 · `1805` OTA 失败 · `1806` 固件头校验失败 |
-| 1901–1999 | 资源 | `1901` 资源不存在 · `1902` 资源忙 |
-| 9999 | 未知错误 | `9999` |
+| Range | Category | Common codes |
+|-------|----------|--------------|
+| 0 | Success | `0` no error |
+| 1001–1099 | Auth | `1001` invalid password · `1003` unauthorized · `1004` session expired · `1005` invalid token · `1007` permission denied |
+| 1101–1199 | Parameter validation | `1101` invalid param · `1102` missing param · `1103` out of range · `1104` bad format |
+| 1201–1299 | Device & hardware | `1201` device offline · `1202` device busy · `1204` camera error · `1206` hardware error |
+| 1301–1399 | Network | `1301` network error · `1302` network timeout · `1304` MQTT not connected · `1305` WiFi not connected |
+| 1401–1499 | Storage | `1401` storage full · `1403` file not found · `1407` insufficient space · `1408` dir not empty |
+| 1501–1599 | AI & model | `1501` model not loaded · `1502` invalid model · `1503` reload failed · `1505` inference timeout |
+| 1601–1699 | Config | `1601` invalid config · `1602` config not found · `1604` update failed |
+| 1701–1799 | Operations | `1701` operation timeout · `1702` operation failed · `1705` operation in progress · `1706` AT command failed |
+| 1801–1899 | OTA & firmware | `1801` invalid firmware · `1804` OTA in progress · `1805` OTA failed · `1806` header validation failed |
+| 1901–1999 | Resources | `1901` resource not found · `1902` resource busy |
+| 9999 | Unknown | `9999` |
 
-## 模块一览
+## Modules
 
-| 模块 | 说明 | 端点数 |
-|------|------|-------:|
-| [认证登录](./endpoints/auth.md) | 设备登录与密码管理 | 2 |
-| [网络管理](./endpoints/network.md) | WiFi / HaLow / 蜂窝 / PoE 配置与状态 | 34 |
-| [设备管理](./endpoints/device.md) | 设备信息、时间、日志与维护 | 23 |
-| [工作模式](./endpoints/work_mode.md) | 设备工作模式与联动策略 | 9 |
-| [预览流](./endpoints/preview.md) | 摄像头实时预览控制 | 3 |
-| [图像调优 (ISP)](./endpoints/isp.md) | 图像效果参数的读取与设置 | 35 |
-| [RTMP 推流](./endpoints/rtmp.md) | RTMP 推流配置与控制 | 5 |
-| [RTSP 流](./endpoints/rtsp.md) | RTSP 拉流服务管理 | 5 |
-| [MQTT](./endpoints/mqtt.md) | MQTT 连接配置与状态 | 8 |
-| [Webhook](./endpoints/webhook.md) | 事件回调通知配置 | 6 |
-| [OTA 升级](./endpoints/ota.md) | 固件在线升级 | 4 |
-| [AI 模型管理](./endpoints/ai_management.md) | AI 模型的上传、切换与推理配置 | 6 |
-| [模型校验](./endpoints/model_validation.md) | AI 模型包的校验与验证 | 2 |
+| Module | Description |
+|--------|-------------|
+| [Authentication](./endpoints/auth.md) | Device login and password management |
+| [Network Management](./endpoints/network.md) | WiFi / HaLow / cellular / PoE configuration and status |
+| [Device Management](./endpoints/device.md) | Device info, time, logs and maintenance |
+| [Work Mode](./endpoints/work_mode.md) | Device work mode and linkage policies |
+| [Live Preview](./endpoints/preview.md) | Camera live preview control |
+| [ISP Tuning](./endpoints/isp.md) | Image quality parameter get/set |
+| [RTMP Streaming](./endpoints/rtmp.md) | RTMP stream configuration and control |
+| [RTSP Streaming](./endpoints/rtsp.md) | RTSP pull-stream service management |
+| [MQTT](./endpoints/mqtt.md) | MQTT connection configuration and status |
+| [Webhook](./endpoints/webhook.md) | Event callback notification configuration |
+| [OTA Upgrade](./endpoints/ota.md) | Firmware over-the-air upgrade |
+| [AI Model Management](./endpoints/ai_management.md) | Upload, switch and configure AI models |
+| [Model Validation](./endpoints/model_validation.md) | AI model package validation |
 
-> 端点参考页面由 `Script/gen_web_api_docs.py` 自动生成，与固件源码中的路由注册表逐条对应。上表数字与页面内容随代码变更自动更新（详见[文档同步机制](../misc/)）。
+> The endpoint reference pages are auto-generated by `Script/gen_web_api_docs.py` and map one-to-one to the route registration tables in the firmware source. Their content updates automatically as the code changes (see [the sync mechanism](/misc/)). Modules not present in the current code base do not appear.
 
-## 快速开始
+## Quick Start
 
 ```bash
-# 1. 登录（前端页面用）
+# 1. Login (used by the web UI)
 curl -X POST http://<device-ip>/api/v1/login \
   -H "Content-Type: application/json" \
   -d '{"password": "<your-password>"}'
 
-# 2. 携带 Basic Auth 调用受保护接口
+# 2. Call a protected endpoint with Basic Auth
 curl -u admin:<your-password> \
   http://<device-ip>/api/v1/device/info
 ```
 
-详细认证说明见[认证与快速开始](./authentication.md)。
+See [Authentication & Quick Start](./authentication.md) for details.

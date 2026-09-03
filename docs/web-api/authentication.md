@@ -1,44 +1,44 @@
-# 认证与快速开始
+# Authentication & Quick Start
 
-## 认证模型
+## Auth Model
 
-NE301 使用单用户（`admin`）模型：
+NE301 uses a single-user (`admin`) model:
 
-- **`POST /api/v1/login`**：前端管理界面使用的登录接口，请求体为 `{"password": "..."}`，校验通过仅表示密码正确（用于前端路由判断），不会签发 token。
-- **HTTP Basic Auth**：所有 `require_auth = true` 的接口在请求头中直接校验凭据：
+- **`POST /api/v1/login`**: the login endpoint used by the web UI. The request body is `{"password": "..."}`; a successful response only means the password is correct (used for frontend routing) — no token is issued.
+- **HTTP Basic Auth**: every endpoint with `require_auth = true` validates credentials directly from the request header:
 
 ```http
 Authorization: Basic <base64("admin:<password>")>
 ```
 
-用户名固定为 `admin`（见 `Custom/Core/Security/auth_mgr.h` 中的 `AUTH_ADMIN_USERNAME`），密码由 `auth_mgr` 管理，可通过 [`POST /api/v1/change-password`](./endpoints/auth.md) 修改（长度 8–32 位）。
+The username is fixed to `admin` (see `AUTH_ADMIN_USERNAME` in `Custom/Core/Security/auth_mgr.h`); the password is managed by `auth_mgr` and can be changed via [`POST /api/v1/change-password`](./endpoints/auth.md) (8–32 characters).
 
-::: warning 注意
-Basic Auth 每次请求都携带明文 base64 编码的密码，请确保设备仅运行在可信网络中，或通过反向代理 / TLS 保护。
+::: warning
+Basic Auth sends the base64-encoded password on every request. Keep the device on a trusted network, or protect it with a reverse proxy / TLS.
 :::
 
-## curl 调用示例
+## curl Examples
 
 ```bash
-# 登录（前端页面判断密码是否正确）
+# Login (lets the web UI check the password)
 curl -X POST http://192.168.1.100/api/v1/login \
   -H "Content-Type: application/json" \
   -d '{"password": "admin12345"}'
 
-# 查询设备信息（需 Basic Auth）
+# Device info (requires Basic Auth)
 curl -u admin:admin12345 http://192.168.1.100/api/v1/device/info
 
-# WiFi 状态
+# WiFi status
 curl -u admin:admin12345 http://192.168.1.100/api/v1/system/network/wifi/sta
 ```
 
-## JavaScript / fetch 调用示例
+## JavaScript / fetch Example
 
 ```js
 const BASE = 'http://192.168.1.100/api/v1'
 const AUTH = 'Basic ' + btoa('admin:admin12345')
 
-// 统一请求封装：自动带凭据、统一处理业务错误码
+// Unified wrapper: attaches credentials and maps business error codes
 async function api(path, options = {}) {
   const res = await fetch(BASE + path, {
     ...options,
@@ -55,12 +55,12 @@ async function api(path, options = {}) {
   return body.data
 }
 
-// 示例：获取网络状态
+// Example: network status
 const status = await api('/system/network/status')
 console.log(status.current_comm_type, status.has_connection)
 ```
 
-## Python 调用示例
+## Python Example
 
 ```python
 import requests
@@ -75,15 +75,15 @@ if body["code"] != 0:
 print(body["data"])
 ```
 
-## 常见认证错误
+## Common Auth Errors
 
-| HTTP 状态 | 业务码 | 含义 | 处理建议 |
-|-----------|-------|------|---------|
-| 401 | — | 缺少 `Authorization` 头或凭据错误 | 检查用户名是否为 `admin`、密码是否正确 |
-| 200 | 1001 | 登录密码错误（`/login`） | 确认密码 |
-| 200 | 1004 / 1005 | 会话过期 / Token 无效 | 重新登录 |
+| HTTP status | Business code | Meaning | Suggestion |
+|-------------|---------------|---------|------------|
+| 401 | — | Missing `Authorization` header or bad credentials | Check the username is `admin` and the password is correct |
+| 200 | 1001 | Wrong login password (`/login`) | Verify the password |
+| 200 | 1004 / 1005 | Session expired / invalid token | Log in again |
 
-## 下一步
+## Next Steps
 
-- 浏览全部[端点参考](./endpoints/)
-- 阅读[网络管理模块详解](./network)
+- Browse the full [endpoint reference](./endpoints/)
+- Read the [Network Management module guide](./network)

@@ -3,12 +3,15 @@ layout: home
 
 hero:
   name: NE301
-  text: AI 摄像头固件与 Web API 文档
-  tagline: STM32N6 边缘 AI 摄像头 · 固件构建、Web API 与前端集成参考
+  text: AI Camera Firmware & Web API Docs
+  tagline: STM32N6 edge AI camera · firmware build, Web API and frontend integration reference
   actions:
     - theme: brand
-      text: 浏览 Web API 文档
+      text: Browse Web API Docs
       link: /web-api/
+    - theme: alt
+      text: 简体中文
+      link: /zh/
     - theme: alt
       text: GitHub
       link: https://github.com/camthink-ai/ne301
@@ -16,17 +19,17 @@ hero:
 features:
   - icon: 📡
     title: RESTful Web API
-    details: 142 个 HTTP 端点，覆盖网络、抓拍、推流、OTA、MQTT 等模块，端点参考由源码自动生成，与固件保持同步。
+    details: Complete HTTP endpoints across network, capture, streaming, OTA and MQTT modules. The endpoint reference is auto-generated from firmware source and always in sync.
     link: /web-api/
-    linkText: 查看端点总览
+    linkText: Endpoint reference
   - icon: 🔐
-    title: 统一认证与响应格式
-    details: HTTP Basic Auth + 统一 { code, message, data } 响应结构与业务错误码。
+    title: Unified Auth & Response Format
+    details: HTTP Basic Auth plus a consistent { code, message, data } response structure with business error codes.
     link: /web-api/authentication
-    linkText: 快速开始
+    linkText: Quick start
   - icon: 🔄
-    title: 文档随代码更新
-    details: 修改 Custom/Services/Web 下的 API 代码后，CI 自动重新生成端点参考并部署到 GitHub Pages，PR 中强制检查文档同步。
+    title: Docs That Follow the Code
+    details: After changes under Custom/Services/Web, CI regenerates the endpoint reference and redeploys to GitHub Pages; PRs are checked for doc sync.
     link: /misc/
-    linkText: 了解同步机制
+    linkText: How sync works
 ---

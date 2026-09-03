@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """
-gen_web_api_docs.py - 从 Web API C 源码自动生成端点参考文档
+gen_web_api_docs.py - 从 Web API C 源码自动生成端点参考文档（中英双语）
 
 扫描 Custom/Services/Web/api/*.c 中的 api_route_t 路由表（designated
-initializer 形式），提取 path / method / handler / require_auth 字段，
-生成 VitePress 端点参考页与 manifest.json。
+initializer 与 positional 两种形式），提取 path / method / handler /
+require_auth 字段，生成 VitePress 端点参考页与 manifest.json。
+
+输出两套页面：
+    docs/web-api/endpoints/    英文（站点默认语言）
+    docs/zh/web-api/endpoints/ 中文
 
 用法:
     python3 Script/gen_web_api_docs.py [--check]
 
-    默认模式 : 重新生成 docs/web-api/endpoints/ 下的文件
+    默认模式 : 重新生成上述目录下的文件
     --check  : 重新生成并与仓库中已提交的版本比较，不一致时以非零
                退出码结束（供 CI 强制 "代码改动必须同步文档"）
 
@@ -25,28 +29,63 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 API_SRC_DIR = REPO_ROOT / "Custom" / "Services" / "Web" / "api"
-OUT_DIR = REPO_ROOT / "docs" / "web-api" / "endpoints"
+# 英文为站点默认语言（root locale），中文挂在 /zh/
+OUT_DIRS = {
+    "en": REPO_ROOT / "docs" / "web-api" / "endpoints",
+    "zh": REPO_ROOT / "docs" / "zh" / "web-api" / "endpoints",
+}
+PUBLIC_MANIFEST = REPO_ROOT / "docs" / "public" / "web-api" / "endpoints-manifest.json"
 
 API_PATH_PREFIX = "/api/v1"
 
-# 模块名 -> (中文标题, 一句话说明)
-# 文件名 api_<key>_module.c / api_<key>.c 之外的模块不会被扫描
+# 模块名 -> (英文标题, 中文标题, 英文说明, 中文说明)
+# 文件名 api_<key>_module.c 之外的模块不会被扫描
 MODULE_META = {
-    "ai_management":     ("AI 模型管理", "AI 模型的上传、切换与推理配置"),
-    "auth":              ("认证登录", "设备登录与密码管理"),
-    "capture":           ("抓拍与上传", "抓拍任务、上传队列与记录管理"),
-    "device":            ("设备管理", "设备信息、时间、日志与维护操作"),
-    "file":              ("文件管理", "文件浏览器与文件传输"),
-    "isp":               ("图像调优 (ISP)", "图像效果参数的读取与设置"),
-    "model_validation":  ("模型校验", "AI 模型包的校验与验证"),
-    "mqtt":              ("MQTT", "MQTT 连接配置与状态"),
-    "network":           ("网络管理", "WiFi / 蜂窝 / PoE 网络配置与状态"),
-    "ota":               ("OTA 升级", "固件在线升级"),
-    "preview":           ("预览流", "摄像头实时预览控制"),
-    "rtmp":              ("RTMP 推流", "RTMP 推流配置与控制"),
-    "rtsp":              ("RTSP 流", "RTSP 拉流服务管理"),
-    "webhook":           ("Webhook", "事件回调通知配置"),
-    "work_mode":         ("工作模式", "设备工作模式与联动策略"),
+    "ai_management":     ("AI Model Management", "AI 模型管理",
+                          "Upload, switch and configure AI models",
+                          "AI 模型的上传、切换与推理配置"),
+    "auth":              ("Authentication", "认证登录",
+                          "Device login and password management",
+                          "设备登录与密码管理"),
+    "capture":           ("Capture & Upload", "抓拍与上传",
+                          "Capture tasks, upload queue and records",
+                          "抓拍任务、上传队列与记录管理"),
+    "device":            ("Device Management", "设备管理",
+                          "Device info, time, logs and maintenance",
+                          "设备信息、时间、日志与维护操作"),
+    "file":              ("File Management", "文件管理",
+                          "File browser and file transfer",
+                          "文件浏览器与文件传输"),
+    "isp":               ("ISP Tuning", "图像调优 (ISP)",
+                          "Image quality parameter get/set",
+                          "图像效果参数的读取与设置"),
+    "model_validation":  ("Model Validation", "模型校验",
+                          "AI model package validation",
+                          "AI 模型包的校验与验证"),
+    "mqtt":              ("MQTT", "MQTT",
+                          "MQTT connection configuration and status",
+                          "MQTT 连接配置与状态"),
+    "network":           ("Network Management", "网络管理",
+                          "WiFi / cellular / PoE configuration and status",
+                          "WiFi / 蜂窝 / PoE 网络配置与状态"),
+    "ota":               ("OTA Upgrade", "OTA 升级",
+                          "Firmware over-the-air upgrade",
+                          "固件在线升级"),
+    "preview":           ("Live Preview", "预览流",
+                          "Camera live preview control",
+                          "摄像头实时预览控制"),
+    "rtmp":              ("RTMP Streaming", "RTMP 推流",
+                          "RTMP stream configuration and control",
+                          "RTMP 推流配置与控制"),
+    "rtsp":              ("RTSP Streaming", "RTSP 流",
+                          "RTSP pull-stream service management",
+                          "RTSP 拉流服务管理"),
+    "webhook":           ("Webhook", "Webhook",
+                          "Event callback notification configuration",
+                          "事件回调通知配置"),
+    "work_mode":         ("Work Mode", "工作模式",
+                          "Device work mode and linkage policies",
+                          "设备工作模式与联动策略"),
 }
 
 # 按 sidebar 展示顺序排列；新模块自动追加到末尾
@@ -127,15 +166,34 @@ def extract_routes(c_file: Path):
     return routes
 
 
-def render_module_page(key: str, routes: list, src_file: str) -> str:
-    title, desc = MODULE_META.get(key, (key, ""))
-    rows = []
-    for r in routes:
-        auth = "✅" if r["require_auth"] else "—" if r["require_auth"] is not None else "?"
-        rows.append(
-            f'| `{r["method"]}` | `{r["path"]}` | {auth} | `{r["handler"]}` |'
-        )
-    table = "\n".join(rows)
+def meta(key: str, lang: str):
+    t_en, t_zh, d_en, d_zh = MODULE_META.get(key, (key, key, "", ""))
+    return (t_en, d_en) if lang == "en" else (t_zh, d_zh)
+
+
+def render_module_page(key: str, routes: list, src_file: str, lang: str) -> str:
+    title, desc = meta(key, lang)
+    if lang == "en":
+        return f"""---
+title: {title} Endpoints
+---
+
+<!-- GENERATED FILE - do not edit manually. Regenerate with Script/gen_web_api_docs.py -->
+
+# {title} Endpoints
+
+{desc}
+
+Source: [`Custom/Services/Web/api/{src_file}`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/{src_file})
+
+**{len(routes)}** endpoints. The ✅ marker in the Auth column means the request must carry [credentials](../authentication.md).
+
+| Method | Path | Auth | Handler |
+|--------|------|:----:|---------|
+""" + "\n".join(
+            f'| `{r["method"]}` | `{r["path"]}` | {"✅" if r["require_auth"] else "—" if r["require_auth"] is not None else "?"} | `{r["handler"]}` |'
+            for r in routes
+        ) + "\n"
 
     return f"""---
 title: {title} 端点参考
@@ -149,23 +207,46 @@ title: {title} 端点参考
 
 源文件: [`Custom/Services/Web/api/{src_file}`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/{src_file})
 
-共 **{len(routes)}** 个端点。鉴权列 ✅ 表示需要携带 [认证凭据](../authentication.md)。
+共 **{len(routes)}** 个端点。鉴权列 ✅ 表示需要携带[认证凭据](../authentication.md)。
 
 | 方法 | 路径 | 鉴权 | 处理函数 |
 |------|------|:----:|----------|
-{table}
-"""
+""" + "\n".join(
+        f'| `{r["method"]}` | `{r["path"]}` | {"✅" if r["require_auth"] else "—" if r["require_auth"] is not None else "?"} | `{r["handler"]}` |'
+        for r in routes
+    ) + "\n"
 
 
-def render_index_page(modules: dict) -> str:
+def render_index_page(modules: dict, lang: str) -> str:
     keys = sorted(modules.keys(), key=lambda k: (MODULE_ORDER.index(k) if k in MODULE_ORDER else 999, k))
     total = sum(len(r) for r in modules.values())
-    rows = []
-    for k in keys:
-        title, desc = MODULE_META.get(k, (k, ""))
-        rows.append(f"| [{title}](./{k}.md) | {desc} | {len(modules[k])} |")
-    table = "\n".join(rows)
 
+    if lang == "en":
+        rows = "\n".join(
+            f"| [{meta(k, 'en')[0]}](./{k}.md) | {meta(k, 'en')[1]} | {len(modules[k])} |"
+            for k in keys
+        )
+        return f"""---
+title: API Endpoint Reference
+---
+
+<!-- GENERATED FILE - do not edit manually. Regenerate with Script/gen_web_api_docs.py -->
+
+# API Endpoint Reference
+
+All **{total}** endpoints grouped by module. Data is extracted directly from
+the route registration tables in the firmware source, so it always matches the
+code. Click a module to see methods, paths and auth requirements.
+
+| Module | Description | Endpoints |
+|--------|-------------|----------:|
+{rows}
+"""
+
+    rows = "\n".join(
+        f"| [{meta(k, 'zh')[0]}](./{k}.md) | {meta(k, 'zh')[1]} | {len(modules[k])} |"
+        for k in keys
+    )
     return f"""---
 title: API 端点总览
 ---
@@ -179,7 +260,7 @@ title: API 端点总览
 
 | 模块 | 说明 | 端点数 |
 |------|------|-------:|
-{table}
+{rows}
 """
 
 
@@ -196,18 +277,19 @@ def generate() -> dict:
         if routes:
             modules[key] = routes
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    # 清理孤儿文件：模块被删除后，其旧端点页/清单不能残留在仓库与站点里
-    for stale in list(OUT_DIR.glob("*.md")) + [OUT_DIR / "manifest.json"]:
-        stale.unlink(missing_ok=True)
+    for out_dir in OUT_DIRS.values():
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # 清理孤儿文件：模块被删除后，其旧端点页不能残留在仓库与站点里
+        for stale in list(out_dir.glob("*.md")):
+            stale.unlink(missing_ok=True)
 
     manifest_modules = {}
     for key, routes in modules.items():
         src_file = f"api_{key}_module.c"
-        (OUT_DIR / f"{key}.md").write_text(
-            render_module_page(key, routes, src_file), encoding="utf-8"
-        )
+        for lang, out_dir in OUT_DIRS.items():
+            (out_dir / f"{key}.md").write_text(
+                render_module_page(key, routes, src_file, lang), encoding="utf-8"
+            )
         manifest_modules[key] = {
             "source": f"Custom/Services/Web/api/{src_file}",
             "source_sha256": hashlib.sha256(
@@ -216,7 +298,8 @@ def generate() -> dict:
             "routes": routes,
         }
 
-    (OUT_DIR / "index.md").write_text(render_index_page(modules), encoding="utf-8")
+    for lang, out_dir in OUT_DIRS.items():
+        (out_dir / "index.md").write_text(render_index_page(modules, lang), encoding="utf-8")
 
     manifest = {
         "base_path": API_PATH_PREFIX,
@@ -224,11 +307,11 @@ def generate() -> dict:
         "modules": manifest_modules,
     }
     manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
-    (OUT_DIR / "manifest.json").write_text(manifest_text, encoding="utf-8")
-    # public/ 下的副本会原样发布到站点，提供稳定的机器可读 URL
-    public_dir = REPO_ROOT / "docs" / "public" / "web-api"
-    public_dir.mkdir(parents=True, exist_ok=True)
-    (public_dir / "endpoints-manifest.json").write_text(manifest_text, encoding="utf-8")
+    # manifest 无语言文案，仅英文侧保留一份 + public/ 副本（原样发布到站点）
+    (OUT_DIRS["en"] / "manifest.json").unlink(missing_ok=True)
+    (OUT_DIRS["en"] / "manifest.json").write_text(manifest_text, encoding="utf-8")
+    PUBLIC_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+    PUBLIC_MANIFEST.write_text(manifest_text, encoding="utf-8")
     return manifest
 
 
@@ -237,16 +320,15 @@ def check() -> int:
     import subprocess
 
     generate()
-    diff = subprocess.run(
-        ["git", "diff", "--name-only", "--", str(OUT_DIR.relative_to(REPO_ROOT))],
+    paths = [str(d.relative_to(REPO_ROOT)) for d in OUT_DIRS.values()]
+    diff_args = ["git", "diff", "--name-only", "--"] + paths
+    changed = [l for l in subprocess.run(
+        diff_args, cwd=REPO_ROOT, capture_output=True, text=True,
+    ).stdout.splitlines() if l.strip()]
+    untracked = [l for l in subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "--"] + paths,
         cwd=REPO_ROOT, capture_output=True, text=True,
-    )
-    changed = [l for l in diff.stdout.splitlines() if l.strip()]
-    untracked = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard",
-         "--", str(OUT_DIR.relative_to(REPO_ROOT))],
-        cwd=REPO_ROOT, capture_output=True, text=True,
-    ).stdout.splitlines()
+    ).stdout.splitlines() if l.strip()]
 
     stale = changed + untracked
     if stale:
@@ -270,7 +352,7 @@ def main():
         sys.exit(check())
     manifest = generate()
     print(f"generated {manifest['total_endpoints']} endpoints "
-          f"across {len(manifest['modules'])} modules -> {OUT_DIR}")
+          f"across {len(manifest['modules'])} modules (en + zh) -> {OUT_DIRS['en']}, {OUT_DIRS['zh']}")
 
 
 if __name__ == "__main__":

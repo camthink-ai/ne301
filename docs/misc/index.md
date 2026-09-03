@@ -1,27 +1,28 @@
-# 文档索引
+# Doc Index
 
-本站点部署在 GitHub Pages，源文件位于仓库 `docs/` 目录。
+This site is deployed on GitHub Pages from the `docs/` directory of the repository.
 
-## Web API 文档
+## Web API Documentation
 
-- [API 总览](/web-api/) — 基础路径、认证、响应格式与错误码
-- [认证与快速开始](/web-api/authentication) — 登录流程与调用示例
-- [端点参考（自动生成）](/web-api/endpoints/) — 全部 142 个端点，由 `Script/gen_web_api_docs.py` 从固件源码提取
-- 模块详解：[网络管理](/web-api/network) · [RTMP 推流](/api/RTMP_API) · [PIR 传感器](/api/PIR_SENSOR_API) · [PoE 配电](/api/PoE_Network_API)
+- [API Overview](/web-api/) — base path, authentication, response format and error codes
+- [Authentication & Quick Start](/web-api/authentication) — login flow and calling examples (curl / JS / Python)
+- [Endpoint Reference (auto-generated)](/web-api/endpoints/) — every endpoint, extracted from the firmware source by `Script/gen_web_api_docs.py`
+- Module guides: [Network Management](/web-api/network)
 
-## 专题文档
+## Topic Docs (Chinese)
 
-- [拍照上传流程](/拍照上传流程) — 按键/唤醒拍照与 MQTT 上传的完整链路
+- [拍照上传流程](/拍照上传流程) — full pipeline of button/RTC-wakeup capture and MQTT upload
+- [RTMP API](/api/RTMP_API) · [PIR Sensor API](/api/PIR_SENSOR_API) · [PoE Network API](/api/PoE_Network_API)
 - [视频流中台升级设计](/design/VIDEO_STREAM_HUB_UPGRADE)
 
-## 文档维护与同步机制
+## Maintenance & Sync Mechanism
 
-文档站使用 [VitePress](https://vitepress.dev/)，本地开发与构建方式见 [docs/README.md](https://github.com/camthink-ai/ne301/blob/main/docs/README.md)。
+The site is built with [VitePress](https://vitepress.dev/). See [docs/README.md](https://github.com/camthink-ai/ne301/blob/main/docs/README.md) for local development and build instructions. The site is bilingual — English is the default at the root path, 简体中文 lives under [`/zh/`](/zh/).
 
-**Web API 端点参考是自动生成的**：脚本扫描 `Custom/Services/Web/api/*.c` 中的路由注册表，生成 `docs/web-api/endpoints/` 下的页面。因此：
+**The Web API endpoint reference is auto-generated**: the script scans the route registration tables in `Custom/Services/Web/api/*.c` and produces the pages under `web-api/endpoints/` (both languages). Therefore:
 
-- 修改 API 路由（增删端点、改路径/方法/鉴权）后，需运行 `python3 Script/gen_web_api_docs.py` 重新生成并提交；
-- CI 会在 PR 中运行 `--check` 检查，端点文档未同步会**阻止合并**；
-- push 到 `main` 后，GitHub Actions 自动重新生成端点文档并部署到 Pages，线上永远展示最新代码的端点。
+- After changing API routes (adding/removing endpoints, changing paths/methods/auth), run `python3 Script/gen_web_api_docs.py` and commit the result together with your change;
+- CI runs the same script with `--check` on every PR — stale endpoint docs **block merging**;
+- On push to `main`, GitHub Actions regenerates the endpoint docs and redeploys Pages, so the live site always reflects the code.
 
-模块详解等手写文档在 API 行为变化时需人工更新，PR 检查会在 Web API 代码变更而 `docs/` 无变更时给出提醒。
+Hand-written module guides should be updated manually when API behavior changes; the PR check emits a warning whenever Web API code changes without any change under `docs/`.

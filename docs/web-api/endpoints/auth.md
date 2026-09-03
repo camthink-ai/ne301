@@ -1,18 +1,18 @@
 ---
-title: 认证登录 端点参考
+title: Authentication Endpoints
 ---
 
-<!-- GENERATED FILE - 由 Script/gen_web_api_docs.py 自动生成，请勿手工编辑 -->
+<!-- GENERATED FILE - do not edit manually. Regenerate with Script/gen_web_api_docs.py -->
 
-# 认证登录 端点参考
+# Authentication Endpoints
 
-设备登录与密码管理
+Device login and password management
 
-源文件: [`Custom/Services/Web/api/api_auth_module.c`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/api_auth_module.c)
+Source: [`Custom/Services/Web/api/api_auth_module.c`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/api_auth_module.c)
 
-共 **2** 个端点。鉴权列 ✅ 表示需要携带 [认证凭据](../authentication.md)。
+**2** endpoints. The ✅ marker in the Auth column means the request must carry [credentials](../authentication.md).
 
-| 方法 | 路径 | 鉴权 | 处理函数 |
-|------|------|:----:|----------|
+| Method | Path | Auth | Handler |
+|--------|------|:----:|---------|
 | `POST` | `/api/v1/login` | — | `login_handler` |
 | `POST` | `/api/v1/change-password` | ✅ | `change_password_handler` |
