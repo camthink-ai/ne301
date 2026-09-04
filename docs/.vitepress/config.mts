@@ -17,14 +17,116 @@ export default defineConfig({
   // 内部调试/工作记录与维护说明不发布到公开站点
   srcExclude: ['**/DEBUG_*', '**/WORK_SUMMARY*', 'README.md'],
 
-  // locale 元数据（语言切换按钮、<html lang>）必须在顶层 locales 定义
+  // locale 元数据（语言切换按钮、<html lang>）与各语言的 nav/sidebar 等
+  // 主题选项都必须挂在顶层 locales 上：VitePress 运行时只合并
+  // locales.<key>.themeConfig，themeConfig.locales.<key> 不会被读取
   locales: {
-    root: { label: 'English', lang: 'en-US' },
-    zh: { label: '简体中文', lang: 'zh-CN', link: '/zh/' },
+    root: {
+      label: 'English',
+      lang: 'en-US',
+      themeConfig: {
+        nav: [
+          { text: 'Home', link: '/' },
+          { text: 'Web API', link: '/web-api/', activeMatch: '/web-api/' },
+          { text: 'More Docs', link: '/misc/', activeMatch: '/misc|/api/|/design/' },
+          { text: 'GitHub', link: 'https://github.com/camthink-ai/ne301' },
+        ],
+        sidebar: {
+          '/web-api/': [
+            {
+              text: 'Getting Started',
+              items: [
+                { text: 'API Overview', link: '/web-api/' },
+                { text: 'Authentication & Quick Start', link: '/web-api/authentication' },
+              ],
+            },
+            {
+              text: 'Endpoint Reference (auto-generated)',
+              collapsed: false,
+              items: endpointItems('en', '/web-api/endpoints/'),
+            },
+            {
+              text: 'Module Guides',
+              collapsed: false,
+              items: [
+                { text: 'Network Management', link: '/web-api/network' },
+              ],
+            },
+          ],
+          '/misc/': miscSidebar('en'),
+          '/api/': miscSidebar('en'),
+          '/design/': miscSidebar('en'),
+          '/': miscSidebar('en'),
+        },
+        outline: { level: [2, 3], label: 'On this page' },
+        docFooter: { prev: 'Previous', next: 'Next' },
+        lastUpdated: {
+          text: 'Last updated',
+          formatOptions: { dateStyle: 'short', timeStyle: 'short' },
+        },
+        returnToTopLabel: 'Back to top',
+        sidebarMenuLabel: 'Menu',
+        darkModeSwitchLabel: 'Appearance',
+        lightModeSwitchTitle: 'Switch to light mode',
+        darkModeSwitchTitle: 'Switch to dark mode',
+      },
+    },
+    zh: {
+      label: '简体中文',
+      lang: 'zh-CN',
+      link: '/zh/',
+      themeConfig: {
+        nav: [
+          { text: '首页', link: '/zh/' },
+          { text: 'Web API', link: '/zh/web-api/', activeMatch: '/zh/web-api/' },
+          { text: '其他文档', link: '/zh/misc/', activeMatch: '/zh/misc|/api/|/design/' },
+          { text: 'GitHub', link: 'https://github.com/camthink-ai/ne301' },
+        ],
+        sidebar: {
+          '/zh/web-api/': [
+            {
+              text: '入门',
+              items: [
+                { text: 'API 总览', link: '/zh/web-api/' },
+                { text: '认证与快速开始', link: '/zh/web-api/authentication' },
+              ],
+            },
+            {
+              text: '端点参考（自动生成）',
+              collapsed: false,
+              items: endpointItems('zh', '/zh/web-api/endpoints/'),
+            },
+            {
+              text: '模块详解',
+              collapsed: false,
+              items: [
+                { text: '网络管理', link: '/zh/web-api/network' },
+              ],
+            },
+          ],
+          '/zh/misc/': miscSidebar('zh'),
+          '/zh/api/': miscSidebar('zh'),
+          '/zh/design/': miscSidebar('zh'),
+          '/zh/': miscSidebar('zh'),
+        },
+        outline: { level: [2, 3], label: '本页目录' },
+        docFooter: { prev: '上一页', next: '下一页' },
+        lastUpdated: {
+          text: '最后更新',
+          formatOptions: { dateStyle: 'short', timeStyle: 'short' },
+        },
+        returnToTopLabel: '回到顶部',
+        sidebarMenuLabel: '菜单',
+        darkModeSwitchLabel: '主题',
+        lightModeSwitchTitle: '切换到浅色模式',
+        darkModeSwitchTitle: '切换到深色模式',
+      },
+    },
   },
 
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/ne301/logo.svg' }]],
 
+  // 各语言共用的主题选项；语言相关内容在上面 locales.<key>.themeConfig
   themeConfig: {
     socialLinks: [
       { icon: 'github', link: 'https://github.com/camthink-ai/ne301' },
@@ -50,105 +152,6 @@ export default defineConfig({
               },
             },
           },
-        },
-      },
-    },
-
-    locales: {
-      root: {
-        themeConfig: {
-          nav: [
-            { text: 'Home', link: '/' },
-            { text: 'Web API', link: '/web-api/', activeMatch: '/web-api/' },
-            { text: 'More Docs', link: '/misc/', activeMatch: '/misc|/api/|/design/' },
-            { text: 'GitHub', link: 'https://github.com/camthink-ai/ne301' },
-          ],
-          sidebar: {
-            '/web-api/': [
-              {
-                text: 'Getting Started',
-                items: [
-                  { text: 'API Overview', link: '/web-api/' },
-                  { text: 'Authentication & Quick Start', link: '/web-api/authentication' },
-                ],
-              },
-              {
-                text: 'Endpoint Reference (auto-generated)',
-                collapsed: false,
-                items: endpointItems('en', '/web-api/endpoints/'),
-              },
-              {
-                text: 'Module Guides',
-                collapsed: false,
-                items: [
-                  { text: 'Network Management', link: '/web-api/network' },
-                ],
-              },
-            ],
-            '/misc/': miscSidebar('en'),
-            '/api/': miscSidebar('en'),
-            '/design/': miscSidebar('en'),
-            '/': miscSidebar('en'),
-          },
-          outline: { level: [2, 3], label: 'On this page' },
-          docFooter: { prev: 'Previous', next: 'Next' },
-          lastUpdated: {
-            text: 'Last updated',
-            formatOptions: { dateStyle: 'short', timeStyle: 'short' },
-          },
-          returnToTopLabel: 'Back to top',
-          sidebarMenuLabel: 'Menu',
-          darkModeSwitchLabel: 'Appearance',
-          lightModeSwitchTitle: 'Switch to light mode',
-          darkModeSwitchTitle: 'Switch to dark mode',
-        },
-      },
-      zh: {
-        themeConfig: {
-          nav: [
-            { text: '首页', link: '/zh/' },
-            { text: 'Web API', link: '/zh/web-api/', activeMatch: '/zh/web-api/' },
-            { text: '其他文档', link: '/zh/misc/', activeMatch: '/zh/misc|/api/|/design/' },
-            { text: 'GitHub', link: 'https://github.com/camthink-ai/ne301' },
-          ],
-          sidebar: {
-            '/zh/web-api/': [
-              {
-                text: '入门',
-                items: [
-                  { text: 'API 总览', link: '/zh/web-api/' },
-                  { text: '认证与快速开始', link: '/zh/web-api/authentication' },
-                ],
-              },
-              {
-                text: '端点参考（自动生成）',
-                collapsed: false,
-                items: endpointItems('zh', '/zh/web-api/endpoints/'),
-              },
-              {
-                text: '模块详解',
-                collapsed: false,
-                items: [
-                  { text: '网络管理', link: '/zh/web-api/network' },
-                ],
-              },
-            ],
-            '/zh/misc/': miscSidebar('zh'),
-            '/zh/api/': miscSidebar('zh'),
-            '/zh/design/': miscSidebar('zh'),
-            '/zh/': miscSidebar('zh'),
-          },
-          outline: { level: [2, 3], label: '本页目录' },
-          docFooter: { prev: '上一页', next: '下一页' },
-          lastUpdated: {
-            text: '最后更新',
-            formatOptions: { dateStyle: 'short', timeStyle: 'short' },
-          },
-          returnToTopLabel: '回到顶部',
-          sidebarMenuLabel: '菜单',
-          darkModeSwitchLabel: '主题',
-          lightModeSwitchTitle: '切换到浅色模式',
-          darkModeSwitchTitle: '切换到深色模式',
         },
       },
     },

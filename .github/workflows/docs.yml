@@ -48,18 +48,10 @@ jobs:
           # base..head diff 需要完整历史
           fetch-depth: 0
 
-      - name: Regenerate endpoint reference
-        run: python3 Script/gen_web_api_docs.py
-
-      - name: Fail if endpoint docs are stale
-        run: |
-          if ! git diff --exit-code -- docs/web-api/endpoints; then
-            echo "::error::Web API 代码已变更，但 docs/web-api/endpoints/ 下的端点参考未同步。"
-            echo "::error::请运行 python3 Script/gen_web_api_docs.py（或 cd docs && npm run sync），提交生成结果后更新本 PR。"
-            git diff --stat -- docs/web-api/endpoints
-            exit 1
-          fi
-          echo "端点参考与代码同步 ✔"
+      # --check 模式内部会重新生成并做完整比较：en/zh 两个生成目录、
+      # 未跟踪文件（页面被删除后重新生成的场景）以及 public manifest
+      - name: Check endpoint docs are in sync
+        run: python3 Script/gen_web_api_docs.py --check
 
       - name: Warn if API code changed without any docs change
         if: always()

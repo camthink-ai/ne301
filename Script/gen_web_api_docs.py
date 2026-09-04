@@ -320,7 +320,9 @@ def check() -> int:
     import subprocess
 
     generate()
+    # public/ 下的 manifest 副本也是生成产物，同样纳入同步检查
     paths = [str(d.relative_to(REPO_ROOT)) for d in OUT_DIRS.values()]
+    paths.append(str(PUBLIC_MANIFEST.relative_to(REPO_ROOT)))
     diff_args = ["git", "diff", "--name-only", "--"] + paths
     changed = [l for l in subprocess.run(
         diff_args, cwd=REPO_ROOT, capture_output=True, text=True,
