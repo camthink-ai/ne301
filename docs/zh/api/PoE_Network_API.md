@@ -1,94 +1,94 @@
-# PoE / Ethernet Network API
+# PoE/以太网网络 API 文档
 
-## Overview
+## 概述
 
-This document describes the RESTful APIs for PoE/Ethernet network management, for frontend development reference.
+本文档描述 PoE/以太网网络管理相关的 RESTful API 接口，供前端开发参考。
 
-**Base path:** `/api/v1/system/network/poe`
+**基础路径**: `/api/v1/system/network/poe`
 
-**Authentication:** all endpoints require authentication (`require_auth: true`)
+**认证**: 所有接口均需要认证 (`require_auth: true`)
 
-**Content-Type:** `application/json`
+**Content-Type**: `application/json`
 
 ---
 
-## Unified Response Format
+## 统一响应格式
 
-### Success response
+### 成功响应
 
 ```json
 {
   "success": true,
-  "message": "Operation success message",
+  "message": "操作成功消息",
   "data": {
-    // actual business data
+    // 实际业务数据
   }
 }
 ```
 
-### Failure response
+### 失败响应
 
 ```json
 {
   "success": false,
   "error_code": "ERROR_CODE_STRING",
-  "message": "Error description"
+  "message": "错误描述信息"
 }
 ```
 
-### Response fields
+### 响应字段说明
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `success` | boolean | yes | whether the operation succeeded |
-| `error_code` | string | no | error code string (present only on failure) |
-| `message` | string | no | result message (optional) |
-| `data` | object | no | business data (present only on success) |
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `success` | boolean | 是 | 操作是否成功 |
+| `error_code` | string | 否 | 错误码字符串（仅失败时出现） |
+| `message` | string | 否 | 操作结果消息（可选） |
+| `data` | object | 否 | 业务数据（仅成功时出现） |
 
-### Error codes (error_code)
+### 错误码 (error_code)
 
-| Error code | Value | Description |
-|------------|-------|-------------|
-| `INVALID_REQUEST` | 400 | invalid request |
-| `UNAUTHORIZED` | 401 | unauthorized |
-| `FORBIDDEN` | 403 | forbidden |
-| `NOT_FOUND` | 404 | not found |
-| `METHOD_NOT_ALLOWED` | 405 | method not allowed |
-| `TIMEOUT` | 408 | timeout |
-| `TOO_MANY_REQUESTS` | 429 | too many requests |
-| `INTERNAL_ERROR` | 500 | internal error |
-| `BAD_GATEWAY` | 502 | bad gateway |
-| `SERVICE_UNAVAILABLE` | 503 | service unavailable |
-| `GATEWAY_TIMEOUT` | 504 | gateway timeout |
-
----
-
-## PoE Status Codes
-
-| Code | Name | Description |
-|------|------|-------------|
-| 0 | `POE_STATUS_OFFLINE` | PoE offline / not powered |
-| 1 | `POE_STATUS_LINK_DOWN` | Ethernet cable not connected |
-| 2 | `POE_STATUS_CONNECTING` | connecting (DHCP in progress) |
-| 3 | `POE_STATUS_CONNECTED` | connected, valid IP |
-| 4 | `POE_STATUS_DHCP_FAILED` | failed to obtain IP via DHCP |
-| 5 | `POE_STATUS_STATIC_CONFIG_ERROR` | static IP configuration error |
-| 6 | `POE_STATUS_IP_CONFLICT` | IP address conflict |
-| 7 | `POE_STATUS_GATEWAY_UNREACHABLE` | gateway unreachable |
-| 8 | `POE_STATUS_DNS_ERROR` | DNS resolution error |
-| 9 | `POE_STATUS_ERROR` | generic error |
+| 错误码字符串 | 数值 | 说明 |
+|--------------|------|------|
+| `INVALID_REQUEST` | 400 | 无效请求 |
+| `UNAUTHORIZED` | 401 | 未授权 |
+| `FORBIDDEN` | 403 | 禁止访问 |
+| `NOT_FOUND` | 404 | 未找到 |
+| `METHOD_NOT_ALLOWED` | 405 | 方法不允许 |
+| `TIMEOUT` | 408 | 超时 |
+| `TOO_MANY_REQUESTS` | 429 | 请求过多 |
+| `INTERNAL_ERROR` | 500 | 内部错误 |
+| `BAD_GATEWAY` | 502 | 网关错误 |
+| `SERVICE_UNAVAILABLE` | 503 | 服务不可用 |
+| `GATEWAY_TIMEOUT` | 504 | 网关超时 |
 
 ---
 
-## 1. Get PoE Status
+## PoE 状态码定义
 
-### Request
+| 状态码 | 名称 | 说明 |
+|--------|------|------|
+| 0 | `POE_STATUS_OFFLINE` | PoE 离线/未供电 |
+| 1 | `POE_STATUS_LINK_DOWN` | 网线未连接 |
+| 2 | `POE_STATUS_CONNECTING` | 正在连接（DHCP进行中） |
+| 3 | `POE_STATUS_CONNECTED` | 已连接，IP有效 |
+| 4 | `POE_STATUS_DHCP_FAILED` | DHCP 获取IP失败 |
+| 5 | `POE_STATUS_STATIC_CONFIG_ERROR` | 静态IP配置错误 |
+| 6 | `POE_STATUS_IP_CONFLICT` | IP地址冲突 |
+| 7 | `POE_STATUS_GATEWAY_UNREACHABLE` | 网关不可达 |
+| 8 | `POE_STATUS_DNS_ERROR` | DNS解析错误 |
+| 9 | `POE_STATUS_ERROR` | 通用错误 |
+
+---
+
+## 1. 获取 PoE 状态
+
+### 请求
 
 ```http
 GET /api/v1/system/network/poe/status
 ```
 
-### Success response
+### 成功响应
 
 ```json
 {
@@ -103,16 +103,16 @@ GET /api/v1/system/network/poe/status
 }
 ```
 
-### data fields
+### data 字段说明
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `available` | boolean | whether the PoE/Ethernet module is available |
-| `status` | string | connection status: `Unavailable`, `Disconnected`, `Connecting`, `Connected`, `Failed`, `Switching` |
-| `ip_address` | string | current IP address (valid only when connected) |
-| `connected` | boolean | whether connected |
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `available` | boolean | PoE/以太网模块是否可用 |
+| `status` | string | 连接状态: `Unavailable`, `Disconnected`, `Connecting`, `Connected`, `Failed`, `Switching` |
+| `ip_address` | string | 当前IP地址（仅在connected时有效） |
+| `connected` | boolean | 是否已连接 |
 
-### Response when the module is unavailable
+### 模块不可用时的响应
 
 ```json
 {
@@ -128,15 +128,15 @@ GET /api/v1/system/network/poe/status
 
 ---
 
-## 2. Get PoE Detailed Information
+## 2. 获取 PoE 详细信息
 
-### Request
+### 请求
 
 ```http
 GET /api/v1/system/network/poe/info
 ```
 
-### Success response
+### 成功响应
 
 ```json
 {
@@ -170,45 +170,45 @@ GET /api/v1/system/network/poe/info
 }
 ```
 
-### data fields
+### data 字段说明
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `available` | boolean | whether the PoE module is available |
-| `network_status` | string | network status text |
-| `status_code` | number | status code (see the PoE status code table) |
-| `status_message` | string | message for the status code |
-| `ip_mode` | string | IP mode: `dhcp` or `static` |
-| `ip_address` | string | IPv4 address |
-| `netmask` | string | subnet mask |
-| `gateway` | string | default gateway |
-| `dns_primary` | string | primary DNS server |
-| `dns_secondary` | string | secondary DNS server |
-| `hostname` | string | hostname |
-| `mac_address` | string | MAC address |
-| `interface_name` | string | network interface name |
-| `link_up` | boolean | physical link state |
-| `poe_powered` | boolean | PoE power state |
-| `connection_duration_sec` | number | connection duration (seconds) |
-| `connection_start_time` | number | connection start timestamp |
-| `dhcp_lease_time` | number | DHCP lease time (seconds) |
-| `dhcp_lease_remaining` | number | remaining DHCP lease time (seconds) |
-| `connect_count` | number | connection attempts |
-| `disconnect_count` | number | disconnections |
-| `dhcp_fail_count` | number | DHCP failures |
-| `last_error_code` | number | last error code |
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `available` | boolean | PoE模块是否可用 |
+| `network_status` | string | 网络状态文本 |
+| `status_code` | number | 状态码（参见PoE状态码定义表） |
+| `status_message` | string | 状态码对应的消息 |
+| `ip_mode` | string | IP模式: `dhcp` 或 `static` |
+| `ip_address` | string | IPv4地址 |
+| `netmask` | string | 子网掩码 |
+| `gateway` | string | 默认网关 |
+| `dns_primary` | string | 主DNS服务器 |
+| `dns_secondary` | string | 备用DNS服务器 |
+| `hostname` | string | 主机名 |
+| `mac_address` | string | MAC地址 |
+| `interface_name` | string | 网络接口名称 |
+| `link_up` | boolean | 物理链路状态 |
+| `poe_powered` | boolean | PoE供电状态 |
+| `connection_duration_sec` | number | 连接持续时间（秒） |
+| `connection_start_time` | number | 连接开始时间戳 |
+| `dhcp_lease_time` | number | DHCP租约时间（秒） |
+| `dhcp_lease_remaining` | number | DHCP租约剩余时间（秒） |
+| `connect_count` | number | 连接尝试次数 |
+| `disconnect_count` | number | 断开连接次数 |
+| `dhcp_fail_count` | number | DHCP失败次数 |
+| `last_error_code` | number | 最后错误码 |
 
 ---
 
-## 3. Get PoE Configuration
+## 3. 获取 PoE 配置
 
-### Request
+### 请求
 
 ```http
 GET /api/v1/system/network/poe/config
 ```
 
-### Success response
+### 成功响应
 
 ```json
 {
@@ -234,38 +234,38 @@ GET /api/v1/system/network/poe/config
 }
 ```
 
-### data fields
+### data 字段说明
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `ip_mode` | string | IP mode: `dhcp` or `static` |
-| `ip_address` | string | static IPv4 address |
-| `netmask` | string | subnet mask |
-| `gateway` | string | default gateway |
-| `dns_primary` | string | primary DNS server |
-| `dns_secondary` | string | secondary DNS server |
-| `hostname` | string | hostname |
-| `dhcp_timeout_ms` | number | DHCP timeout (ms) |
-| `dhcp_retry_count` | number | DHCP retry count |
-| `dhcp_retry_interval_ms` | number | DHCP retry interval (ms) |
-| `power_recovery_delay_ms` | number | power-on recovery delay (ms) |
-| `auto_reconnect` | boolean | auto-reconnect toggle |
-| `persist_last_ip` | boolean | persist the last IP |
-| `validate_gateway` | boolean | validate gateway reachability |
-| `detect_ip_conflict` | boolean | detect IP conflicts |
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `ip_mode` | string | IP模式: `dhcp` 或 `static` |
+| `ip_address` | string | 静态IPv4地址 |
+| `netmask` | string | 子网掩码 |
+| `gateway` | string | 默认网关 |
+| `dns_primary` | string | 主DNS服务器 |
+| `dns_secondary` | string | 备用DNS服务器 |
+| `hostname` | string | 主机名 |
+| `dhcp_timeout_ms` | number | DHCP超时时间（毫秒） |
+| `dhcp_retry_count` | number | DHCP重试次数 |
+| `dhcp_retry_interval_ms` | number | DHCP重试间隔（毫秒） |
+| `power_recovery_delay_ms` | number | 上电恢复延迟（毫秒） |
+| `auto_reconnect` | boolean | 自动重连开关 |
+| `persist_last_ip` | boolean | 持久化最后IP |
+| `validate_gateway` | boolean | 验证网关可达性 |
+| `detect_ip_conflict` | boolean | 检测IP冲突 |
 
 ---
 
-## 4. Set PoE Configuration
+## 4. 设置 PoE 配置
 
-### Request
+### 请求
 
 ```http
 POST /api/v1/system/network/poe/config
 Content-Type: application/json
 ```
 
-### Request body
+### 请求体
 
 ```json
 {
@@ -284,26 +284,26 @@ Content-Type: application/json
 }
 ```
 
-> **Note**: all fields are optional - send only the fields to change. Omitted fields keep their current values.
+> **注意**: 所有字段均为可选，只传递需要修改的字段即可。未传递的字段保持原值。
 
-### Request fields
+### 请求字段
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `ip_mode` | string | no | `dhcp` or `static` |
-| `ip_address` | string | no | static IPv4 address |
-| `netmask` | string | no | subnet mask |
-| `gateway` | string | no | default gateway |
-| `dns_primary` | string | no | primary DNS server |
-| `dns_secondary` | string | no | secondary DNS server |
-| `hostname` | string | no | hostname (max 31 chars) |
-| `dhcp_timeout_ms` | number | no | DHCP timeout (ms) |
-| `dhcp_retry_count` | number | no | DHCP retry count |
-| `auto_reconnect` | boolean | no | auto-reconnect toggle |
-| `validate_gateway` | boolean | no | validate gateway reachability |
-| `detect_ip_conflict` | boolean | no | detect IP conflicts |
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `ip_mode` | string | 否 | `dhcp` 或 `static` |
+| `ip_address` | string | 否 | 静态IPv4地址 |
+| `netmask` | string | 否 | 子网掩码 |
+| `gateway` | string | 否 | 默认网关 |
+| `dns_primary` | string | 否 | 主DNS服务器 |
+| `dns_secondary` | string | 否 | 备用DNS服务器 |
+| `hostname` | string | 否 | 主机名（最大31字符） |
+| `dhcp_timeout_ms` | number | 否 | DHCP超时（毫秒） |
+| `dhcp_retry_count` | number | 否 | DHCP重试次数 |
+| `auto_reconnect` | boolean | 否 | 自动重连开关 |
+| `validate_gateway` | boolean | 否 | 验证网关可达性 |
+| `detect_ip_conflict` | boolean | 否 | 检测IP冲突 |
 
-### Success response
+### 成功响应
 
 ```json
 {
@@ -318,16 +318,16 @@ Content-Type: application/json
 
 ---
 
-## 5. Validate a Static IP Configuration
+## 5. 验证静态IP配置
 
-### Request
+### 请求
 
 ```http
 POST /api/v1/system/network/poe/validate
 Content-Type: application/json
 ```
 
-### Request body
+### 请求体
 
 ```json
 {
@@ -342,20 +342,20 @@ Content-Type: application/json
 }
 ```
 
-### Request fields
+### 请求字段
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `ip_address` | string | yes | IPv4 address to validate |
-| `netmask` | string | yes | subnet mask |
-| `gateway` | string | yes | default gateway |
-| `dns_primary` | string | no | primary DNS server |
-| `dns_secondary` | string | no | secondary DNS server |
-| `hostname` | string | no | hostname |
-| `check_gateway` | boolean | no | whether to check gateway reachability |
-| `check_conflict` | boolean | no | whether to check for IP conflicts |
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `ip_address` | string | 是 | 待验证的IPv4地址 |
+| `netmask` | string | 是 | 子网掩码 |
+| `gateway` | string | 是 | 默认网关 |
+| `dns_primary` | string | 否 | 主DNS服务器 |
+| `dns_secondary` | string | 否 | 备用DNS服务器 |
+| `hostname` | string | 否 | 主机名 |
+| `check_gateway` | boolean | 否 | 是否检测网关可达性 |
+| `check_conflict` | boolean | 否 | 是否检测IP冲突 |
 
-### Success response (validation passed)
+### 成功响应（验证通过）
 
 ```json
 {
@@ -371,7 +371,7 @@ Content-Type: application/json
 }
 ```
 
-### Response when validation fails
+### 验证失败的响应
 
 ```json
 {
@@ -392,29 +392,29 @@ Content-Type: application/json
 }
 ```
 
-### data fields
+### data 字段说明
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `valid` | boolean | whether the configuration is valid |
-| `errors` | array | list of error messages |
-| `warnings` | array | list of warning messages |
-| `gateway_reachable` | boolean | whether the gateway is reachable |
-| `ip_conflict` | boolean | whether an IP conflict exists |
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `valid` | boolean | 配置是否有效 |
+| `errors` | array | 错误信息数组 |
+| `warnings` | array | 警告信息数组 |
+| `gateway_reachable` | boolean | 网关是否可达 |
+| `ip_conflict` | boolean | 是否存在IP冲突 |
 
 ---
 
-## 6. Apply PoE Configuration
+## 6. 应用 PoE 配置
 
-Applies the currently saved configuration and connects to the network.
+应用当前保存的配置并连接网络。
 
-### Request
+### 请求
 
 ```http
 POST /api/v1/system/network/poe/apply
 ```
 
-### Success response
+### 成功响应
 
 ```json
 {
@@ -428,7 +428,7 @@ POST /api/v1/system/network/poe/apply
 }
 ```
 
-### Failure response
+### 失败响应
 
 ```json
 {
@@ -438,27 +438,27 @@ POST /api/v1/system/network/poe/apply
 }
 ```
 
-### data fields
+### data 字段说明
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `success` | boolean | whether the operation succeeded |
-| `status` | string | current network status |
-| `ip_mode` | string | current IP mode |
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `success` | boolean | 操作是否成功 |
+| `status` | string | 当前网络状态 |
+| `ip_mode` | string | 当前IP模式 |
 
 ---
 
-## 7. Save PoE Configuration
+## 7. 保存 PoE 配置
 
-Persists the current configuration to NVS; it is restored automatically after reboot.
+将当前配置保存到持久化存储（NVS），设备重启后自动恢复。
 
-### Request
+### 请求
 
 ```http
 POST /api/v1/system/network/poe/save
 ```
 
-### Success response
+### 成功响应
 
 ```json
 {
@@ -470,7 +470,7 @@ POST /api/v1/system/network/poe/save
 }
 ```
 
-### Failure response
+### 失败响应
 
 ```json
 {
@@ -482,15 +482,15 @@ POST /api/v1/system/network/poe/save
 
 ---
 
-## 8. Connect to the PoE Network
+## 8. 连接 PoE 网络
 
-### Request
+### 请求
 
 ```http
 POST /api/v1/system/network/poe/connect
 ```
 
-### Success response
+### 成功响应
 
 ```json
 {
@@ -503,7 +503,7 @@ POST /api/v1/system/network/poe/connect
 }
 ```
 
-### Failure response
+### 失败响应
 
 ```json
 {
@@ -515,15 +515,15 @@ POST /api/v1/system/network/poe/connect
 
 ---
 
-## 9. Disconnect from the PoE Network
+## 9. 断开 PoE 网络
 
-### Request
+### 请求
 
 ```http
 POST /api/v1/system/network/poe/disconnect
 ```
 
-### Success response
+### 成功响应
 
 ```json
 {
@@ -536,7 +536,7 @@ POST /api/v1/system/network/poe/disconnect
 }
 ```
 
-### Failure response
+### 失败响应
 
 ```json
 {
@@ -548,9 +548,9 @@ POST /api/v1/system/network/poe/disconnect
 
 ---
 
-## Common Error Responses
+## 通用错误响应
 
-### Service not running
+### 服务未运行
 
 ```json
 {
@@ -560,7 +560,7 @@ POST /api/v1/system/network/poe/disconnect
 }
 ```
 
-### PoE module unavailable
+### PoE 模块不可用
 
 ```json
 {
@@ -570,7 +570,7 @@ POST /api/v1/system/network/poe/disconnect
 }
 ```
 
-### Wrong request method
+### 请求方法错误
 
 ```json
 {
@@ -580,7 +580,7 @@ POST /api/v1/system/network/poe/disconnect
 }
 ```
 
-### Request body parse error
+### 请求体解析错误
 
 ```json
 {
@@ -592,12 +592,12 @@ POST /api/v1/system/network/poe/disconnect
 
 ---
 
-## Frontend Integration Examples
+## 前端集成示例
 
-### TypeScript type definitions
+### TypeScript 类型定义
 
 ```typescript
-// unified response type
+// 统一响应类型
 interface ApiResponse<T = any> {
   success: boolean;
   error_code?: string;
@@ -605,7 +605,7 @@ interface ApiResponse<T = any> {
   data?: T;
 }
 
-// PoE status
+// PoE状态
 interface PoeStatus {
   available: boolean;
   status: string;
@@ -614,7 +614,7 @@ interface PoeStatus {
   message?: string;
 }
 
-// PoE detailed information
+// PoE详细信息
 interface PoeDetailInfo {
   available: boolean;
   network_status: string;
@@ -641,7 +641,7 @@ interface PoeDetailInfo {
   last_error_code: number;
 }
 
-// PoE configuration
+// PoE配置
 interface PoeConfig {
   ip_mode: 'dhcp' | 'static';
   ip_address: string;
@@ -660,7 +660,7 @@ interface PoeConfig {
   detect_ip_conflict: boolean;
 }
 
-// validation result
+// 验证结果
 interface ValidationResult {
   valid: boolean;
   errors: string[];
@@ -670,7 +670,7 @@ interface ValidationResult {
 }
 ```
 
-### Request wrapper
+### 封装请求函数
 
 ```typescript
 const API_BASE = '/api/v1/system/network/poe';
@@ -689,25 +689,25 @@ async function request<T>(
   return response.json();
 }
 
-// API functions
+// API函数
 export const poeApi = {
-  // get status
+  // 获取状态
   getStatus: () => request<PoeStatus>('/status'),
 
-  // get detailed info
+  // 获取详细信息
   getInfo: () => request<PoeDetailInfo>('/info'),
 
-  // get configuration
+  // 获取配置
   getConfig: () => request<PoeConfig>('/config'),
 
-  // set configuration
+  // 设置配置
   setConfig: (config: Partial<PoeConfig>) =>
     request<{ message: string; ip_mode: string }>('/config', {
       method: 'POST',
       body: JSON.stringify(config)
     }),
 
-  // validate configuration
+  // 验证配置
   validate: (config: {
     ip_address: string;
     netmask: string;
@@ -722,44 +722,44 @@ export const poeApi = {
     body: JSON.stringify(config)
   }),
 
-  // apply configuration
+  // 应用配置
   apply: () => request<{ success: boolean; status: string; ip_mode: string }>('/apply', {
     method: 'POST'
   }),
 
-  // save configuration
+  // 保存配置
   save: () => request<{ success: boolean }>('/save', {
     method: 'POST'
   }),
 
-  // connect
+  // 连接
   connect: () => request<{ success: boolean; status: string }>('/connect', {
     method: 'POST'
   }),
 
-  // disconnect
+  // 断开
   disconnect: () => request<{ success: boolean; status: string }>('/disconnect', {
     method: 'POST'
   })
 };
 ```
 
-### Usage
+### 使用示例
 
 ```typescript
-// load PoE detailed information
+// 获取PoE详细信息
 async function loadPoeInfo() {
   const res = await poeApi.getInfo();
   if (res.success && res.data) {
-    console.log('IP address:', res.data.ip_address);
-    console.log('Connection status:', res.data.network_status);
-    console.log('PoE powered:', res.data.poe_powered);
+    console.log('IP地址:', res.data.ip_address);
+    console.log('连接状态:', res.data.network_status);
+    console.log('PoE供电:', res.data.poe_powered);
   } else {
-    console.error('Failed to load:', res.message);
+    console.error('获取失败:', res.message);
   }
 }
 
-// set a static IP and save it
+// 设置静态IP并保存
 async function setStaticIP(config: {
   ip: string;
   netmask: string;
@@ -767,7 +767,7 @@ async function setStaticIP(config: {
   dns1: string;
   dns2: string;
 }) {
-  // 1. validate the configuration
+  // 1. 验证配置
   const validateRes = await poeApi.validate({
     ip_address: config.ip,
     netmask: config.netmask,
@@ -779,14 +779,14 @@ async function setStaticIP(config: {
   });
 
   if (!validateRes.success) {
-    throw new Error(validateRes.message || 'Validation request failed');
+    throw new Error(validateRes.message || '验证请求失败');
   }
 
   if (!validateRes.data?.valid) {
-    throw new Error(validateRes.data?.errors.join(', ') || 'Invalid configuration');
+    throw new Error(validateRes.data?.errors.join(', ') || '配置无效');
   }
 
-  // 2. set the configuration
+  // 2. 设置配置
   const setRes = await poeApi.setConfig({
     ip_mode: 'static',
     ip_address: config.ip,
@@ -797,25 +797,25 @@ async function setStaticIP(config: {
   });
 
   if (!setRes.success) {
-    throw new Error(setRes.message || 'Failed to set configuration');
+    throw new Error(setRes.message || '设置配置失败');
   }
 
-  // 3. apply the configuration
+  // 3. 应用配置
   const applyRes = await poeApi.apply();
   if (!applyRes.success || !applyRes.data?.success) {
-    throw new Error(applyRes.message || 'Failed to apply configuration');
+    throw new Error(applyRes.message || '应用配置失败');
   }
 
-  // 4. persist to storage
+  // 4. 保存到持久化存储
   const saveRes = await poeApi.save();
   if (!saveRes.success || !saveRes.data?.success) {
-    console.warn('Failed to save to NVS; the configuration may be lost after reboot');
+    console.warn('保存到NVS失败，重启后配置可能丢失');
   }
 
   return applyRes.data;
 }
 
-// switch to DHCP mode
+// 切换到DHCP模式
 async function switchToDHCP() {
   const setRes = await poeApi.setConfig({ ip_mode: 'dhcp' });
   if (!setRes.success) throw new Error(setRes.message);
@@ -824,31 +824,31 @@ async function switchToDHCP() {
   if (!applyRes.success) throw new Error(applyRes.message);
 
   const saveRes = await poeApi.save();
-  if (!saveRes.success) console.warn('Failed to save');
+  if (!saveRes.success) console.warn('保存失败');
 }
 ```
 
 ---
 
-## Typical Workflows
+## 典型工作流程
 
-### 1. On page load
-
-```
-GET /poe/info     → current status and configuration
-GET /poe/config   → full configuration (to populate the form)
-```
-
-### 2. User changes the static IP configuration
+### 1. 页面加载时
 
 ```
-POST /poe/validate  → validate the configuration (optional)
-POST /poe/config    → save the configuration to memory
-POST /poe/apply     → apply the configuration
-POST /poe/save      → persist to NVS
+GET /poe/info     → 获取当前状态和配置
+GET /poe/config   → 获取完整配置（用于表单回填）
 ```
 
-### 3. User switches DHCP/static mode
+### 2. 用户修改静态IP配置
+
+```
+POST /poe/validate  → 验证配置有效性（可选）
+POST /poe/config    → 保存配置到内存
+POST /poe/apply     → 应用配置
+POST /poe/save      → 持久化到NVS
+```
+
+### 3. 用户切换DHCP/静态模式
 
 ```
 POST /poe/config { "ip_mode": "dhcp" }
@@ -856,16 +856,16 @@ POST /poe/apply
 POST /poe/save
 ```
 
-### 4. Polling for status updates
+### 4. 轮询状态更新
 
 ```
-GET /poe/status   → lightweight status query (recommended every 5 s)
-GET /poe/info     → full information (only when details are needed)
+GET /poe/status   → 轻量级状态查询（建议5秒间隔）
+GET /poe/info     → 完整信息查询（仅在需要详细信息时）
 ```
 
 ---
 
-## Version Information
+## 版本信息
 
-- API version: v1
-- Document updated: 2024-12-23
+- API版本: v1
+- 文档更新日期: 2024-12-23

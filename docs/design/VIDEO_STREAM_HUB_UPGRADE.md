@@ -1,62 +1,62 @@
-# Video Stream Hub 升级方案
+# Video Stream Hub Upgrade Plan
 
-## 实现状态
+## Implementation Status
 
-| 组件 | 文件 | 状态 |
-|------|------|------|
-| Video Hub | `Custom/Services/Video/video_stream_hub.h` | ✅ 完成 |
-| Video Hub实现 | `Custom/Services/Video/video_stream_hub.c` | ✅ 完成 |
-| RTMP服务改造 | `Custom/Services/RTMP/rtmp_service_v2.c` | ✅ 完成 |
-| 迁移指南 | `Custom/Services/RTMP/MIGRATION_GUIDE.md` | ✅ 完成 |
+| Component | File | Status |
+|-----------|------|--------|
+| Video Hub | `Custom/Services/Video/video_stream_hub.h` | ✅ done |
+| Video Hub implementation | `Custom/Services/Video/video_stream_hub.c` | ✅ done |
+| RTMP service rework | `Custom/Services/RTMP/rtmp_service_v2.c` | ✅ done |
+| Migration guide | `Custom/Services/RTMP/MIGRATION_GUIDE.md` | ✅ done |
 
-## 问题背景
+## Background
 
-当前系统存在设备协同问题：
+The current system has a device coordination problem:
 
-| 组件 | Camera Pipe1 | H.264 Encoder | 问题 |
-|------|-------------|---------------|------|
-| WebSocket预览 | 独立获取 | 独立启动/停止 | 与RTMP冲突 |
-| RTMP推流 | 独立获取 | 独立启动/停止 | 与预览冲突 |
+| Component | Camera Pipe1 | H.264 Encoder | Problem |
+|-----------|-------------|---------------|---------|
+| WebSocket preview | acquires independently | starts/stops independently | conflicts with RTMP |
+| RTMP streaming | acquires independently | starts/stops independently | conflicts with preview |
 
-**具体问题:**
-1. 双重编码 - 同一视频源编码两次，浪费资源
-2. 资源竞争 - Encoder被两个服务同时操作
-3. 状态不一致 - 一个服务停止encoder可能影响另一个
-4. 配置冲突 - 分辨率/帧率可能不同步
+**Specific issues:**
+1. Double encoding - the same video source is encoded twice, wasting resources
+2. Resource contention - the encoder is driven by two services at once
+3. Inconsistent state - one service stopping the encoder can break the other
+4. Config drift - resolution/framerate can go out of sync
 
-## 解决方案：Video Stream Hub
+## Solution: Video Stream Hub
 
 ```
                     ┌─────────────────────────────────────┐
                     │         Video Stream Hub            │
-                    │  (统一视频流采集、编码、分发中心)     │
+                    │  (unified capture/encode/dispatch)  │
                     └─────────────────────────────────────┘
                                     │
         ┌───────────────────────────┼───────────────────────────┐
         ▼                           ▼                           ▼
-   Camera Pipe1              H.264 Encoder               订阅者分发
-   (由Hub统一管理)           (由Hub统一管理)              (回调机制)
+   Camera Pipe1              H.264 Encoder               Subscriber
+   (owned by Hub)            (owned by Hub)              dispatch (callbacks)
                                     │
                     ┌───────────────┼───────────────┐
                     ▼               ▼               ▼
-              WebSocket         RTMP Service    (扩展)
-              (订阅者)          (订阅者)       HLS/录像
+              WebSocket         RTMP Service    (extensible)
+              (subscriber)      (subscriber)    HLS/recording
 ```
 
-## 核心设计
+## Core Design
 
-### 1. 订阅者模式
+### 1. Subscriber model
 
 ```c
-// RTMP服务订阅
+// RTMP service subscribes
 video_hub_subscriber_id_t rtmp_sub_id = video_hub_subscribe(
     VIDEO_HUB_SUBSCRIBER_RTMP,
-    rtmp_on_frame,        // 帧回调
-    rtmp_on_sps_pps,      // SPS/PPS回调
+    rtmp_on_frame,        // frame callback
+    rtmp_on_sps_pps,      // SPS/PPS callback
     &rtmp_ctx
 );
 
-// WebSocket订阅
+// WebSocket subscribes
 video_hub_subscriber_id_t ws_sub_id = video_hub_subscribe(
     VIDEO_HUB_SUBSCRIBER_WEBSOCKET,
     websocket_on_frame,
@@ -65,49 +65,49 @@ video_hub_subscriber_id_t ws_sub_id = video_hub_subscribe(
 );
 ```
 
-### 2. 自动生命周期管理
+### 2. Automatic lifecycle management
 
-- 首个订阅者加入 → Hub自动启动
-- 最后一个订阅者退出 → Hub自动停止
-- 编码一次，多路分发
+- First subscriber joins → the hub starts automatically
+- Last subscriber leaves → the hub stops automatically
+- Encode once, fan out to many
 
-### 3. SPS/PPS统一管理
+### 3. Centralized SPS/PPS handling
 
-- Hub提取SPS/PPS后缓存
-- 新订阅者加入时自动推送
-- RTMP重连时可从Hub获取
+- The hub extracts and caches SPS/PPS
+- New subscribers receive it automatically on join
+- RTMP can fetch it from the hub on reconnect
 
-## 迁移步骤
+## Migration Steps
 
-### Phase 1: 集成Video Stream Hub
+### Phase 1: integrate the Video Stream Hub
 
-1. 添加 `video_stream_hub.c/h` 到项目
-2. 在 `service_init.c` 中注册Hub服务
-3. 初始化顺序: device_service → video_hub → rtmp_service
+1. Add `video_stream_hub.c/h` to the project
+2. Register the hub service in `service_init.c`
+3. Init order: device_service → video_hub → rtmp_service
 
-### Phase 2: 改造WebSocket预览
+### Phase 2: rework the WebSocket preview
 
-**当前代码 (`video_encoder_node.c`):**
+**Current code (`video_encoder_node.c`):**
 ```c
-// 直接发送到WebSocket
+// sends directly to WebSocket
 websocket_stream_server_send_frame_with_encoder_info(...);
 ```
 
-**改造后:**
+**After rework:**
 ```c
-// 通过Hub回调接收帧，然后发送到WebSocket
+// receive frames via a hub callback, then send to WebSocket
 static aicam_result_t ws_preview_on_frame(const video_hub_frame_t *frame, void *user_data) {
-    websocket_frame_type_t type = frame->is_keyframe ? 
+    websocket_frame_type_t type = frame->is_keyframe ?
         WS_FRAME_TYPE_H264_KEY : WS_FRAME_TYPE_H264_DELTA;
-    
+
     return websocket_stream_server_send_frame(
-        frame->data, frame->size, 
+        frame->data, frame->size,
         frame->timestamp_ms * 1000,
         type, frame->width, frame->height
     );
 }
 
-// 启动预览时订阅Hub
+// subscribe to the hub when starting preview
 void start_preview(void) {
     g_ws_subscriber_id = video_hub_subscribe(
         VIDEO_HUB_SUBSCRIBER_WEBSOCKET,
@@ -117,40 +117,40 @@ void start_preview(void) {
 }
 ```
 
-### Phase 3: 改造RTMP服务
+### Phase 3: rework the RTMP service
 
-**当前代码 (`rtmp_service.c`):**
+**Current code (`rtmp_service.c`):**
 ```c
-// 直接操作Camera和Encoder
+// drives camera and encoder directly
 fb_len = device_ioctl(camera_dev, CAM_CMD_GET_PIPE1_BUFFER, ...);
 device_ioctl(encoder_dev, ENC_CMD_INPUT_BUFFER, ...);
 device_ioctl(encoder_dev, ENC_CMD_OUTPUT_FRAME, ...);
 rtmp_publisher_send_video_frame(...);
 ```
 
-**改造后:**
+**After rework:**
 ```c
-// 通过Hub回调接收编码帧
+// receive encoded frames via a hub callback
 static aicam_result_t rtmp_on_frame(const video_hub_frame_t *frame, void *user_data) {
     rtmp_service_context_t *ctx = (rtmp_service_context_t *)user_data;
-    
+
     if (!rtmp_publisher_is_connected(ctx->publisher)) {
         return AICAM_ERROR;
     }
-    
+
     int ret = rtmp_publisher_send_video_frame(
         ctx->publisher,
         frame->data, frame->size,
         frame->is_keyframe,
         frame->timestamp_ms
     );
-    
+
     return (ret == RTMP_PUB_OK) ? AICAM_OK : AICAM_ERROR;
 }
 
 static void rtmp_on_sps_pps(const video_hub_sps_pps_t *sps_pps, void *user_data) {
     rtmp_service_context_t *ctx = (rtmp_service_context_t *)user_data;
-    
+
     rtmp_publisher_send_sps_pps(
         ctx->publisher,
         sps_pps->sps_data, sps_pps->sps_size,
@@ -159,8 +159,8 @@ static void rtmp_on_sps_pps(const video_hub_sps_pps_t *sps_pps, void *user_data)
 }
 
 aicam_result_t rtmp_service_start_stream(void) {
-    // 1. 连接RTMP服务器
-    // 2. 订阅Video Hub
+    // 1. connect to the RTMP server
+    // 2. subscribe to the video hub
     g_rtmp_ctx.hub_subscriber_id = video_hub_subscribe(
         VIDEO_HUB_SUBSCRIBER_RTMP,
         rtmp_on_frame,
@@ -170,124 +170,123 @@ aicam_result_t rtmp_service_start_stream(void) {
 }
 
 aicam_result_t rtmp_service_stop_stream(void) {
-    // 1. 取消订阅
+    // 1. unsubscribe
     video_hub_unsubscribe(g_rtmp_ctx.hub_subscriber_id);
-    // 2. 断开RTMP连接
+    // 2. disconnect from RTMP
 }
 ```
 
-## API变更
+## API Changes
 
-### 新增API
+### New APIs
 
-| API | 描述 |
-|-----|------|
-| `video_hub_init()` | 初始化Hub |
-| `video_hub_subscribe()` | 订阅视频流 |
-| `video_hub_unsubscribe()` | 取消订阅 |
-| `video_hub_get_sps_pps()` | 获取SPS/PPS |
-| `video_hub_request_keyframe()` | 请求关键帧 |
+| API | Description |
+|-----|-------------|
+| `video_hub_init()` | initialize the hub |
+| `video_hub_subscribe()` | subscribe to the video stream |
+| `video_hub_unsubscribe()` | unsubscribe |
+| `video_hub_get_sps_pps()` | get SPS/PPS |
+| `video_hub_request_keyframe()` | request a keyframe |
 
-### 废弃API (内部使用)
+### Deprecated usage (internal)
 
-RTMP服务不再直接调用:
+The RTMP service no longer calls directly:
 - `device_ioctl(camera_dev, CAM_CMD_GET_PIPE1_BUFFER, ...)`
 - `device_ioctl(encoder_dev, ENC_CMD_INPUT/OUTPUT_*, ...)`
 - `device_start/stop(encoder_dev)`
 
-## 兼容性
+## Compatibility
 
-### 向后兼容
+### Backward compatible
 
-- 现有Web API无需修改
-- 前端代码无需修改
-- CLI命令保持不变
+- Existing Web APIs unchanged
+- Frontend code unchanged
+- CLI commands unchanged
 
-### 功能增强
+### Improvements
 
-| 场景 | 改造前 | 改造后 |
-|------|--------|--------|
-| 仅预览 | 编码1次 | 编码1次 |
-| 仅推流 | 编码1次 | 编码1次 |
-| 预览+推流 | 编码2次 | **编码1次** |
-| 推流断线重连 | 需重新提取SPS/PPS | Hub缓存可用 |
+| Scenario | Before | After |
+|----------|--------|-------|
+| Preview only | encode 1x | encode 1x |
+| Stream only | encode 1x | encode 1x |
+| Preview + stream | encode 2x | **encode 1x** |
+| RTMP reconnect | must re-extract SPS/PPS | served from hub cache |
 
-## 测试计划
+## Test Plan
 
-1. **单元测试**
-   - Hub订阅/取消订阅
-   - SPS/PPS提取和分发
-   - 自动启停
+1. **Unit tests**
+   - hub subscribe / unsubscribe
+   - SPS/PPS extraction and dispatch
+   - automatic start/stop
 
-2. **集成测试**
-   - 仅WebSocket预览
-   - 仅RTMP推流
-   - 同时预览+推流
-   - 动态加入/退出订阅者
+2. **Integration tests**
+   - WebSocket preview only
+   - RTMP streaming only
+   - preview + streaming simultaneously
+   - dynamic subscriber join/leave
 
-3. **压力测试**
-   - 长时间运行稳定性
-   - 频繁订阅/取消
-   - 网络断开重连
+3. **Stress tests**
+   - long-run stability
+   - frequent subscribe/unsubscribe
+   - network disconnect/reconnect
 
-## 性能优化
+## Performance
 
-### 零拷贝设计
+### Zero-copy design
 
 ```
-Camera Buffer → Encoder → 分发(多个订阅者共享同一份数据)
-                            ├→ WebSocket直接发送
-                            └→ RTMP直接发送
+Camera Buffer → Encoder → dispatch (subscribers share the same data)
+                            ├→ WebSocket sends directly
+                            └→ RTMP sends directly
 ```
 
-### 资源占用对比
+### Resource comparison
 
-| 指标 | 改造前 | 改造后 |
-|------|--------|--------|
-| Encoder调用 | 2次/帧 (预览+推流) | 1次/帧 |
-| 内存带宽 | 高 | 降低50% |
-| CPU占用 | 高 | 显著降低 |
+| Metric | Before | After |
+|--------|--------|-------|
+| Encoder invocations | 2x/frame (preview + stream) | 1x/frame |
+| Memory bandwidth | high | ~50% lower |
+| CPU usage | high | significantly lower |
 
-## 文件结构
+## File Layout
 
 ```
 Custom/Services/Video/
-├── video_stream_hub.h      # Hub头文件 ✅
-├── video_stream_hub.c      # Hub实现 ✅
-└── README.md               # 使用说明
+├── video_stream_hub.h      # hub header ✅
+├── video_stream_hub.c      # hub implementation ✅
+└── README.md               # usage notes
 
 Custom/Services/RTMP/
-├── rtmp_service.c          # 原版本 (直接操作Camera/Encoder)
-├── rtmp_service_v2.c       # 新版本 (使用Video Hub) ✅
-└── MIGRATION_GUIDE.md      # 迁移指南 ✅
+├── rtmp_service.c          # legacy version (drives camera/encoder directly)
+├── rtmp_service_v2.c       # new version (uses the video hub) ✅
+└── MIGRATION_GUIDE.md      # migration guide ✅
 
-待修改文件:
-├── Services/Web/websocket_stream_server.c # 改为订阅模式 (待实现)
-├── Core/Video/video_encoder_node.c     # 可选: 通过Hub或独立使用
-└── Services/service_init.c             # 添加Hub初始化
+Files to modify:
+├── Services/Web/websocket_stream_server.c # switch to subscriber model (todo)
+├── Core/Video/video_encoder_node.c     # optional: via hub or standalone
+└── Services/service_init.c             # add hub initialization
 ```
 
-## 实施进度
+## Progress
 
-| 阶段 | 任务 | 状态 |
-|------|------|------|
-| 1 | 实现Video Stream Hub | ✅ 完成 |
-| 2 | 改造RTMP服务 | ✅ 完成 |
-| 3 | 改造WebSocket预览 | ⏳ 待实现 |
-| 4 | 集成测试 | ⏳ 待测试 |
-| 5 | 文档更新 | ✅ 完成 |
+| Phase | Task | Status |
+|-------|------|--------|
+| 1 | implement the Video Stream Hub | ✅ done |
+| 2 | rework the RTMP service | ✅ done |
+| 3 | rework the WebSocket preview | ⏳ todo |
+| 4 | integration testing | ⏳ todo |
+| 5 | documentation | ✅ done |
 
-## 启用新版RTMP服务
+## Enabling the new RTMP service
 
 ```bash
-# 切换到新版本
+# switch to the new version
 cd Custom/Services/RTMP
 mv rtmp_service.c rtmp_service_legacy.c
 mv rtmp_service_v2.c rtmp_service.c
 
-# 或在CMakeLists.txt中配置
+# or configure in CMakeLists.txt
 # set(RTMP_USE_VIDEO_HUB ON)
 ```
 
-详细迁移说明见: `Custom/Services/RTMP/MIGRATION_GUIDE.md`
-
+See `Custom/Services/RTMP/MIGRATION_GUIDE.md` for detailed migration instructions.

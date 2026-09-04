@@ -1,41 +1,41 @@
-# RTMP 推流服务 Web API 文档
+# RTMP Streaming Service Web API
 
-## 概述
+## Overview
 
-RTMP服务提供视频直播推流功能，支持连接到RTMP服务器进行视频推流。
+The RTMP service provides live video streaming to an RTMP server.
 
-**Base URL:** `/api/v1`  
-**认证:** 所有接口需要认证 (Authorization Header)
+**Base URL:** `/api/v1`
+**Authentication:** all endpoints require auth (Authorization header)
 
-> **注意**: RTMP配置现已整合到视频流模式配置中，仅需配置 `url` 和 `stream_key`，视频参数使用编码器默认值。
-
----
-
-## API 端点列表
-
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| GET | `/api/v1/apps/rtmp/config` | 获取RTMP配置 |
-| POST | `/api/v1/apps/rtmp/config` | 设置RTMP配置 |
-| POST | `/api/v1/apps/rtmp/start` | 开始推流 |
-| POST | `/api/v1/apps/rtmp/stop` | 停止推流 |
-| GET | `/api/v1/apps/rtmp/status` | 获取推流状态和统计 |
+> **Note**: RTMP configuration is now part of the video stream mode configuration. Only `url` and `stream_key` need to be set; video parameters use encoder defaults.
 
 ---
 
-## 1. 获取RTMP配置
+## API Endpoints
 
-获取当前RTMP服务的配置信息和状态。
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/apps/rtmp/config` | Get RTMP configuration |
+| POST | `/api/v1/apps/rtmp/config` | Set RTMP configuration |
+| POST | `/api/v1/apps/rtmp/start` | Start streaming |
+| POST | `/api/v1/apps/rtmp/stop` | Stop streaming |
+| GET | `/api/v1/apps/rtmp/status` | Get stream status and statistics |
 
-### 请求
+---
+
+## 1. Get RTMP Configuration
+
+Returns the current RTMP service configuration and status.
+
+### Request
 
 ```
 GET /api/v1/apps/rtmp/config
 ```
 
-### 响应
+### Response
 
-**成功 (200 OK)**
+**Success (200 OK)**
 
 ```json
 {
@@ -52,50 +52,50 @@ GET /api/v1/apps/rtmp/config
 }
 ```
 
-### 响应字段说明
+### Response Fields
 
-#### config (配置)
+#### config
 
-| 字段 | 类型 | 描述 |
-|------|------|------|
-| `enable` | boolean | RTMP推流是否启用 |
-| `url` | string | RTMP服务器地址，最大256字符 |
-| `stream_key` | string | 推流密钥，最大128字符 |
+| Field | Type | Description |
+|-------|------|-------------|
+| `enable` | boolean | whether RTMP streaming is enabled |
+| `url` | string | RTMP server address, max 256 chars |
+| `stream_key` | string | stream key, max 128 chars |
 
-#### status (服务状态)
+#### status (service state)
 
-| 字段 | 类型 | 描述 |
-|------|------|------|
-| `initialized` | boolean | 服务是否已初始化 |
-| `streaming` | boolean | 是否正在推流 |
-| `state` | string | 推流状态枚举 |
+| Field | Type | Description |
+|-------|------|-------------|
+| `initialized` | boolean | whether the service is initialized |
+| `streaming` | boolean | whether currently streaming |
+| `state` | string | streaming state enum |
 
-**state 枚举值:**
-- `idle` - 空闲，未推流
-- `connecting` - 正在连接服务器
-- `streaming` - 正在推流
-- `reconnecting` - 正在重连
-- `stopping` - 正在停止
-- `error` - 错误状态
+**state enum values:**
+- `idle` - not streaming
+- `connecting` - connecting to the server
+- `streaming` - streaming
+- `reconnecting` - reconnecting
+- `stopping` - stopping
+- `error` - error state
 
 ---
 
-## 2. 设置RTMP配置
+## 2. Set RTMP Configuration
 
-更新RTMP服务配置。配置会持久化存储到NVS。
+Updates the RTMP service configuration. The configuration is persisted to NVS.
 
-**注意：推流过程中无法修改配置。**
+**Note: the configuration cannot be changed while streaming.**
 
-### 请求
+### Request
 
 ```
 POST /api/v1/apps/rtmp/config
 Content-Type: application/json
 ```
 
-### 请求体
+### Request Body
 
-所有字段均为可选，仅更新提供的字段。
+All fields are optional; only the provided fields are updated.
 
 ```json
 {
@@ -105,17 +105,17 @@ Content-Type: application/json
 }
 ```
 
-### 请求字段说明
+### Request Fields
 
-| 字段 | 类型 | 必填 | 描述 |
-|------|------|------|------|
-| `enable` | boolean | 否 | 启用/禁用RTMP推流功能 |
-| `url` | string | 否 | RTMP服务器地址 |
-| `stream_key` | string | 否 | 推流密钥 |
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `enable` | boolean | no | enable/disable RTMP streaming |
+| `url` | string | no | RTMP server address |
+| `stream_key` | string | no | stream key |
 
-### 响应
+### Response
 
-**成功 (200 OK)**
+**Success (200 OK)**
 
 ```json
 {
@@ -124,9 +124,9 @@ Content-Type: application/json
 }
 ```
 
-**错误响应**
+**Error response**
 
-推流中无法修改配置:
+Config cannot be changed while streaming:
 ```json
 {
   "error": "Cannot change config while streaming",
@@ -136,20 +136,20 @@ Content-Type: application/json
 
 ---
 
-## 3. 开始推流
+## 3. Start Streaming
 
-启动RTMP视频推流。
+Starts RTMP video streaming.
 
-### 请求
+### Request
 
 ```
 POST /api/v1/apps/rtmp/start
 Content-Type: application/json
 ```
 
-### 请求体 (可选)
+### Request Body (optional)
 
-可以在启动时临时覆盖URL和stream_key:
+The URL and stream_key can be overridden temporarily at start time:
 
 ```json
 {
@@ -158,9 +158,9 @@ Content-Type: application/json
 }
 ```
 
-### 响应
+### Response
 
-**成功 (200 OK)**
+**Success (200 OK)**
 
 ```json
 {
@@ -170,7 +170,7 @@ Content-Type: application/json
 }
 ```
 
-**已在推流 (200 OK)**
+**Already streaming (200 OK)**
 
 ```json
 {
@@ -180,9 +180,9 @@ Content-Type: application/json
 }
 ```
 
-**错误响应**
+**Error response**
 
-未配置URL:
+URL not configured:
 ```json
 {
   "success": false,
@@ -194,19 +194,19 @@ Content-Type: application/json
 
 ---
 
-## 4. 停止推流
+## 4. Stop Streaming
 
-停止RTMP视频推流。
+Stops RTMP video streaming.
 
-### 请求
+### Request
 
 ```
 POST /api/v1/apps/rtmp/stop
 ```
 
-### 响应
+### Response
 
-**成功 (200 OK)**
+**Success (200 OK)**
 
 ```json
 {
@@ -216,7 +216,7 @@ POST /api/v1/apps/rtmp/stop
 }
 ```
 
-**未在推流 (200 OK)**
+**Not streaming (200 OK)**
 
 ```json
 {
@@ -228,19 +228,19 @@ POST /api/v1/apps/rtmp/stop
 
 ---
 
-## 5. 获取推流状态和统计
+## 5. Get Stream Status and Statistics
 
-获取当前推流状态和详细统计信息。
+Returns the current streaming state and detailed statistics.
 
-### 请求
+### Request
 
 ```
 GET /api/v1/apps/rtmp/status
 ```
 
-### 响应
+### Response
 
-**成功 (200 OK)**
+**Success (200 OK)**
 
 ```json
 {
@@ -259,33 +259,33 @@ GET /api/v1/apps/rtmp/status
 }
 ```
 
-### 统计字段说明
+### Statistics Fields
 
-| 字段 | 类型 | 描述 |
-|------|------|------|
-| `frames_sent` | number | 已发送的总帧数 |
-| `bytes_sent` | number | 已发送的总字节数 |
-| `keyframes_sent` | number | 已发送的关键帧数 |
-| `dropped_frames` | number | 丢弃的帧数 |
-| `reconnect_count` | number | 重连次数 |
-| `stream_duration_sec` | number | 推流持续时间(秒) |
-
----
-
-## 错误码说明
-
-| HTTP状态码 | 描述 |
-|-----------|------|
-| 405 | 请求方法不允许 |
-| 503 | RTMP服务未初始化 |
-| 400 | 无效的请求参数或推流中无法修改配置 |
-| 500 | 内部服务器错误 |
+| Field | Type | Description |
+|-------|------|-------------|
+| `frames_sent` | number | total frames sent |
+| `bytes_sent` | number | total bytes sent |
+| `keyframes_sent` | number | keyframes sent |
+| `dropped_frames` | number | frames dropped |
+| `reconnect_count` | number | reconnect attempts |
+| `stream_duration_sec` | number | stream duration (seconds) |
 
 ---
 
-## 使用示例
+## Error Codes
 
-### JavaScript/Fetch
+| HTTP status | Description |
+|------------|-------------|
+| 405 | method not allowed |
+| 503 | RTMP service not initialized |
+| 400 | invalid request parameters, or config change attempted while streaming |
+| 500 | internal server error |
+
+---
+
+## Usage Examples
+
+### JavaScript / fetch
 
 ```javascript
 const API_BASE = '/api/v1/apps/rtmp';
@@ -294,13 +294,13 @@ const headers = {
   'Authorization': 'Bearer YOUR_TOKEN'
 };
 
-// 获取配置
+// get configuration
 const getConfig = async () => {
   const res = await fetch(`${API_BASE}/config`, { headers });
   return res.json();
 };
 
-// 设置配置
+// set configuration
 const setConfig = async (url, streamKey) => {
   const res = await fetch(`${API_BASE}/config`, {
     method: 'POST',
@@ -310,19 +310,19 @@ const setConfig = async (url, streamKey) => {
   return res.json();
 };
 
-// 开始推流
+// start streaming
 const startStream = async () => {
   const res = await fetch(`${API_BASE}/start`, { method: 'POST', headers });
   return res.json();
 };
 
-// 停止推流
+// stop streaming
 const stopStream = async () => {
   const res = await fetch(`${API_BASE}/stop`, { method: 'POST', headers });
   return res.json();
 };
 
-// 获取状态
+// get status
 const getStatus = async () => {
   const res = await fetch(`${API_BASE}/status`, { headers });
   return res.json();
@@ -332,56 +332,56 @@ const getStatus = async () => {
 ### cURL
 
 ```bash
-# 获取配置
+# get configuration
 curl -X GET http://192.168.1.1/api/v1/apps/rtmp/config \
   -H "Authorization: Bearer YOUR_TOKEN"
 
-# 设置配置
+# set configuration
 curl -X POST http://192.168.1.1/api/v1/apps/rtmp/config \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{"enable": true, "url": "rtmp://live.example.com/live", "stream_key": "your-key"}'
 
-# 开始推流
+# start streaming
 curl -X POST http://192.168.1.1/api/v1/apps/rtmp/start \
   -H "Authorization: Bearer YOUR_TOKEN"
 
-# 停止推流
+# stop streaming
 curl -X POST http://192.168.1.1/api/v1/apps/rtmp/stop \
   -H "Authorization: Bearer YOUR_TOKEN"
 
-# 获取状态
+# get status
 curl -X GET http://192.168.1.1/api/v1/apps/rtmp/status \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
 ---
 
-## 典型工作流程
+## Typical Workflow
 
 ```
-1. 配置RTMP (POST /config) - 设置 url 和 stream_key
-2. 开始推流 (POST /start)
-3. 轮询状态 (GET /status) - 监控推流质量
-4. 停止推流 (POST /stop)
+1. Configure RTMP (POST /config) - set url and stream_key
+2. Start streaming (POST /start)
+3. Poll status (GET /status) - monitor stream quality
+4. Stop streaming (POST /stop)
 ```
 
-## 配置说明
+## Configuration Notes
 
-| 配置项 | 存储位置 | 描述 |
-|--------|----------|------|
-| enable | NVS | RTMP功能开关 |
-| url | NVS | RTMP服务器地址 |
-| stream_key | NVS | 推流密钥 |
-| 视频参数 | - | 使用编码器默认值 (1280x720@30fps) |
+| Setting | Storage | Description |
+|---------|---------|-------------|
+| enable | NVS | RTMP feature toggle |
+| url | NVS | RTMP server address |
+| stream_key | NVS | stream key |
+| video parameters | - | encoder defaults (1280x720@30fps) |
 
-> RTMP配置作为视频流模式(`video_stream_mode`)的一部分存储在NVS中。
+> The RTMP configuration is stored in NVS as part of the video stream mode (`video_stream_mode`).
 
-## 常见推流地址格式
+## Common Streaming URLs
 
-| 平台 | URL格式 |
-|------|---------|
-| 通用RTMP | `rtmp://server/app` + stream_key |
+| Platform | URL format |
+|----------|------------|
+| Generic RTMP | `rtmp://server/app` + stream_key |
 | YouTube | `rtmp://a.rtmp.youtube.com/live2` |
 | Twitch | `rtmp://live.twitch.tv/app` |
 | Bilibili | `rtmp://live-push.bilivideo.com/live-bvc` |

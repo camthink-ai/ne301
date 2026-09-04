@@ -182,22 +182,23 @@ function endpointItems(lang: 'en' | 'zh', linkPrefix: string) {
 }
 
 /**
- * 既有专题文档（api/、design/、根目录说明文档，中文撰写）两侧共用；
- * 英文侧边栏标题标注语言。
+ * 专题文档双语镜像：英文挂根路径（docs/api、docs/design 等），
+ * 中文挂 /zh/（docs/zh/api、docs/zh/design 等）。
  */
 function miscSidebar(lang: 'en' | 'zh') {
   const zh = lang === 'zh'
+  const p = (path: string) => (zh ? `/zh${path}` : path)
   return [
     {
       text: zh ? '开发文档' : 'Developer Docs',
       collapsed: false,
       items: [
-        { text: zh ? '文档索引' : 'Doc Index', link: zh ? '/zh/misc/' : '/misc/' },
-        { text: zh ? '拍照上传流程' : 'Photo Capture & Upload Flow (中文)', link: '/zh/photo-capture-upload-flow' },
-        { text: zh ? 'RTMP API' : 'RTMP API (中文)', link: '/api/RTMP_API' },
-        { text: zh ? 'PoE Network API' : 'PoE Network API (中文)', link: '/api/PoE_Network_API' },
-        { text: zh ? 'PIR Sensor API' : 'PIR Sensor API (中文)', link: '/api/PIR_SENSOR_API' },
-        { text: zh ? '视频流中台升级设计' : 'Video Stream Hub Design (中文)', link: '/design/VIDEO_STREAM_HUB_UPGRADE' },
+        { text: zh ? '文档索引' : 'Doc Index', link: p('/misc/') },
+        { text: zh ? '拍照上传流程' : 'Photo Capture & Upload Flow', link: p('/photo-capture-upload-flow') },
+        { text: zh ? 'RTMP API' : 'RTMP API', link: p('/api/RTMP_API') },
+        { text: zh ? 'PoE Network API' : 'PoE Network API', link: p('/api/PoE_Network_API') },
+        { text: zh ? 'PIR Sensor API' : 'PIR Sensor API', link: p('/api/PIR_SENSOR_API') },
+        { text: zh ? '视频流中台升级设计' : 'Video Stream Hub Design', link: p('/design/VIDEO_STREAM_HUB_UPGRADE') },
       ],
     },
   ]

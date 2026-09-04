@@ -16,12 +16,16 @@ docs/
 │   ├── authentication.md   # 认证与快速开始
 │   ├── network.md          # 网络管理模块详解
 │   └── endpoints/          # ⚙ 自动生成（英文），勿手改
-├── zh/                     # 简体中文（/zh/ 路径）
+├── zh/                     # 简体中文（/zh/ 路径，与英文镜像）
 │   ├── index.md            # 中文首页
 │   ├── misc/
-│   └── web-api/            # 中文手写页 + endpoints/（⚙ 自动生成）
-├── api/                    # 既有专题 API 文档（中文，两侧边栏共用）
-├── design/                 # 设计文档（中文）
+│   ├── web-api/            # 中文手写页 + endpoints/（⚙ 自动生成）
+│   ├── api/                # 中文专题 API 文档
+│   ├── design/             # 中文设计文档
+│   └── photo-capture-upload-flow.md
+├── api/                    # 专题 API 文档（英文 + 共享示例代码）
+├── design/                 # 设计文档（英文）
+├── photo-capture-upload-flow.md  # 拍照上传流程（英文）
 └── public/                 # 原样发布的静态文件（logo、manifest 副本）
 ```
 

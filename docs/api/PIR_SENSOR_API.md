@@ -1,39 +1,39 @@
-# PIR传感器配置 Web API 文档
+# PIR Sensor Configuration Web API
 
-## 概述
+## Overview
 
-PIR传感器配置API提供对PIR（被动红外）传感器的配置功能，包括传感器参数设置和触发器启用/禁用。配置会持久化存储到NVS。
+The PIR sensor configuration API manages the PIR (passive infrared) sensor, including sensor parameters and trigger enable/disable. The configuration is persisted to NVS.
 
-**Base URL:** `/api/v1`  
-**认证:** 所有接口需要认证 (Authorization Header)
-
----
-
-## API 端点
-
-PIR传感器配置已整合到工作模式触发器配置中，通过以下接口访问：
-
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| GET | `/api/v1/work-mode/triggers` | 获取所有触发器配置（包括PIR） |
-| POST | `/api/v1/work-mode/triggers` | 设置触发器配置（包括PIR） |
+**Base URL:** `/api/v1`
+**Authentication:** all endpoints require auth (Authorization header)
 
 ---
 
-## 1. 获取PIR传感器配置
+## API Endpoints
 
-通过获取工作模式触发器配置接口获取PIR传感器配置。
+PIR sensor configuration is part of the work mode trigger configuration and is accessed through:
 
-### 请求
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/work-mode/triggers` | get all trigger configurations (including PIR) |
+| POST | `/api/v1/work-mode/triggers` | set trigger configurations (including PIR) |
+
+---
+
+## 1. Get PIR Sensor Configuration
+
+Fetch the PIR sensor configuration via the work mode triggers endpoint.
+
+### Request
 
 ```
 GET /api/v1/work-mode/triggers
 Authorization: Bearer <token>
 ```
 
-### 响应
+### Response
 
-**成功 (200 OK)**
+**Success (200 OK)**
 
 ```json
 {
@@ -63,58 +63,58 @@ Authorization: Bearer <token>
 }
 ```
 
-### PIR配置字段说明
+### PIR Configuration Fields
 
-| 字段 | 类型 | 范围/选项 | 描述 | 默认值 |
-|------|------|----------|------|--------|
-| `enable` | boolean | - | PIR触发器是否启用 | `false` |
-| `trigger_type` | string | `"rising_edge"`, `"falling_edge"`, `"high_level"`, `"low_level"`, `"both_edges"` | PIR唤醒触发方式 | `"rising_edge"` |
-| `sensitivity_level` | number | 10-255 | 灵敏度级别，值越小越灵敏（推荐>30） | `30` |
-| `ignore_time_s` | number | 0-15 | 忽略时间寄存器值，实际时间 = 0.5 + 0.5 × 值（秒） | `7` (4秒) |
-| `pulse_count` | number | 1-4 | 脉冲计数，实际脉冲数 = 值 | `1` (2个脉冲) |
-| `window_time_s` | number | 0-3 | 窗口时间寄存器值，实际时间 = 2 + 2 × 值（秒） | `0` (2秒) |
+| Field | Type | Range/options | Description | Default |
+|-------|------|---------------|-------------|---------|
+| `enable` | boolean | - | whether the PIR trigger is enabled | `false` |
+| `trigger_type` | string | `"rising_edge"`, `"falling_edge"`, `"high_level"`, `"low_level"`, `"both_edges"` | PIR wakeup trigger mode | `"rising_edge"` |
+| `sensitivity_level` | number | 10-255 | sensitivity level; lower is more sensitive (recommended > 30) | `30` |
+| `ignore_time_s` | number | 0-15 | ignore-time register value; actual time = 0.5 + 0.5 × value (seconds) | `7` (4 s) |
+| `pulse_count` | number | 1-4 | pulse count; actual pulses = value | `1` (2 pulses) |
+| `window_time_s` | number | 0-3 | window-time register value; actual time = 2 + 2 × value (seconds) | `0` (2 s) |
 
-**参数详细说明：**
+**Parameter details:**
 
-- **trigger_type (触发方式)**
-  - `"rising_edge"`: 上升沿触发（检测到运动时唤醒）- **推荐，最常用**
-  - `"falling_edge"`: 下降沿触发（运动结束时唤醒）
-  - `"high_level"`: 高电平触发（PIR信号为高时唤醒）
-  - `"low_level"`: 低电平触发（PIR信号为低时唤醒）
-  - `"both_edges"`: 双边沿触发（实际使用上升沿）
-  - 默认值：`"rising_edge"`
+- **trigger_type (trigger mode)**
+  - `"rising_edge"`: trigger on rising edge (wakes when motion is detected) - **recommended, most common**
+  - `"falling_edge"`: trigger on falling edge (wakes when motion ends)
+  - `"high_level"`: trigger on high level (wakes while the PIR signal is high)
+  - `"low_level"`: trigger on low level (wakes while the PIR signal is low)
+  - `"both_edges"`: trigger on both edges (rising edge is used in practice)
+  - default: `"rising_edge"`
 
-- **sensitivity_level (灵敏度级别)**
-  - 范围：10-255
-  - 推荐值：>30
-  - 值越小越灵敏，但容易误触发
-  - 无干扰环境可设置最小值10
+- **sensitivity_level (sensitivity)**
+  - range: 10-255
+  - recommended: > 30
+  - lower values are more sensitive but prone to false triggers
+  - in interference-free environments the minimum of 10 can be used
 
-- **ignore_time_s (忽略时间)**
-  - 范围：0-15
-  - 实际忽略时间 = 0.5 + 0.5 × 值（秒）
-  - 例如：值7 = 4秒，值15 = 8秒
-  - 中断输出切换回0后忽略运动检测的时间
+- **ignore_time_s (ignore time)**
+  - range: 0-15
+  - actual ignore time = 0.5 + 0.5 × value (seconds)
+  - e.g. value 7 = 4 s, value 15 = 8 s
+  - how long motion detection is ignored after the interrupt output returns to 0
 
-- **pulse_count (脉冲计数)**
-  - 范围：1-4
-  - 实际脉冲数 = 值
-  - 窗口时间内需要达到的脉冲数
-  - 值越大抗干扰能力越强，但灵敏度略有降低
+- **pulse_count (pulse count)**
+  - range: 1-4
+  - actual pulse count = value
+  - number of pulses that must accumulate within the window time
+  - higher values are more noise-resistant but slightly less sensitive
 
-- **window_time_s (窗口时间)**
-  - 范围：0-3
-  - 实际窗口时间 = 2 + 2 × 值（秒）
-  - 例如：值0 = 2秒，值3 = 8秒
-  - 脉冲计数的统计窗口时间
+- **window_time_s (window time)**
+  - range: 0-3
+  - actual window time = 2 + 2 × value (seconds)
+  - e.g. value 0 = 2 s, value 3 = 8 s
+  - the statistical window for pulse counting
 
 ---
 
-## 2. 设置PIR传感器配置
+## 2. Set PIR Sensor Configuration
 
-通过设置工作模式触发器配置接口更新PIR传感器配置。
+Update the PIR sensor configuration via the work mode triggers endpoint.
 
-### 请求
+### Request
 
 ```
 POST /api/v1/work-mode/triggers
@@ -122,9 +122,9 @@ Content-Type: application/json
 Authorization: Bearer <token>
 ```
 
-### 请求体
+### Request Body
 
-所有字段均为可选，仅更新提供的字段。可以只更新PIR配置，其他触发器配置保持不变。
+All fields are optional; only provided fields are updated. You can update only the PIR configuration and leave other triggers unchanged.
 
 ```json
 {
@@ -139,20 +139,20 @@ Authorization: Bearer <token>
 }
 ```
 
-### 请求字段验证
+### Field Validation
 
-| 字段 | 验证规则 |
-|------|---------|
-| `enable` | boolean类型 |
-| `trigger_type` | 字符串类型，必须是有效的触发方式（见上方选项），无效值将使用默认值"rising_edge" |
-| `sensitivity_level` | 10-255之间的整数，超出范围将被忽略 |
-| `ignore_time_s` | 0-15之间的整数，超出范围将被忽略 |
-| `pulse_count` | 1-4之间的整数，超出范围将被忽略 |
-| `window_time_s` | 0-3之间的整数，超出范围将被忽略 |
+| Field | Validation rule |
+|-------|-----------------|
+| `enable` | must be boolean |
+| `trigger_type` | string; must be a valid mode (see options above); invalid values fall back to "rising_edge" |
+| `sensitivity_level` | integer within 10-255; out-of-range values are ignored |
+| `ignore_time_s` | integer within 0-15; out-of-range values are ignored |
+| `pulse_count` | integer within 1-4; out-of-range values are ignored |
+| `window_time_s` | integer within 0-3; out-of-range values are ignored |
 
-### 响应
+### Response
 
-**成功 (200 OK)**
+**Success (200 OK)**
 
 ```json
 {
@@ -161,7 +161,7 @@ Authorization: Bearer <token>
 }
 ```
 
-**错误 (400 Bad Request)**
+**Error (400 Bad Request)**
 
 ```json
 {
@@ -170,7 +170,7 @@ Authorization: Bearer <token>
 }
 ```
 
-**错误 (500 Internal Server Error)**
+**Error (500 Internal Server Error)**
 
 ```json
 {
@@ -181,37 +181,37 @@ Authorization: Bearer <token>
 
 ---
 
-## 3. 配置应用说明
+## 3. Configuration Application
 
-### 配置生效时机
+### When the configuration takes effect
 
-1. **系统启动时**：如果PIR触发器启用，系统会自动使用配置的参数初始化PIR传感器
-2. **配置更新时**：通过API更新配置后，如果PIR触发器启用，配置会立即应用到PIR传感器
-3. **进入睡眠前**：系统进入睡眠模式前，会使用当前配置的参数配置PIR传感器
+1. **At boot**: if the PIR trigger is enabled, the system initializes the PIR sensor with the configured parameters
+2. **On update**: after an API update, if the PIR trigger is enabled, the new configuration is applied to the sensor immediately
+3. **Before sleep**: before entering sleep mode, the PIR sensor is programmed with the current configuration
 
-### 配置持久化
+### Persistence
 
-- 所有配置参数会自动保存到NVS（非易失性存储）
-- 系统重启后配置会自动恢复
-- 配置同时保存到JSON配置文件
+- All parameters are saved to NVS (non-volatile storage) automatically
+- The configuration survives reboots
+- It is also saved to the JSON configuration file
 
-### 默认值
+### Defaults
 
-如果某些参数未配置或为0，系统会使用以下默认值：
+If a parameter is unset or 0, the following defaults apply:
 
 - `sensitivity_level`: 30
-- `ignore_time_s`: 7 (实际4秒)
-- `pulse_count`: 1 (实际2个脉冲)
-- `window_time_s`: 0 (实际2秒)
+- `ignore_time_s`: 7 (4 s actual)
+- `pulse_count`: 1 (2 pulses actual)
+- `window_time_s`: 0 (2 s actual)
 
 ---
 
-## 4. 使用示例
+## 4. Usage Examples
 
-### JavaScript/TypeScript 示例
+### JavaScript / TypeScript
 
 ```typescript
-// 获取PIR配置
+// get PIR configuration
 async function getPIRConfig() {
   const response = await fetch('/api/v1/work-mode/triggers', {
     method: 'GET',
@@ -219,16 +219,16 @@ async function getPIRConfig() {
       'Authorization': `Bearer ${token}`
     }
   });
-  
+
   const data = await response.json();
   if (data.code === 0) {
     const pirConfig = data.data.pir_trigger;
-    console.log('PIR配置:', pirConfig);
+    console.log('PIR config:', pirConfig);
     return pirConfig;
   }
 }
 
-// 设置PIR配置
+// set PIR configuration
 async function setPIRConfig(config: {
   enable: boolean;
   trigger_type?: string;  // "rising_edge" | "falling_edge" | "high_level" | "low_level" | "both_edges"
@@ -247,36 +247,36 @@ async function setPIRConfig(config: {
       pir_trigger: config
     })
   });
-  
+
   const data = await response.json();
   if (data.code === 0) {
-    console.log('PIR配置更新成功');
+    console.log('PIR config updated');
     return true;
   } else {
-    console.error('配置更新失败:', data.message);
+    console.error('Update failed:', data.message);
     return false;
   }
 }
 
-// 使用示例
+// usage
 async function configurePIR() {
-  // 启用PIR并设置参数
+  // enable PIR and set parameters
   await setPIRConfig({
     enable: true,
-    trigger_type: "rising_edge",  // 上升沿触发（检测到运动时唤醒）
-    sensitivity_level: 35,    // 中等灵敏度
-    ignore_time_s: 5,         // 3秒忽略时间
-    pulse_count: 2,           // 2个脉冲
-    window_time_s: 1          // 4秒窗口时间
+    trigger_type: "rising_edge",  // rising edge (wakes on motion detected)
+    sensitivity_level: 35,    // medium sensitivity
+    ignore_time_s: 5,         // 3 s ignore time
+    pulse_count: 2,           // 2 pulses
+    window_time_s: 1          // 4 s window time
   });
-  
-  // 获取当前配置
+
+  // read back the current configuration
   const currentConfig = await getPIRConfig();
-  console.log('当前PIR配置:', currentConfig);
+  console.log('Current PIR config:', currentConfig);
 }
 ```
 
-### React 组件示例
+### React component
 
 ```tsx
 import React, { useState, useEffect } from 'react';
@@ -301,7 +301,7 @@ function PIRConfigComponent() {
   });
   const [loading, setLoading] = useState(false);
 
-  // 加载配置
+  // load configuration
   useEffect(() => {
     loadConfig();
   }, []);
@@ -316,7 +316,7 @@ function PIRConfigComponent() {
         setConfig(data.data.pir_trigger);
       }
     } catch (error) {
-      console.error('加载配置失败:', error);
+      console.error('Failed to load config:', error);
     }
   };
 
@@ -333,12 +333,12 @@ function PIRConfigComponent() {
       });
       const data = await response.json();
       if (data.code === 0) {
-        alert('配置保存成功');
+        alert('Configuration saved');
       } else {
-        alert(`保存失败: ${data.message}`);
+        alert(`Save failed: ${data.message}`);
       }
     } catch (error) {
-      alert('保存失败');
+      alert('Save failed');
     } finally {
       setLoading(false);
     }
@@ -346,37 +346,37 @@ function PIRConfigComponent() {
 
   return (
     <div className="pir-config">
-      <h2>PIR传感器配置</h2>
-      
+      <h2>PIR Sensor Configuration</h2>
+
       <label>
         <input
           type="checkbox"
           checked={config.enable}
           onChange={(e) => setConfig({...config, enable: e.target.checked})}
         />
-        启用PIR触发器
+        Enable PIR trigger
       </label>
 
       <div>
         <label>
-          触发方式:
+          Trigger mode:
           <select
             value={config.trigger_type}
             onChange={(e) => setConfig({...config, trigger_type: e.target.value})}
           >
-            <option value="rising_edge">上升沿 (检测到运动时唤醒)</option>
-            <option value="falling_edge">下降沿 (运动结束时唤醒)</option>
-            <option value="high_level">高电平</option>
-            <option value="low_level">低电平</option>
-            <option value="both_edges">双边沿 (使用上升沿)</option>
+            <option value="rising_edge">Rising edge (wake on motion detected)</option>
+            <option value="falling_edge">Falling edge (wake when motion ends)</option>
+            <option value="high_level">High level</option>
+            <option value="low_level">Low level</option>
+            <option value="both_edges">Both edges (rising used)</option>
           </select>
         </label>
-        <small>推荐使用上升沿触发</small>
+        <small>Rising edge is recommended</small>
       </div>
 
       <div>
         <label>
-          灵敏度级别 (10-255, 推荐>30):
+          Sensitivity level (10-255, recommended &gt; 30):
           <input
             type="number"
             min="10"
@@ -388,12 +388,12 @@ function PIRConfigComponent() {
             })}
           />
         </label>
-        <small>值越小越灵敏，但容易误触发</small>
+        <small>Lower is more sensitive but prone to false triggers</small>
       </div>
 
       <div>
         <label>
-          忽略时间 (0-15):
+          Ignore time (0-15):
           <input
             type="number"
             min="0"
@@ -406,13 +406,13 @@ function PIRConfigComponent() {
           />
         </label>
         <small>
-          实际时间: {(0.5 + 0.5 * config.ignore_time_s).toFixed(1)}秒
+          Actual time: {(0.5 + 0.5 * config.ignore_time_s).toFixed(1)} s
         </small>
       </div>
 
       <div>
         <label>
-          脉冲计数 (1-4):
+          Pulse count (1-4):
           <input
             type="number"
             min="1"
@@ -424,12 +424,12 @@ function PIRConfigComponent() {
             })}
           />
         </label>
-        <small>窗口时间内需要达到的脉冲数</small>
+        <small>Pulses required within the window time</small>
       </div>
 
       <div>
         <label>
-          窗口时间 (0-3):
+          Window time (0-3):
           <input
             type="number"
             min="0"
@@ -442,12 +442,12 @@ function PIRConfigComponent() {
           />
         </label>
         <small>
-          实际时间: {2 + 2 * config.window_time_s}秒
+          Actual time: {2 + 2 * config.window_time_s} s
         </small>
       </div>
 
       <button onClick={saveConfig} disabled={loading}>
-        {loading ? '保存中...' : '保存配置'}
+        {loading ? 'Saving...' : 'Save configuration'}
       </button>
     </div>
   );
@@ -456,9 +456,9 @@ function PIRConfigComponent() {
 
 ---
 
-## 5. 参数推荐值
+## 5. Recommended Values
 
-### 室内环境（低干扰）
+### Indoor (low interference)
 
 ```json
 {
@@ -471,7 +471,7 @@ function PIRConfigComponent() {
 }
 ```
 
-### 室外环境（中等干扰）
+### Outdoor (medium interference)
 
 ```json
 {
@@ -484,7 +484,7 @@ function PIRConfigComponent() {
 }
 ```
 
-### 高干扰环境
+### High-interference environment
 
 ```json
 {
@@ -499,30 +499,30 @@ function PIRConfigComponent() {
 
 ---
 
-## 6. 注意事项
+## 6. Notes
 
-1. **配置验证**：所有参数都有范围限制，超出范围的值会被忽略，不会更新配置
-2. **配置生效**：配置更新后，如果PIR触发器已启用，配置会立即应用到PIR传感器
-3. **睡眠模式**：系统进入睡眠模式前会自动使用当前配置重新配置PIR传感器
-4. **电源要求**：在低功耗模式下使用PIR唤醒时，需要保持3V3电源开启
-5. **触发方式**：支持4种PIR触发方式（上升沿、下降沿、高电平、低电平），推荐使用上升沿触发（检测到运动时唤醒）
-6. **触发方式选择**：`trigger_type`字段支持字符串（如"rising_edge"）或数字（0-4），无效值将使用默认值"rising_edge"
+1. **Validation**: all parameters are range-checked; out-of-range values are ignored and do not update the configuration
+2. **Application**: after an update, if the PIR trigger is enabled, the configuration is applied to the sensor immediately
+3. **Sleep mode**: before entering sleep, the PIR sensor is reprogrammed with the current configuration
+4. **Power**: to use PIR wakeup in low-power mode, the 3V3 rail must stay on
+5. **Trigger modes**: four PIR trigger modes are supported (rising edge, falling edge, high level, low level); rising edge (wake on motion detected) is recommended
+6. **Mode selection**: the `trigger_type` field accepts a string (e.g. "rising_edge") or a number (0-4); invalid values fall back to "rising_edge"
 
 ---
 
-## 7. 错误处理
+## 7. Error Handling
 
-### 常见错误码
+### Common error codes
 
-| 错误码 | 描述 | 解决方案 |
-|--------|------|---------|
-| 400 | 无效的JSON格式 | 检查请求体JSON格式 |
-| 400 | 无效的Content-Type | 确保Content-Type为application/json |
-| 401 | 未授权 | 检查Authorization header |
-| 405 | 方法不允许 | 使用正确的HTTP方法（GET/POST） |
-| 500 | 内部服务器错误 | 检查服务器日志 |
+| Code | Description | Fix |
+|------|-------------|-----|
+| 400 | invalid JSON | check the request body format |
+| 400 | invalid Content-Type | set Content-Type to application/json |
+| 401 | unauthorized | check the Authorization header |
+| 405 | method not allowed | use the correct HTTP method (GET/POST) |
+| 500 | internal server error | check server logs |
 
-### 错误响应示例
+### Error response example
 
 ```json
 {
@@ -533,13 +533,13 @@ function PIRConfigComponent() {
 
 ---
 
-## 8. 相关API
+## 8. Related APIs
 
-- 工作模式触发器配置 API - 完整的触发器配置文档
-- 电源模式配置 API - 电源模式相关配置
+- Work mode trigger configuration API - full trigger configuration documentation
+- Power mode configuration API - power mode related settings
 
 ---
 
-## 版本历史
+## Version History
 
-- **v1.0** (2026-01-13): 初始版本，支持PIR传感器参数配置
+- **v1.0** (2026-01-13): initial version with PIR sensor parameter configuration
