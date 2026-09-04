@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitepress'
+import { withMermaid } from 'vitepress-plugin-mermaid'
 import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -7,7 +8,9 @@ import { resolve } from 'node:path'
 // 双语结构：默认英文挂根路径，中文挂在 /zh/，导航栏可互相切换。
 //   docs/web-api/**           English (default)
 //   docs/zh/web-api/**        简体中文
-export default defineConfig({
+//
+// withMermaid：启用 mermaid 代码块渲染（```mermaid -> 图表）
+export default withMermaid(defineConfig({
   // 部署在 https://camthink-ai.github.io/ne301/ 子路径下
   base: '/ne301/',
   title: 'NE301',
@@ -156,7 +159,7 @@ export default defineConfig({
       },
     },
   },
-})
+}))
 
 /**
  * 扫描对应语言的 endpoints 目录构建 sidebar。
