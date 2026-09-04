@@ -47,24 +47,24 @@ graph TB
     FastCapture --> CheckAI1{enable_ai?}
     NormalCapture --> CheckAI2{enable_ai?}
     
-    CheckAI1 -->|TRUE| AII inference1[AI推理]
+    CheckAI1 -->|TRUE| AIInference1[AI推理]
     CheckAI1 -->|FALSE| NoAI1[跳过AI]
-    CheckAI2 -->|TRUE| AII inference2[AI推理]
+    CheckAI2 -->|TRUE| AIInference2[AI推理]
     CheckAI2 -->|FALSE| NoAI2[跳过AI]
     
-    AII inference1 --> GetJPEG[获取JPEG缓冲区]
+    AIInference1 --> GetJPEG[获取JPEG缓冲区]
     NoAI1 --> GetJPEG
-    AII inference2 --> GetJPEG
+    AIInference2 --> GetJPEG
     NoAI2 --> GetJPEG
     
-    GetJPEG --> CheckSD{store_to_sd<br/>&& SD卡连接?}
+    GetJPEG --> CheckSD{"store_to_sd && SD卡连接?"}
     CheckSD -->|TRUE| SaveSD[保存到SD卡<br/>image_timestamp.jpg]
     CheckSD -->|FALSE| SkipSD[跳过SD存储]
     
     SaveSD --> PrepareMeta[准备元数据<br/>获取JPEG参数<br/>生成MQTT元数据]
     SkipSD --> PrepareMeta
     
-    PrepareMeta --> CheckAI3{enable_ai<br/>&& AI结果有效?}
+    PrepareMeta --> CheckAI3{"enable_ai && AI结果有效?"}
     CheckAI3 -->|TRUE| PrepareAI[准备AI结果<br/>获取模型信息<br/>初始化MQTT AI结果]
     CheckAI3 -->|FALSE| SkipAI[跳过AI结果]
     

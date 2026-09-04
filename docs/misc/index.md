@@ -9,11 +9,11 @@ This site is deployed on GitHub Pages from the `docs/` directory of the reposito
 - [Endpoint Reference (auto-generated)](/web-api/endpoints/) — every endpoint, extracted from the firmware source by `Script/gen_web_api_docs.py`
 - Module guides: [Network Management](/web-api/network)
 
-## Topic Docs (Chinese)
+## Topic Docs
 
-- [拍照上传流程](/拍照上传流程) — full pipeline of button/RTC-wakeup capture and MQTT upload
+- [Photo Capture & Upload Flow](/photo-capture-upload-flow) — full pipeline of button/RTC-wakeup capture and MQTT upload
 - [RTMP API](/api/RTMP_API) · [PIR Sensor API](/api/PIR_SENSOR_API) · [PoE Network API](/api/PoE_Network_API)
-- [视频流中台升级设计](/design/VIDEO_STREAM_HUB_UPGRADE)
+- [Video Stream Hub Design](/design/VIDEO_STREAM_HUB_UPGRADE)
 
 ## Maintenance & Sync Mechanism
 

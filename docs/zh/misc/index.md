@@ -7,12 +7,12 @@
 - [API 总览](/zh/web-api/) — 基础路径、认证、响应格式与错误码
 - [认证与快速开始](/zh/web-api/authentication) — 登录流程与调用示例
 - [端点参考（自动生成）](/zh/web-api/endpoints/) — 全部端点清单由 `Script/gen_web_api_docs.py` 从固件源码提取
-- 模块详解：[网络管理](/zh/web-api/network) · [RTMP 推流](/api/RTMP_API) · [PIR 传感器](/api/PIR_SENSOR_API) · [PoE 配电](/api/PoE_Network_API)
+- 模块详解：[网络管理](/zh/web-api/network) · [RTMP 推流](/zh/api/RTMP_API) · [PIR 传感器](/zh/api/PIR_SENSOR_API) · [PoE 配电](/zh/api/PoE_Network_API)
 
 ## 专题文档
 
-- [拍照上传流程](/拍照上传流程) — 按键/唤醒拍照与 MQTT 上传的完整链路
-- [视频流中台升级设计](/design/VIDEO_STREAM_HUB_UPGRADE)
+- [拍照上传流程](/zh/photo-capture-upload-flow) — 按键/唤醒拍照与 MQTT 上传的完整链路
+- [视频流中台升级设计](/zh/design/VIDEO_STREAM_HUB_UPGRADE)
 
 ## 文档维护与同步机制
 
