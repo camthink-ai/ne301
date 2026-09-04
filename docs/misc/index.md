@@ -11,7 +11,7 @@ This site is deployed on GitHub Pages from the `docs/` directory of the reposito
 
 ## Topic Docs (Chinese)
 
-- [拍照上传流程](/拍照上传流程) — full pipeline of button/RTC-wakeup capture and MQTT upload
+- [拍照上传流程](/zh/photo-capture-upload-flow) — full pipeline of button/RTC-wakeup capture and MQTT upload
 - [RTMP API](/api/RTMP_API) · [PIR Sensor API](/api/PIR_SENSOR_API) · [PoE Network API](/api/PoE_Network_API)
 - [视频流中台升级设计](/design/VIDEO_STREAM_HUB_UPGRADE)
 
