@@ -11,7 +11,7 @@
 
 ## 专题文档
 
-- [拍照上传流程](/拍照上传流程) — 按键/唤醒拍照与 MQTT 上传的完整链路
+- [拍照上传流程](/zh/photo-capture-upload-flow) — 按键/唤醒拍照与 MQTT 上传的完整链路
 - [视频流中台升级设计](/design/VIDEO_STREAM_HUB_UPGRADE)
 
 ## 文档维护与同步机制

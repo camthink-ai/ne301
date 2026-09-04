@@ -193,7 +193,7 @@ function miscSidebar(lang: 'en' | 'zh') {
       collapsed: false,
       items: [
         { text: zh ? '文档索引' : 'Doc Index', link: zh ? '/zh/misc/' : '/misc/' },
-        { text: zh ? '拍照上传流程' : 'Photo Capture & Upload Flow (中文)', link: '/拍照上传流程' },
+        { text: zh ? '拍照上传流程' : 'Photo Capture & Upload Flow (中文)', link: '/zh/photo-capture-upload-flow' },
         { text: zh ? 'RTMP API' : 'RTMP API (中文)', link: '/api/RTMP_API' },
         { text: zh ? 'PoE Network API' : 'PoE Network API (中文)', link: '/api/PoE_Network_API' },
         { text: zh ? 'PIR Sensor API' : 'PIR Sensor API (中文)', link: '/api/PIR_SENSOR_API' },
