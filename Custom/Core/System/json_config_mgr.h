@@ -69,7 +69,8 @@ typedef struct {
      uint8_t ignore_time_s;      // Ignore time after interrupt (0-15, actual time = 0.5 + 0.5 * value seconds)
      uint8_t pulse_count;        // Pulse count (1-4, actual count = value + 1)
      uint8_t window_time_s;      // Window time (0-3, actual time = 2 + 2 * value seconds)
- } pir_trigger_config_t;
+     aicam_bool_t disable_in_preview;  // Disable PIR capture during preview (default: true)
+} pir_trigger_config_t;
  
  typedef struct {
      aicam_bool_t enable;
@@ -80,6 +81,22 @@ typedef struct {
      uint8_t weekdays[10]; // 0: all days, 1: Monday, 2: Tuesday, 3: Wednesday, 4: Thursday, 5: Friday, 6: Saturday, 7: Sunday
      aicam_timer_interval_mode_t interval_mode; // 0=normal (immediate), 1=scheduled (from start_time)
      uint32_t start_time;                       // Seconds since midnight, only for scheduled mode
+     uint32_t end_time;                         // Seconds since midnight, scheduled mode daily window end.
+                                                // Window is CLOSED [start, end]. May be < start_time (wraps
+                                                // past midnight; 00:00 with start > 0 ends at midnight).
+                                                // Only normal mode stores end == start (its full-day
+                                                // representation); the scheduled API rejects an equal pair.
+                                                // Legacy NVS without this key is migrated (one-shot) at
+                                                // load to a full-day window (end = start - 60s).
+     uint32_t anchor_time;                      // Normal interval mode: daily grid anchor, seconds since
+                                                // midnight. The rolling window [anchor, anchor+24h)
+                                                // crosses midnight — nodes keep flowing past 00:00
+                                                // (anchor 11:00 with a 5h interval -> 11:00 16:00 21:00
+                                                // 02:00 07:00, all one window); a new window opens at
+                                                // the NEXT anchor instant, never at midnight. 0 = not
+                                                // yet stamped (apply stamps
+                                                // it with the current time-of-day). Identical math to
+                                                // scheduled mode with a full-day window.
  } timer_trigger_config_t;
 
  typedef struct {
@@ -153,6 +170,7 @@ typedef struct {
     uint8_t authentication;                 // Authentication type (0=None, 1=PAP, 2=CHAP, 3=Auto)
     aicam_bool_t enable_roaming;            // Enable roaming
     uint8_t operator;                       // Mobile operator (0=Auto, 1=CMCC, 2=CUCC, 3=CTCC, etc.)
+    char plmn[8];                           // Manual PLMN code (MCC+MNC, 5-6 digits); empty = auto COPS=0
 } cellular_config_persist_t;
 
 /**
@@ -222,11 +240,12 @@ typedef struct {
     uint32_t ap_sleep_time;                 // AP sleep time in seconds
     char ssid[32];                          // AP SSID
     char password[64];                      // AP password
+    char wifi_country_code[NETIF_WIFI_COUNTRY_CODE_LEN]; // Legacy WiFi region (e.g. "us","cn"); applied at next boot
     network_scan_result_t known_networks[16]; // Known network configuration
     uint32_t known_network_count;           // Known network count
     
-    // Communication type settings
-    uint32_t preferred_comm_type;           // Preferred communication type (0=None, 1=WiFi, 2=Cellular, 3=PoE)
+    // Communication type settings (values = communication_type_t in communication_service.h)
+    uint32_t preferred_comm_type;           // 0=None, 1=WiFi, 2=HaLow, 3=Cellular, 4=PoE
     aicam_bool_t enable_auto_priority;      // Enable automatic priority-based switching
     
     // Cellular/4G settings
@@ -234,6 +253,32 @@ typedef struct {
     
     // PoE/Ethernet settings
     poe_config_persist_t poe;               // PoE configuration
+
+    // Wi-Fi HaLow last-connected info (no "known networks" list)
+    char halow_ssid[32];
+    char halow_password[64];
+    uint32_t halow_security;
+    char halow_country_code[NETIF_HALOW_COUNTRY_CODE_LEN];
+    char halow_bssid[18];
+    /** @ref POE_IP_MODE_DHCP or @ref POE_IP_MODE_STATIC */
+    uint32_t halow_ip_mode;
+    uint8_t halow_ip_addr[4];
+    uint8_t halow_netmask[4];
+    uint8_t halow_gateway[4];
+    /** HaLow TX power cap in dBm (0 = regulatory max). */
+    uint16_t halow_tx_power_dbm;
+    /** Foreground scan dwell time per channel (ms). */
+    uint32_t halow_scan_dwell_ms;
+    /** Fixed TX MCS 0..9, or -1 for automatic rate control. */
+    int32_t halow_rc_mcs;
+    /** TX bandwidth 1/2/4/8 MHz, or -1 for automatic. */
+    int32_t halow_rc_bw_mhz;
+    /** Guard interval: 0 short, 1 long, or -1 for automatic. */
+    int32_t halow_rc_gi;
+    /** HaLow chip power save: 0 disabled, 1 enabled. */
+    uint8_t halow_ps_mode;
+    /** Auto-learned HaLow S1G join channel for selective scan (0: off). Not user-facing. */
+    uint8_t halow_join_channel;
 } network_service_config_t;
  
  // Power mode configuration structure
@@ -374,6 +419,10 @@ typedef enum {
 #define IMAGE_ISP_MODE_INDOOR   1u
 #define IMAGE_ISP_MODE_CUSTOM   255u   /* 0xFF: use isp_config_t from NVS when valid */
 
+/** Stored in image_config_t.grayscale — ISP luma matrix when enabled (PIPE1 stays RGB565). */
+#define IMAGE_GRAYSCALE_OFF     AICAM_FALSE
+#define IMAGE_GRAYSCALE_ON      AICAM_TRUE
+
 //device service configuration structure
 typedef struct {
     uint32_t brightness;                     // image brightness (0-100)
@@ -381,6 +430,7 @@ typedef struct {
     aicam_bool_t horizontal_flip;            // image horizontal flip
     aicam_bool_t vertical_flip;              // image vertical flip
     uint32_t isp_mode;                       // IMAGE_ISP_MODE_OUTDOOR(0) / INDOOR(1) / CUSTOM
+    aicam_bool_t grayscale;                  // AICAM_TRUE: ISP grayscale overlay (PIPE1 RGB565)
     uint32_t aec;                            // image auto exposure control (0=manual, 1=auto)
     uint32_t startup_skip_frames;            // frames to skip on camera startup for stabilization (1-300)
     uint32_t fast_capture_skip_frames;       // frames to skip for fast capture (number of skipped frames for snapshot capture)
@@ -513,6 +563,9 @@ typedef struct {
     uint32_t brightness_level;               // brightness level (0-100)
     aicam_bool_t auto_trigger_enabled;       // auto trigger enabled
     uint32_t light_threshold;                // light threshold
+    aicam_bool_t fill_light_while_streaming; // keep the light in sync with this config while the
+                                             // device runs (regardless of stream viewers); runtime
+                                             // captures no longer flash it; wakeup path unaffected
 } light_config_t;
 
 typedef struct {
@@ -539,6 +592,95 @@ typedef struct {
     char secret[WEBHOOK_SECRET_MAX_LEN];          // Auth token/credentials
 } webhook_config_t;
 
+/* ==================== Capture Upload Configuration ==================== */
+
+/** Capture-mode: when the device wakes/triggers a snapshot, how should the result be uploaded. */
+typedef enum {
+    CAPTURE_MODE_INSTANT    = 0,  /* Snap-and-upload, retry queue available */
+    CAPTURE_MODE_BATCH      = 1,  /* Accumulate N, then flush */
+    CAPTURE_MODE_SCHEDULED  = 2,  /* Flush at scheduled minutes-of-day */
+    CAPTURE_MODE_LOCAL_ONLY = 3,  /* Store only, no upload */
+} capture_mode_t;
+
+/** Capture storage target. */
+typedef enum {
+    CAPTURE_STORE_AUTO  = 0, /* Prefer SD, fall back to internal flash */
+    CAPTURE_STORE_FLASH = 1,
+    CAPTURE_STORE_SD    = 2,
+    CAPTURE_STORE_NONE  = 3, /* In-memory only (INSTANT mode only, no retry possible) */
+} capture_storage_t;
+
+/** Behavior when the chosen storage is full. */
+typedef enum {
+    STORAGE_POLICY_WRAP = 0, /* Delete oldest sent/local/failed/pending until enough free */
+    STORAGE_POLICY_STOP = 1, /* Reject this capture and raise alarm */
+} storage_policy_t;
+
+/** Upload protocol selection (per-record, derived from this config at enqueue time). */
+typedef enum {
+    UPLOAD_PROTO_MQTT    = 0,
+    UPLOAD_PROTO_WEBHOOK = 1,
+} upload_proto_t;
+
+#define CAPTURE_SCHEDULE_MAX_NODES  8
+#define CAPTURE_UPLOAD_CFG_VERSION  1
+
+typedef struct {
+    uint32_t          version;            /* schema version */
+    capture_mode_t    mode;
+    capture_storage_t storage;
+    storage_policy_t  policy;
+    upload_proto_t    upload_protocol;
+
+    /* Retry (mode != LOCAL_ONLY, storage != NONE) */
+    aicam_bool_t      retry_enable;
+    uint8_t           retry_max_attempts;     /* default 5; >max → marked failed */
+
+    /* Batch (mode == BATCH) */
+    uint16_t          batch_count;            /* default 10, range 1..50 */
+
+    /* Schedule (mode == SCHEDULED) */
+    uint8_t           schedule_node_count;
+    uint16_t          schedule_minutes[CAPTURE_SCHEDULE_MAX_NODES]; /* 0..1439 */
+
+    /* Housekeeping */
+    uint32_t          keep_sent_hours;        /* 0 = delete on upload success;
+                                               * CAPUP_KEEP_SENT_MAX_HOURS =
+                                               * keep forever (delete only on
+                                               * full / count cap); default = max */
+    uint32_t          max_pending_records;    /* hard cap on queue length; default 200 */
+
+    /* Internal-flash (littlefs) record cap - the TOTAL across all states
+     * (pending + sent + failed + local). Range CAPUP_FLASH_RECORDS_MIN..
+     * _MAX, default = CAPUP_FLASH_RECORDS_DEFAULT. A large live tree slows
+     * the per-boot full-tree alloc scan and the count sweeps (longer wake
+     * captures, higher average power); SD storage has no such limitation.
+     * Web-configurable. */
+    uint32_t          flash_max_records;
+
+    /* Wake-capture network: which netif to bring up on the wake path.
+     * Values = communication_type_t (communication_service.h).
+     * COMM_TYPE_NONE (0) = default (use system comm-pref logic, init all). */
+    uint32_t          upload_comm_type;
+} capture_upload_config_t;
+
+/* Upper bound of keep_sent_hours. A value >= this means "keep forever": no
+ * age-based purge at all - records are deleted ONLY by the storage-full or
+ * record-count-limit cleanup. This protects history on user-swapped SD cards
+ * (a time purge must not delete records it didn't create just for being old).
+ * 0 keeps its original meaning: delete immediately after a successful upload.
+ * Overflow audit: the only arithmetic on this field is
+ * (uint64_t)keep_sent_hours * 3600 in purge_old_sent - 72000h * 3600 =
+ * 259,200,000s, fits uint32 (let alone the uint64 it's computed in). */
+#define CAPUP_KEEP_SENT_MAX_HOURS  (72000u)   /* ~= 8.2 years; sentinel = keep forever */
+
+/* Internal-flash total record cap: range and default. The cap counts ALL
+ * record states combined; units without the NVS key yet (and 0/out-of-range
+ * writes) get the default. */
+#define CAPUP_FLASH_RECORDS_MIN     (16u)
+#define CAPUP_FLASH_RECORDS_MAX     (256u)
+#define CAPUP_FLASH_RECORDS_DEFAULT (32u)
+
 // RTMP config is now part of video_stream_mode_config_t
 // These macros are kept for compatibility
 #define RTMP_CONFIG_MAX_URL_LENGTH         256
@@ -561,6 +703,7 @@ typedef struct {
     mqtt_service_config_t mqtt_service;
     auth_mgr_config_t auth_mgr;
     webhook_config_t webhook_config;
+    capture_upload_config_t capture_upload; /* Capture/upload mode, storage, retry, schedule */
     // RTMP config is now in work_mode_config.video_stream_mode
  } aicam_global_config_t;
  
@@ -982,6 +1125,13 @@ aicam_result_t json_config_set_poe_ip_mode(poe_ip_mode_t mode);
 aicam_result_t json_config_save_poe_last_dhcp_ip(const uint8_t *ip_addr);
 
 /**
+ * @brief Save the auto-learned HaLow join channel (selective scan hint)
+ * @param channel S1G channel number (0 disables selective scan)
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_save_halow_join_channel(uint8_t channel);
+
+/**
  * @brief Get PoE status code string
  * @param status Status code
  * @return const char* Status string
@@ -1013,6 +1163,21 @@ aicam_result_t json_config_get_webhook_config(webhook_config_t *config);
  * @brief Set webhook configuration
  */
 aicam_result_t json_config_set_webhook_config(const webhook_config_t *config);
+
+/**
+ * @brief Get capture-upload configuration
+ */
+aicam_result_t json_config_get_capture_upload_config(capture_upload_config_t *config);
+
+/**
+ * @brief Set capture-upload configuration (persisted to NVS)
+ */
+aicam_result_t json_config_set_capture_upload_config(const capture_upload_config_t *config);
+
+/**
+ * @brief Fill capture-upload struct with safe defaults
+ */
+void json_config_capture_upload_defaults(capture_upload_config_t *config);
 
 /**
  * @brief Get webhook custom CA certificate (from LittleFS file)

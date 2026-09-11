@@ -1,6 +1,6 @@
 /**
  * @file rtsp_service.c
- * @brief RTSP Service implementation — lifecycle, video_hub subscription, client management
+ * @brief RTSP Service implementation - lifecycle, video_hub subscription, client management
  *
  * Uses a single server task with select() to multiplex all client connections,
  * avoiding per-client thread creation that can exhaust ThreadX TCB pool.
@@ -288,7 +288,7 @@ bind_ok:
         LOG_SVC_ERROR("RTSP: Failed to subscribe to video hub (id=%d)", g_rtsp_ctx.hub_subscriber_id);
     }
 
-    /* Set running flag BEFORE creating task — the task checks this flag on entry */
+    /* Set running flag BEFORE creating task - the task checks this flag on entry */
     g_rtsp_ctx.running = AICAM_TRUE;
     g_rtsp_ctx.service_state = SERVICE_STATE_RUNNING;
 
@@ -341,7 +341,7 @@ aicam_result_t rtsp_service_stop(void)
 
     /* Wait for the server task to exit (up to 3 s).
      * The task closes all sockets itself after exiting the select loop,
-     * so we must NOT close them here — that would be a double-close. */
+     * so we must NOT close them here - that would be a double-close. */
     if (g_rtsp_ctx.server_task_handle) {
         uint32_t wait_start = osKernelGetTickCount();
         do {
@@ -709,7 +709,7 @@ static aicam_result_t rtsp_on_frame(const video_hub_frame_t *frame, void *user_d
         /*
          * Generate RTP timestamp from frame counter, not from source timestamp.
          * The encoder's frame->timestamp is in seconds (Unix time), which lacks
-         * sub-second resolution — all frames within the same second would get
+         * sub-second resolution - all frames within the same second would get
          * the same RTP timestamp, causing VLC to freeze after one frame.
          * Instead, use a per-client frame counter at 90kHz / 30fps = 3000 ticks/frame.
          */
@@ -812,7 +812,7 @@ static void rtsp_handle_client_data(rtsp_client_t *client)
                      MSG_DONTWAIT);
         if (n <= 0) {
             if (n == 0 || total == 0) {
-                /* Connection closed or no data — disconnect */
+                /* Connection closed or no data - disconnect */
                 LOG_SVC_INFO("RTSP: Client recv=%d total=%lu, disconnecting session=%s",
                              n, (unsigned long)total, client->session_id);
                 osMutexAcquire(g_rtsp_ctx.mutex, osWaitForever);
@@ -850,7 +850,7 @@ static void rtsp_handle_client_data(rtsp_client_t *client)
         LOG_SVC_WARN("RTSP: Request handling failed ret=%d session=%s", ret, client->session_id);
     }
 
-    /* Check for pipelined requests — data remaining after \r\n\r\n */
+    /* Check for pipelined requests - data remaining after \r\n\r\n */
     {
         const char *end = strstr(s_recv_buf, "\r\n\r\n");
         if (end) {
@@ -956,7 +956,7 @@ static void rtsp_server_task(void *arg)
         }
     }
 
-    /* Task is exiting — close all sockets HERE, from the same thread that
+    /* Task is exiting - close all sockets HERE, from the same thread that
      * called select().  lwIP's select_waiting is only decremented inside
      * select() itself, so close() from ANY other thread will leave
      * select_waiting != 0 on the socket slot.  When alloc_socket() later
@@ -979,7 +979,7 @@ static void rtsp_server_task(void *arg)
     for (int i = 0; i < RTSP_MAX_CLIENTS; i++) {
         if (g_rtsp_ctx.clients[i].in_use) {
             g_rtsp_ctx.clients[i].playing = AICAM_FALSE;
-            /* Take local copies, set to -1, then close — same pattern as
+            /* Take local copies, set to -1, then close - same pattern as
              * listen socket above, prevents double-close if task is killed. */
             int tcp_fd = g_rtsp_ctx.clients[i].tcp_socket;
             int rtp_fd = g_rtsp_ctx.clients[i].rtp_socket;

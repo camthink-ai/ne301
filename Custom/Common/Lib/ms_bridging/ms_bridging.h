@@ -23,7 +23,7 @@ extern "C" {
 #endif
 
 #define MS_BR_BUF_MAX_SIZE                      (512)
-#define MS_BR_FRAME_BUF_NUM                     (4)
+#define MS_BR_FRAME_BUF_NUM                     (8)
 #define MS_BR_FRAME_SEND_TIMEOUT_MS             (100)
 #define MS_BR_WAIT_ACK_TIMEOUT_MS               (500)
 #define MS_BR_WAIT_ACK_DELAY_MS                 (20)

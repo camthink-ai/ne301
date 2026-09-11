@@ -170,8 +170,13 @@ static void notify_event(rtmp_event_type_t event, int error_code, const char *me
 static void build_full_url(char *full_url, size_t max_len)
 {
     if (g_rtmp_ctx.config.stream_key[0] != '\0') {
-        snprintf(full_url, max_len, "%s/%s",
-                 g_rtmp_ctx.config.url, g_rtmp_ctx.config.stream_key);
+        /* URL may be entered with or without a trailing '/' — only add the
+         * separator when it's missing, else "live/" + key becomes "live//key". */
+        size_t url_len = strlen(g_rtmp_ctx.config.url);
+        const char *sep =
+            (url_len > 0 && g_rtmp_ctx.config.url[url_len - 1] == '/') ? "" : "/";
+        snprintf(full_url, max_len, "%s%s%s",
+                 g_rtmp_ctx.config.url, sep, g_rtmp_ctx.config.stream_key);
     } else {
         strncpy(full_url, g_rtmp_ctx.config.url, max_len - 1);
         full_url[max_len - 1] = '\0';
@@ -719,6 +724,20 @@ aicam_result_t rtmp_service_init(void *config)
  * SERVICE_READY_STA flag because communication_service_start() returns while
  * netif init is still asynchronous (communication_service.c:1001-1017).
  */
+/* rtmp_enable is the boot-time intent, but the web switch (or the RTSP
+ * mutual-exclusion path) can clear it at any moment — including while the
+ * auto-start task is still waiting for the network. Re-read it before
+ * committing to a push. A failed read counts as "still enabled": only a
+ * positive false stands the task down. */
+static aicam_bool_t rtmp_autostart_still_enabled(void)
+{
+    video_stream_mode_config_t vs_config;
+    if (json_config_get_video_stream_mode(&vs_config) == AICAM_OK) {
+        return vs_config.rtmp_enable;
+    }
+    return AICAM_TRUE;
+}
+
 static void rtmp_autostart_task(void *argument)
 {
     (void)argument;
@@ -727,6 +746,7 @@ static void rtmp_autostart_task(void *argument)
     // still gets its push when the link finally comes up.
     aicam_result_t result = AICAM_ERROR;
     uint32_t waited_ms = 0;
+    aicam_bool_t disabled_while_waiting = AICAM_FALSE;
     while (waited_ms < RTMP_AUTOSTART_STA_BUDGET_MS) {
         if (!g_rtmp_ctx.autostart_task_running || !g_rtmp_ctx.running) {
             break;
@@ -736,15 +756,30 @@ static void rtmp_autostart_task(void *argument)
         if (result == AICAM_OK) {
             break;
         }
+        /* Re-check the config each slice: without this, a switch-off during
+         * the wait still pushes once the network finally comes up. */
+        if (!rtmp_autostart_still_enabled()) {
+            disabled_while_waiting = AICAM_TRUE;
+            break;
+        }
         waited_ms += RTMP_AUTOSTART_STA_SLICE_MS;
     }
 
-    if (result != AICAM_OK) {
+    if (disabled_while_waiting) {
+        LOG_SVC_INFO("RTMP auto-start: rtmp_enable cleared while waiting for network, standing down");
+    } else if (result != AICAM_OK) {
         LOG_SVC_WARN("RTMP auto-start: no STA after %lu ms (%d), leaving push idle",
                      (unsigned long)waited_ms, result);
     } else {
         for (uint32_t attempt = 1; attempt <= RTMP_AUTOSTART_MAX_ATTEMPTS; attempt++) {
             if (!g_rtmp_ctx.autostart_task_running || !g_rtmp_ctx.running) {
+                break;
+            }
+            /* Same race on the far side of the wait: the flag may have been
+             * cleared inside the last slice, right before the network went
+             * ready — or during a retry backoff. */
+            if (!rtmp_autostart_still_enabled()) {
+                LOG_SVC_INFO("RTMP auto-start: rtmp_enable cleared, standing down");
                 break;
             }
             // Someone called the API first; leave their stream alone. ERROR

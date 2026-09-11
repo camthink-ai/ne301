@@ -18,6 +18,8 @@ export interface ChangePasswordReq {
 const login = {
     loginIn: (data: LoginReq): Promise<LoginRes> => request.post('/api/v1/login', data),
     changePassword: (data: ChangePasswordReq) => request.post('/api/v1/change-password', data),
+    /** Verify password without showing automatic error toast (used by format confirmation etc.) */
+    verifyPassword: (password: string) => request.post('/api/v1/login', { password }, { skipErrorToast: true } as any),
 }
 
 export default login;

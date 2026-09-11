@@ -19,6 +19,7 @@
       "DEVICE_BUSY": "Device Busy",
       "OPERATION_TIMEOUT": "Operation Timeout",
       "STORAGE_FULL": "Storage Full",
+      "DIR_NOT_EMPTY": "Failed to delete the folder. Some files may be in use or the folder is too large. Retry or empty it manually.",
       "MODEL_INVALID": "Model Invalid",
       "NETWORK_ERROR": "Network Error",
       "CAMERA_ERROR": "Camera Error",

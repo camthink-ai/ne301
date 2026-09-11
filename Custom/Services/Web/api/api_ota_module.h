@@ -30,6 +30,11 @@ aicam_result_t web_api_register_ota_module(void);
  */
 void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data);
 
+/* First field of ota_upload_ctx_t: the event loop routes detached
+ * streaming connections by this tag (see web_server.c) so concurrent file
+ * and OTA uploads cannot cross-dispatch into each other's context. */
+#define OTA_UPLOAD_CTX_MAGIC 0x4F544150u  /* 'OTAP' */
+
 /**
  * @brief OTA pre-check handler - POST /api/v1/system/ota/precheck
  * @param ctx HTTP request context
@@ -57,6 +62,31 @@ aicam_result_t ota_upgrade_local_handler(http_handler_context_t *ctx);
  * @return Operation result
  */
 aicam_result_t ota_export_firmware_handler(http_handler_context_t *ctx);
+
+/**
+ * @brief OTA bundle pre-check - POST /api/v1/system/ota/bundle/precheck
+ * @details Body: the 4096-byte bundle header. The device validates it against
+ *          its own partition table and returns the burn plan.
+ * @param ctx HTTP request context
+ * @return Operation result
+ */
+aicam_result_t ota_bundle_precheck_handler(http_handler_context_t *ctx);
+
+/**
+ * @brief Arm a prechecked bundle session - POST /api/v1/system/ota/bundle/begin
+ * @param ctx HTTP request context
+ * @return Operation result
+ */
+aicam_result_t ota_bundle_begin_handler(http_handler_context_t *ctx);
+
+/**
+ * @brief Finish/abort a bundle session - POST /api/v1/system/ota/bundle/finish
+ * @details Body: {"result":"ok"|"abort"}. "ok" sets the WiFi update-pending
+ *          flag; both clear the session.
+ * @param ctx HTTP request context
+ * @return Operation result
+ */
+aicam_result_t ota_bundle_finish_handler(http_handler_context_t *ctx);
 
 /**
  * @brief Check OTA upload timeout and reset state if necessary

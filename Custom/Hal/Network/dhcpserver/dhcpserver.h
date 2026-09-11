@@ -47,8 +47,9 @@ typedef struct dhcps_msg {
 }dhcps_msg;
 
 typedef struct {
-        u8_t is_active;
-        u8_t is_used;
+        u8_t is_active;      /* 1 = currently associated with the AP (may DHCP)   */
+        u8_t is_used;        /* 1 = slot occupied (active OR cached for stickiness) */
+        u32_t seq;           /* monotonic stamp: larger = more recently active (LRU) */
         u8_t Client_Mac[6];
         ip4_addr_t Client_Address;
 } dhcps_client_t;
@@ -103,6 +104,7 @@ int dhcps_del_client_by_mac(uint8_t *mac);
 void *dhcps_option_info(u8_t op_id, u32_t opt_len);
 void dhcps_set_option_info(u8_t op_id, void *opt_info, u32_t opt_len);
 bool dhcp_search_ip_on_mac(u8_t *mac, ip4_addr_t *ip);
+int dhcps_get_clients(dhcps_client_t *out, int max);
 void dhcps_dns_setserver(const ip_addr_t *dnsserver);
 ip4_addr_t dhcps_dns_getserver(void);
 void dhcps_set_new_lease_cb(dhcps_cb_t cb);

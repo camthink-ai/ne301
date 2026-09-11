@@ -294,6 +294,38 @@ static int VENC_H264_EncodeFrame(struct VENC_Context *p_ctx, uint8_t *p_in, uint
 
     ret = H264EncStrmEncode(p_ctx->hdl, &enc_in, p_enc_out, NULL, NULL, NULL);
     if (ret != H264ENC_FRAME_READY) {
+        /* H264ENC_HW_TIMEOUT (-11) = ASIC_STATUS_HW_TIMEOUT (0x040, VENC_SWREG1
+         * bit6) set by the VENC SILICON itself — NOT the EWL 500ms SW wait
+         * (EWL_TIMEOUT=500UL): dur is a few~tens of ms, so EWLWaitHwRdy returned OK
+         * (timeout IRQ delivered) and EncAsicCheckStatus then read the HW-set 0x040.
+         *
+         * This is ST errata ES0620 §2.7.1 ("VENC hardware self-reset after internal
+         * timeout is unstable"): the VENC has an internal crash/timeout detector; on
+         * a pipeline fault it sets 0x040 and attempts a self-reset that is unstable
+         * and can deadlock the VENC (not recoverable even by async HW reset). The
+         * documented workaround = handle the timeout in SOFTWARE, not the HW
+         * self-reset — which we do: timeout IRQ is enabled (ENCH1_TIMEOUT_INTERRUPT)
+         * so EWLWaitHwRdy wakes, EncAsicCheckStatus reads 0x040, we stop/release the
+         * HW and restart next frame. Hence self-recovering (1 dropped frame), NOT a
+         * permanent hang.
+         *
+         * NOT a frame-time ceiling: a frame can trip it at 9ms (the VENC aborted
+         * mid-encode — the frame never completed), while healthy frames run ~14-19ms
+         * to FRAME_READY. A total-time ceiling would trip those healthy frames every
+         * time; it does not. The watchdog has no threshold register (HEncIntTimeout
+         * is only an IRQ enable) so it can't be widened — and shouldn't be: widening
+         * would just mask a real crash as a silent hang.
+         *
+         * Empirically content-sensitive: STATIC scenes fail often, MOVING scenes
+         * basically never. That rules out PSRAM bandwidth contention (a moving frame
+         * writes more recon + bitstream = MORE bus traffic yet fails less; CSI2/NPU/
+         * CPU traffic doesn't change with the scene). The fault is VENC-internal, on
+         * near-static / skip-heavy P-frame paths the silicon mishandles. Silicon bug,
+         * no root cure. Mitigations to TEST (change what the VENC encodes): shorten
+         * the IDR interval (more I-frames -> dodge the inter/SKIP crash path); or
+         * lower resolution. Raising ai inference_interval_ms was the old (overturned)
+         * bandwidth theory — harmless but doesn't target this. */
+        // return ret;
         /* The caller collapses every failure to -1, which makes an output
            buffer overflow indistinguishable from a hardware timeout in the
            log. Keep the real code for the escalation line, which fires at

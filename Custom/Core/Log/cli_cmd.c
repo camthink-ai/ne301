@@ -58,7 +58,7 @@ static int ls_cmd(int argc, char* argv[])
         strncpy(local_path, argv[1], MAX_FILENAME_LEN - 1);
         local_path[MAX_FILENAME_LEN - 1] = '\0';
     } else {
-        strncpy(local_path, ".", MAX_FILENAME_LEN - 1);
+        strncpy(local_path, "/", MAX_FILENAME_LEN - 1);
         local_path[MAX_FILENAME_LEN - 1] = '\0';
     }
     void *dd = file_opendir(local_path);
@@ -66,14 +66,15 @@ static int ls_cmd(int argc, char* argv[])
         LOG_SIMPLE("ls: cannot open directory %s\r\n", local_path);
         return -1;
     }
-    struct lfs_info info;
+    // Union large enough for both lfs_info (264B) and sd_info (~282B)
+    union { struct lfs_info lfs; char _pad[300]; } entry;
     int ret;
     LOG_SIMPLE("\r\n");
-    while ((ret = file_readdir(dd, (char*)&info)) == 1) {
-        if (info.type == LFS_TYPE_DIR) {
-            LOG_SIMPLE("%-20s <DIR>\r\n", info.name);
+    while ((ret = file_readdir(dd, (char*)&entry)) == 1) {
+        if (entry.lfs.type == LFS_TYPE_DIR) {
+            LOG_SIMPLE("%-20s <DIR>\r\n", entry.lfs.name);
         } else {
-            LOG_SIMPLE("%-20s %10lu bytes\r\n", info.name, (unsigned long)info.size);
+            LOG_SIMPLE("%-20s %10lu bytes\r\n", entry.lfs.name, (unsigned long)entry.lfs.size);
         }
     }
     if (ret < 0) {
@@ -617,12 +618,89 @@ static int sdformat_cmd(int argc, char* argv[])
     return 0;
 }
 
-static int sdinfo_cmd(int argc, char* argv[]) 
+static int sdinfo_cmd(int argc, char* argv[])
 {
     sd_disk_info_t info;
     if (sd_get_disk_info(&info) == 0) {
         LOG_SIMPLE("sd_get_disk_info: mode %d, fs_type:%s, total: %ld Kbytes, free: %ld Kbytes\r\n", info.mode, info.fs_type, info.total_KBytes, info.free_KBytes);
     }
+    return 0;
+}
+
+static int sdspeed_cmd(int argc, char* argv[])
+{
+    sd_speed_info_t s;
+    if (sd_get_speed_info(&s) != 0) {
+        LOG_SIMPLE("SD card not ready (init failed or not inserted)\r\n");
+        return -1;
+    }
+    uint32_t mhz_int  = s.bus_clk_hz / 1000000UL;
+    uint32_t mhz_frac = (s.bus_clk_hz % 1000000UL) / 10000UL;
+    LOG_SIMPLE("=== SD Speed Info ===\r\n");
+    LOG_SIMPLE("Card type    : %s\r\n", s.card_type);
+    LOG_SIMPLE("Card cap     : %s (capability, not active mode)\r\n", s.card_speed);
+    LOG_SIMPLE("Bus width    : %d bit\r\n", s.bus_width);
+    LOG_SIMPLE("Bus clock    : %lu Hz (%lu.%02lu MHz)\r\n", s.bus_clk_hz, mhz_int, mhz_frac);
+    LOG_SIMPLE("Src clock    : %lu Hz\r\n", s.src_clk_hz);
+    LOG_SIMPLE("CLKDIV       : %lu\r\n", s.clkdiv);
+    LOG_SIMPLE("HS switched  : %s\r\n", s.hs_switched ? "yes (card in High Speed)" : "no (card in Default Speed)");
+    return 0;
+}
+
+static int sdswitch_cmd(int argc, char* argv[])
+{
+    if (argc < 2) {
+        LOG_SIMPLE("Usage: sdswitch <high|default|auto|overclock>\r\n");
+        LOG_SIMPLE("  high      50MHz + CMD6 HS (spec-compliant, boot default)\r\n");
+        LOG_SIMPLE("  default   slow bus to 25MHz\r\n");
+        LOG_SIMPLE("  auto      best supported (collapses to high)\r\n");
+        LOG_SIMPLE("  overclock 100MHz (CLKDIV=0, OUT OF SPEC - test only)\r\n");
+        return -1;
+    }
+    sd_speed_mode_e m;
+    if      (strcmp(argv[1], "high")      == 0) m = SD_SPEED_HIGH;
+    else if (strcmp(argv[1], "default")   == 0) m = SD_SPEED_DEFAULT;
+    else if (strcmp(argv[1], "auto")      == 0) m = SD_SPEED_AUTO;
+    else if (strcmp(argv[1], "overclock") == 0) m = SD_SPEED_OVERCLOCK;
+    else { LOG_SIMPLE("Usage: sdswitch <high|default|auto|overclock>\r\n"); return -1; }
+
+    if (sd_set_speed_mode(m) != 0) {
+        LOG_SIMPLE("sd_set_speed_mode(%s) failed\r\n", argv[1]);
+        return -1;
+    }
+    sd_speed_info_t s;
+    if (sd_get_speed_info(&s) == 0) {
+        LOG_SIMPLE("switched -> bus clock %lu Hz, HS switched: %s\r\n",
+                   s.bus_clk_hz, s.hs_switched ? "yes" : "no");
+    }
+    return 0;
+}
+
+static int sdrwtest_cmd(int argc, char* argv[])
+{
+    uint32_t total_kb = 2048;
+    uint32_t chunk_kb = 32;
+    if (argc >= 2) total_kb = (uint32_t)atoi(argv[1]);
+    if (argc >= 3) chunk_kb = (uint32_t)atoi(argv[2]);
+    if (total_kb == 0) total_kb = 2048;
+    if (chunk_kb == 0) chunk_kb = 32;
+
+    LOG_SIMPLE("SD rwtest: total=%luKB chunk=%luKB (blocks SD I/O for duration)...\r\n",
+               (unsigned long)total_kb, (unsigned long)chunk_kb);
+    uint32_t w_kbps = 0, r_kbps = 0;
+    int r = sd_speed_test(total_kb, chunk_kb, &w_kbps, &r_kbps);
+    if (r != 0) {
+        LOG_SIMPLE("sd_speed_test failed: %d\r\n", r);
+        return -1;
+    }
+    LOG_SIMPLE("Write: %lu KiB/s (%lu.%02lu MB/s)\r\n",
+               (unsigned long)w_kbps,
+               (unsigned long)(w_kbps / 1024UL),
+               (unsigned long)((w_kbps % 1024UL) * 100UL / 1024UL));
+    LOG_SIMPLE("Read : %lu KiB/s (%lu.%02lu MB/s)\r\n",
+               (unsigned long)r_kbps,
+               (unsigned long)(r_kbps / 1024UL),
+               (unsigned long)((r_kbps % 1024UL) * 100UL / 1024UL));
     return 0;
 }
 
@@ -972,11 +1050,14 @@ __attribute__((unused)) static void ota_header_print(const ota_header_t *header)
     printf("Firmware CRC32: 0x%08lX\n", header->fw_crc32);
     
     printf("\n=== Target Information ===\r\n");
-    printf("Target Address: 0x%08lX\r\n", header->target_addr);
+    printf("Part Table CRC: 0x%08lX\r\n", header->part_table_crc);
     printf("Target Size: %lu bytes\r\n", header->target_size);
     printf("Target Offset: 0x%08lX\r\n", header->target_offset);
     printf("Target Partition: %s\r\n", header->target_partition);
     printf("Hardware Version: 0x%08lX\r\n", header->hw_version);
+    printf("Device Model: 0x%04lX%s\r\n", (unsigned long)header->device_model,
+           header->device_model == 0 ? " (unstamped)" :
+           (header->device_model == OTA_DEVICE_MODEL ? " (match)" : " (MISMATCH)"));
     printf("Chip ID: 0x%08lX\r\n", header->chip_id);
     
     printf("========================\r\n");
@@ -1045,10 +1126,10 @@ static int fw_version_cmd(int argc, char* argv[])
 #endif
     
     // MODEL (check if AI_1 is active)
-    FirmwareType model_type = json_config_get_ai_1_active() ? FIRMWARE_AI_1 : FIRMWARE_DEFAULT_AI;
+    FirmwareType model_type = json_config_get_ai_1_active() ? FIRMWARE_AI_2 : FIRMWARE_AI_1;
     get_fw_version_str(model_type, version_str, sizeof(version_str));
     LOG_SIMPLE("MODEL:    %s (%s)\r\n", version_str, 
-               model_type == FIRMWARE_AI_1 ? "AI_1" : "AI_DEFAULT");
+               model_type == FIRMWARE_AI_2 ? "AI_2" : "AI_1");
     
     LOG_SIMPLE("\r\n====================================\r\n");
     
@@ -1127,6 +1208,9 @@ debug_cmd_reg_t file_cmd_table[] = {
     {"format", "File system formatting",  format_cmd},
     {"sdformat", "SD card formatting",    sdformat_cmd},
     {"sdinfo", "Show SD card info",      sdinfo_cmd},
+    {"sdspeed", "Show SD bus speed/mode", sdspeed_cmd},
+    {"sdswitch", "Switch SD speed mode. sdswitch <high|default|auto|overclock>", sdswitch_cmd},
+    {"sdrwtest", "SD rw speed test. sdrwtest [total_kb] [chunk_kb]", sdrwtest_cmd},
     {"seektest", "Test file seek", seektest_cmd},
     {"sdfile", "Switch to sd filesystem", sdfile_cmd},
     {"flashfile", "Switch to flash filesystem", flashfile_cmd},

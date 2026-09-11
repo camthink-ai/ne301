@@ -1,5 +1,5 @@
-import { useState } from 'preact/hooks';
-import { Outlet } from 'react-router-dom';
+import { useState, useEffect } from 'preact/hooks';
+import { Outlet, useNavigate } from 'react-router-dom';
 
 import Menu from './pc/menu';
 import SvgIcon from '@/components/svg-icon';
@@ -12,12 +12,65 @@ import { Link } from 'react-router-dom';
 import DeviceInfo from './pc/deviceInfo';
 import { useIsMobile } from '@/hooks/use-mobile';
 import Log from './log';
+import systemApis from '@/services/api/system';
+import { useLingui } from '@lingui/react';
+import {
+    Dialog,
+    DialogContent,
+    DialogHeader,
+    DialogTitle,
+    DialogFooter,
+    DialogDescription,
+} from '@/components/dialog';
+
+interface VersionCheckResult {
+    fsbl_mismatch: boolean;
+    wifi_mismatch: boolean;
+    expected_fsbl: string;
+    current_fsbl: string;
+    expected_wifi: string;
+    current_wifi: string;
+}
 
 export default function Layout() {
-  const { isValidateToken } = useAuthStore();
-  const [showMenu, setShowMenu] = useState(false);
-  const isMobile = useIsMobile()
-  const [isOpen, setIsOpen] = useState(false)
+    const { isValidateToken } = useAuthStore();
+    const [showMenu, setShowMenu] = useState(false);
+    const isMobile = useIsMobile();
+    const [isOpen, setIsOpen] = useState(false);
+    const navigate = useNavigate();
+    const { i18n } = useLingui();
+    const { versionCheckReq } = systemApis;
+
+    // --- firmware version mismatch dialogs (FSBL first, then WiFi) ---
+    const [fsblCheck, setFsblCheck] = useState<VersionCheckResult | null>(null);
+    const [wifiCheck, setWifiCheck] = useState<VersionCheckResult | null>(null);
+    const [showFsblDialog, setShowFsblDialog] = useState(false);
+    const [showWifiDialog, setShowWifiDialog] = useState(false);
+
+    useEffect(() => {
+        if (!isValidateToken) return;
+        if (sessionStorage.getItem('_vc_checked')) return;
+        versionCheckReq()
+            .then((res: any) => {
+                sessionStorage.setItem('_vc_checked', '1');
+                const data = res.data as VersionCheckResult;
+                setFsblCheck(data);
+                setWifiCheck(data);
+                if (data.fsbl_mismatch) {
+                    setShowFsblDialog(true);
+                } else if (data.wifi_mismatch) {
+                    setShowWifiDialog(true);
+                }
+            })
+            .catch(() => { /* version-check endpoint not available yet */ });
+    }, [isValidateToken]);
+
+    const handleFsblDismiss = () => {
+        setShowFsblDialog(false);
+        if (fsblCheck?.wifi_mismatch) setShowWifiDialog(true);
+    };
+
+    const handleWifiDismiss = () => setShowWifiDialog(false);
   const handleOpenLogs = () => {
     setShowMenu(false)
     setIsOpen(true)
@@ -78,6 +131,60 @@ export default function Layout() {
       <main className="flex-1 overflow-auto w-full relative h-full">
         <Outlet />
       </main>
+
+      {/* FSBL version mismatch dialog — shown first (FSBL takes priority) */}
+      <Dialog open={showFsblDialog} onOpenChange={handleFsblDismiss}>
+        <DialogContent className="md:max-w-md mx-4">
+          <DialogHeader>
+            <div className="flex items-center gap-2">
+              <SvgIcon icon="hint" className="w-5 h-5 text-yellow-500" />
+              <DialogTitle>
+                {i18n._('sys.system_management.fw_mismatch_fsbl_title')}
+              </DialogTitle>
+            </div>
+            <DialogDescription className="pt-2 text-left">
+              {i18n._('sys.system_management.fw_mismatch_fsbl_desc')
+                .replace('{current}', fsblCheck?.current_fsbl || '?')
+                .replace('{expected}', fsblCheck?.expected_fsbl || '?')}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="mt-4">
+            <Button variant="outline" className="w-1/2 md:w-auto" onClick={handleFsblDismiss}>
+              {i18n._('sys.system_management.fw_mismatch_later')}
+            </Button>
+            <Button variant="primary" className="w-1/2 md:w-auto" onClick={() => { setShowFsblDialog(false); navigate('/import-fsbl'); }}>
+              {i18n._('sys.system_management.fw_mismatch_upgrade')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* WiFi version mismatch dialog — shown after FSBL dialog is dismissed */}
+      <Dialog open={showWifiDialog} onOpenChange={handleWifiDismiss}>
+        <DialogContent className="md:max-w-md mx-4">
+          <DialogHeader>
+            <div className="flex items-center gap-2">
+              <SvgIcon icon="hint" className="w-5 h-5 text-yellow-500" />
+              <DialogTitle>
+                {i18n._('sys.system_management.fw_mismatch_wifi_title')}
+              </DialogTitle>
+            </div>
+            <DialogDescription className="pt-2 text-left">
+              {i18n._('sys.system_management.fw_mismatch_wifi_desc')
+                .replace('{current}', wifiCheck?.current_wifi || '?')
+                .replace('{expected}', wifiCheck?.expected_wifi || '?')}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="mt-4">
+            <Button variant="outline" className="w-1/2 md:w-auto" onClick={handleWifiDismiss}>
+              {i18n._('sys.system_management.fw_mismatch_later')}
+            </Button>
+            <Button variant="primary" className="w-1/2 md:w-auto" onClick={() => { setShowWifiDialog(false); navigate('/import-wifi'); }}>
+              {i18n._('sys.system_management.fw_mismatch_upgrade')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

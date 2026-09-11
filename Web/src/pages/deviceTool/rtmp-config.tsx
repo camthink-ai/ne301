@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import deviceTool from '@/services/api/deviceTool';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -25,7 +26,7 @@ type ErrorType = {
   message: string;
 };
 type RtmpConfigDetail = {
-  enabled: boolean;
+  enable: boolean;
   url: string;
   stream_key: string;
 };
@@ -89,7 +90,7 @@ export default function RtmpConfig() {
   };
   const [rtmpConfig, setRtmpConfig] = useState<RtmpConfig>({
     config: {
-      enabled: false,
+      enable: false,
       url: '',
       stream_key: '',
     },
@@ -231,7 +232,6 @@ export default function RtmpConfig() {
       await setRtmpConfigReq({
         url: rtmpConfig.config.url,
         stream_key: rtmpConfig.config.stream_key,
-        enabled: true,
       });
       await startRtmpReq({});
       getRtmpConfig();
@@ -272,6 +272,9 @@ export default function RtmpConfig() {
               } else if (value === 'rtmp') {
                 /* Switching to RTMP: disable RTSP */
                 await setRtspConfigReq({ enabled: false } as any);
+                /* Refresh: RTSP side may have flipped the enable flags */
+                getRtmpConfig();
+                getRtmpStatus();
               }
             } catch (e) {
               console.error('mode switch error', e);
@@ -347,6 +350,48 @@ export default function RtmpConfig() {
                   </div>
                 </div>
                 <Separator />
+                {/* Enable switch: gates the fields and the connect button
+                    below (same pattern as the RTSP page). Toggling off also
+                    stops the live push; toggling on only unlocks editing. */}
+                <div className="flex flex-col gap-1 py-2">
+                  <div className="flex justify-between items-center">
+                    <Label className="text-sm text-text-primary">
+                      {i18n._('sys.device_tool.rtmp_enable')}
+                    </Label>
+                    <Switch
+                      checked={rtmpConfig.config.enable}
+                      onCheckedChange={async v => {
+                        setRtmpConfig({
+                          ...rtmpConfig,
+                          config: { ...rtmpConfig.config, enable: v },
+                        });
+                        try {
+                          if (!v && rtmpStatus.status.streaming) {
+                            /* Disabling the service stops the live push too */
+                            await stopRtmpReq();
+                          }
+                          await setRtmpConfigReq({ enable: v });
+                          await Promise.all([getRtmpConfig(), getRtmpStatus()]);
+                        } catch (error) {
+                          setRtmpConfig({
+                            ...rtmpConfig,
+                            config: { ...rtmpConfig.config, enable: !v },
+                          });
+                          console.error('toggleRtmpEnable', error);
+                        }
+                      }}
+                    />
+                  </div>
+                  <p className="text-xs text-text-secondary">
+                    {i18n._('sys.device_tool.stream_autostart_note')}
+                  </p>
+                </div>
+                <Separator />
+                <div
+                  className={
+                    rtmpConfig.config.enable ? '' : 'opacity-50 pointer-events-none'
+                  }
+                >
                 <div className="flex flex-col gap-2">
                   <div className="flex justify-between gap-2 flex-1 pr-0">
                     <Label className="text-sm text-text-primary shrink-0">
@@ -415,13 +460,14 @@ export default function RtmpConfig() {
                     </p>
                   )}
                 </div>
+                </div>
               </>
             )}
 
             <div className="flex justify-end gap-2 mt-2">
               <Button
                 variant="primary"
-                disabled={configLoading}
+                disabled={configLoading || !rtmpConfig.config.enable}
                 onClick={() => (rtmpConfig.status.streaming
                     ? handleStopRtmp()
                     : handleStartRtmp())}

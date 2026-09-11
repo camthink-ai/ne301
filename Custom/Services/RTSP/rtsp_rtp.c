@@ -36,7 +36,7 @@ static aicam_result_t rtp_sendto(rtsp_client_t *client,
                                   const uint8_t *packet, uint32_t size)
 {
     if (client->rtp_socket < 0) {
-        LOG_SVC_ERROR("RTSP RTP: sendto failed — rtp_socket=%d (invalid)", client->rtp_socket);
+        LOG_SVC_ERROR("RTSP RTP: sendto failed - rtp_socket=%d (invalid)", client->rtp_socket);
         return AICAM_ERROR;
     }
 
@@ -170,7 +170,7 @@ aicam_result_t rtsp_rtp_send_frame(rtsp_client_t *client,
      * Parse NAL units from Annex-B data and send via RTP.
      * We need to set the RTP marker bit on the last SLICE NAL of the frame
      * (VBR/VLC uses this to detect frame boundaries).
-     * Strategy: two-pass — first find the last slice NAL offset, then send all.
+     * Strategy: two-pass - first find the last slice NAL offset, then send all.
      */
 
     /* Pass 1: collect NAL offsets and find last slice NAL */

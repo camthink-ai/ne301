@@ -73,22 +73,34 @@ static aicam_result_t rtmp_config_set_handler(http_handler_context_t* ctx)
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid Content-Type");
     }
 
-    // Cannot change config while streaming
-    if (rtmp_service_is_streaming()) {
-        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Cannot change config while streaming");
-    }
-
     cJSON *request = web_api_parse_body(ctx);
     if (!request) {
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid JSON");
+    }
+
+    cJSON *url = cJSON_GetObjectItem(request, "url");
+    cJSON *stream_key = cJSON_GetObjectItem(request, "stream_key");
+
+    /* url/stream_key feed the running stream and cannot be changed while
+     * streaming. The enable flag only arms the boot-time auto-start, so the
+     * web toggle stays usable mid-stream. */
+    if (rtmp_service_is_streaming()
+        && ((url && cJSON_IsString(url)) || (stream_key && cJSON_IsString(stream_key)))) {
+        cJSON_Delete(request);
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Cannot change config while streaming");
     }
 
     // Get current config
     video_stream_mode_config_t vs_config;
     json_config_get_video_stream_mode(&vs_config);
 
-    // Update fields if provided
+    // Update fields if provided. The web UI posts the flag as "enabled"
+    // (RTSP-API naming); the documented field is "enable" — accept both,
+    // otherwise the enable bit is silently skipped and never reaches NVS.
     cJSON *enable = cJSON_GetObjectItem(request, "enable");
+    if (!enable) {
+        enable = cJSON_GetObjectItem(request, "enabled");
+    }
     if (enable && cJSON_IsBool(enable)) {
         vs_config.rtmp_enable = cJSON_IsTrue(enable) ? AICAM_TRUE : AICAM_FALSE;
         /* Mutual exclusion: enabling RTMP disables RTSP */
@@ -100,13 +112,11 @@ static aicam_result_t rtmp_config_set_handler(http_handler_context_t* ctx)
         }
     }
 
-    cJSON *url = cJSON_GetObjectItem(request, "url");
     if (url && cJSON_IsString(url)) {
         strncpy(vs_config.rtmp_url, url->valuestring, sizeof(vs_config.rtmp_url) - 1);
         vs_config.rtmp_url[sizeof(vs_config.rtmp_url) - 1] = '\0';
     }
 
-    cJSON *stream_key = cJSON_GetObjectItem(request, "stream_key");
     if (stream_key && cJSON_IsString(stream_key)) {
         strncpy(vs_config.rtmp_stream_key, stream_key->valuestring, sizeof(vs_config.rtmp_stream_key) - 1);
         vs_config.rtmp_stream_key[sizeof(vs_config.rtmp_stream_key) - 1] = '\0';

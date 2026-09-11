@@ -8,6 +8,18 @@ extern "C" {
 #define IS_HTTPS            0
 #define HTTPS_PORT          443
 
+/**
+ * WEB_DEBUG - Global web debug switch (compile-time).
+ * Build with -DWEB_DEBUG=1 (or set to 1 here) to enable:
+ *  - [WEBDBG] request/response line per HTTP API: method, uri, status, error_code, duration
+ *  - [WSDBG]  websocket control-frame logs (ping/pong)
+ * Timestamps are prefixed inline. Mongoose socket logs stay off (too noisy;
+ * re-add mg_log_set(MG_LL_DEBUG) in the server tasks if ever needed).
+ */
+#ifndef WEB_DEBUG
+#define WEB_DEBUG 0
+#endif
+
 #if IS_HTTPS
 #define HTTPS_CERT_STR     "-----BEGIN CERTIFICATE-----\n\
 MIIECzCCAvOgAwIBAgIBADANBgkqhkiG9w0BAQsFADCBnzELMAkGA1UEBhMCQ04x\n\

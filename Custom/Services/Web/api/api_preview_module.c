@@ -93,7 +93,7 @@ static aicam_result_t preview_start_handler(http_handler_context_t* ctx)
     websocket_stream_stats_t stats;
     if (websocket_stream_server_get_stats(&stats) == AICAM_OK && stats.stream_active) {
         cJSON *response = cJSON_CreateObject();
-        cJSON_AddBoolToObject(response, "success", cJSON_True);
+        cJSON_AddBoolToObject(response, "success", 1);
         cJSON_AddStringToObject(response, "status", "already_active");
         cJSON_AddBoolToObject(response, "pipeline_running", ai_pipeline_is_running());
         
@@ -109,7 +109,7 @@ static aicam_result_t preview_start_handler(http_handler_context_t* ctx)
     cJSON *response = cJSON_CreateObject();
     
     if (result == AICAM_OK) {
-        cJSON_AddBoolToObject(response, "success", cJSON_True);
+        cJSON_AddBoolToObject(response, "success", 1);
         cJSON_AddStringToObject(response, "status", "started");
         cJSON_AddBoolToObject(response, "pipeline_running", ai_pipeline_is_running());
         cJSON_AddNumberToObject(response, "hub_subscribers", video_hub_get_subscriber_count());
@@ -147,7 +147,7 @@ static aicam_result_t preview_stop_handler(http_handler_context_t* ctx)
     websocket_stream_stats_t stats;
     if (websocket_stream_server_get_stats(&stats) == AICAM_OK && !stats.stream_active) {
         cJSON *response = cJSON_CreateObject();
-        cJSON_AddBoolToObject(response, "success", cJSON_True);
+        cJSON_AddBoolToObject(response, "success", 1);
         cJSON_AddStringToObject(response, "status", "already_stopped");
         cJSON_AddBoolToObject(response, "pipeline_running", ai_pipeline_is_running());
         
@@ -163,7 +163,7 @@ static aicam_result_t preview_stop_handler(http_handler_context_t* ctx)
     cJSON *response = cJSON_CreateObject();
     
     if (result == AICAM_OK) {
-        cJSON_AddBoolToObject(response, "success", cJSON_True);
+        cJSON_AddBoolToObject(response, "success", 1);
         cJSON_AddStringToObject(response, "status", "stopped");
         cJSON_AddBoolToObject(response, "pipeline_running", ai_pipeline_is_running());
         cJSON_AddNumberToObject(response, "hub_subscribers", video_hub_get_subscriber_count());

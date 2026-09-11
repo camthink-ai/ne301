@@ -22,12 +22,13 @@
 #include "cmsis_os2.h"
 #include "sl_si91x_status.h"
 #include "sl_rsi_utility.h"
+#include "sli_wifi_utility.h"
 #include "sl_constants.h"
 #include "sl_status.h"
 #include "stm32n6xx_hal.h"
 #include "stm32n6xx_hal_spi.h"
 #include "cmsis_gcc.h" 
-#include "em_core.h"
+#include "sl_core.h"
 #include "pwr.h"
 #include "spi.h"
 #include "exti.h"
@@ -41,7 +42,7 @@
 #endif
 #define DMA_ENABLED
 
-extern void Error_Handler(void);
+// extern void Error_Handler(void);
 void gpio_interrupt(void);
 
 extern SPI_HandleTypeDef hspi4;
@@ -124,9 +125,15 @@ void sl_si91x_host_release_from_reset(void)
     HAL_GPIO_WritePin(WIFI_RESET_N_GPIO_Port, WIFI_RESET_N_Pin, GPIO_PIN_SET);
 }
 
+static sl_si91x_host_init_configuration_t bus_config = { 0 };
+
 sl_status_t sl_si91x_host_init(const sl_si91x_host_init_configuration_t *config)
 {
-    UNUSED_PARAMETER(config);
+    // 4.1.x bus model: the driver passes rx_irq/rx_done; the GPIO ISR must call
+    // rx_irq (sli_si91x_bus_rx_irq_handler) instead of the legacy set_event.
+    bus_config.rx_irq      = config->rx_irq;
+    bus_config.rx_done     = config->rx_done;
+    bus_config.boot_option = config->boot_option;
     // printf("sl_si91x_host_init\r\n");
     pwr_manager_acquire(pwr_manager_get_handle(PWR_WIFI));
     if (sem_spi4 == NULL) {
@@ -178,85 +185,118 @@ sl_status_t sl_si91x_host_deinit(void)
  * @section description
  * This API is used to transfer/receive data to the Wi-Fi module through the SPI interface.
  */
+// CLI fault injection ("ifconfig wl error_test dma_once|dma_ff|dma_off"):
+//   dma_once — next DMA transfer takes the semaphore-timeout path once (transient
+//              "sem_spi4 dma failed"), then auto-clears.
+//   dma_ff   — every transfer "succeeds" but returns all-0xFF data (stuck MISO /
+//              unresponding chip). C1/C2 then polls to its 1s timeout and the
+//              firmware-error recovery chain fires; recovery exhausts its 10
+//              retries by design. Clear with dma_off, then re-up the netif.
+//   dma_off  — clear injection.
+#ifdef SIMULATION_SPI4_DMA_ERROR
+static uint8_t sim_spi4_dma_mode = 0; // 0 off, 1 fail-sem-once, 2 rx all-0xFF
+
+void sl_si91x_host_sim_spi4_dma(uint8_t mode)
+{
+    sim_spi4_dma_mode = mode;
+}
+#endif
+
+void sl_si91x_host_restore_spi4(void)
+{
+    if (is_high_spi) {
+        sl_si91x_host_enable_high_speed_bus();
+        printf("Restore high speed spi4\r\n");
+    } else {
+        HAL_SPI_DeInit(&hspi4);
+        MX_SPI4_Init();
+        printf("Restore low speed spi4\r\n");
+    }
+}
+
 sl_status_t sl_si91x_host_spi_transfer(const void *tx_buffer, void *rx_buffer, uint16_t buffer_length)
 {
     HAL_StatusTypeDef ret = HAL_OK;
     osStatus_t sem_status = osOK;
-    // TX_INTERRUPT_SAVE_AREA
+
+    if (mtx_id == NULL) return SL_STATUS_INVALID_STATE;
+    osMutexAcquire(mtx_id, osWaitForever);
 
     if (buffer_length < 1 || buffer_length > SPI_BUFFER_LENGTH) {
-        printf("Invalid buffer length: %d\r\n", buffer_length);
+        printf("[si91x]Invalid buffer length: %d\r\n", buffer_length);
+        osMutexRelease(mtx_id);
         return SL_STATUS_INVALID_PARAMETER;
     }
 
-    if (rx_buffer == NULL) {
-        rx_buffer = spi_rx_buffer;
+    if (rx_buffer != NULL) {
+        memset(spi_rx_buffer, 0x00, buffer_length);
     }
+
     if (tx_buffer == NULL) {
-        tx_buffer = spi_tx_buffer;
+        memset(spi_tx_buffer, 0xff, buffer_length);
+    } else {
+        memcpy(spi_tx_buffer, tx_buffer, buffer_length);
     }
-    
-    if (mtx_id == NULL) return SL_STATUS_INVALID_STATE;
-    osMutexAcquire(mtx_id, osWaitForever);
-    // printf("Transmitting data: ");
+
+    // printf("[si91x] => ");
     // for (uint16_t i = 0; i < buffer_length; i++) {
-    //     printf("%02X ", ((uint8_t *)tx_buffer)[i]);
+    //     printf("%02X ", ((uint8_t *)spi_tx_buffer)[i]);
     // }
     // printf("\r\n");
-    if (buffer_length < 8) {
-        memcpy(spi_tx_buffer, tx_buffer, buffer_length);
-        memset(spi_rx_buffer, 0x00, buffer_length);
-        // TX_DISABLE
-        // ret = HAL_SPI_TransmitReceive_IT(&hspi4, (uint8_t *)spi_tx_buffer, (uint8_t *)spi_rx_buffer, buffer_length);
-        ret = HAL_SPI_TransmitReceive(&hspi4, (uint8_t *)spi_tx_buffer, (uint8_t *)spi_rx_buffer, buffer_length, 100);
-        // TX_RESTORE
-        if (ret == HAL_OK) {
-            // sem_status = osSemaphoreAcquire(sem_spi4, 100);
-            // if (sem_status != osOK) {
-            //     printf("sem_spi4 it failed(ret = %d)!\r\n", (int)sem_status);
-            //     HAL_SPI_Abort_IT(&hspi4);
-            //     osMutexRelease(mtx_id);
-            //     return SL_STATUS_TIMEOUT;
-            // }
-            memcpy(rx_buffer, spi_rx_buffer, buffer_length);
-            // printf("$\r\n");
-        } else {
-            printf("HAL_SPI_TransmitReceive failed(ret = %d)!\r\n", ret);
+
+    if (buffer_length < 4) {
+        ret = HAL_SPI_TransmitReceive(&hspi4, (uint8_t *)spi_tx_buffer, (uint8_t *)spi_rx_buffer, buffer_length, 200);
+        if (ret != HAL_OK) {
+            printf("[si91x]transmit failed(ret = %d)!\r\n", ret);
             HAL_SPI_Abort(&hspi4);
+            sl_si91x_host_restore_spi4();
             osMutexRelease(mtx_id);
             return SL_STATUS_ABORT;
         }
     } else {
+
 #ifdef DMA_ENABLED
-        memcpy(spi_tx_buffer, tx_buffer, buffer_length);
-        memset(spi_rx_buffer, 0x00, buffer_length);
-        // printf("Transmit\r\n");
         ret = HAL_SPI_TransmitReceive_DMA(&hspi4, (uint8_t *)spi_tx_buffer, (uint8_t *)spi_rx_buffer, buffer_length);
         if (ret == HAL_OK) {
-            sem_status = osSemaphoreAcquire(sem_spi4, 1000);
+            sem_status = osSemaphoreAcquire(sem_spi4, 200);
+        #ifdef SIMULATION_SPI4_DMA_ERROR
+            if (sim_spi4_dma_mode == 1) {
+                sim_spi4_dma_mode = 0;        // one-shot: next transfer is healthy again
+                sem_status     = (osStatus_t)osErrorTimeout; // fake the acquire failure
+            }
+        #endif
             if (sem_status != osOK) {
-                printf("sem_spi4 dma failed(ret = %d)!\r\n", (int)sem_status);
+                printf("[si91x]Wait DMA failed(ret = %d)!\r\n", (int)sem_status);
                 HAL_SPI_Abort(&hspi4);
+                sl_si91x_host_restore_spi4();
                 osMutexRelease(mtx_id);
                 return SL_STATUS_TIMEOUT;
             }
-            memcpy(rx_buffer, spi_rx_buffer, buffer_length);
+        #ifdef SIMULATION_SPI4_DMA_ERROR
+            if (sim_spi4_dma_mode == 2) {
+                memset(spi_rx_buffer, 0xFF, buffer_length);
+            }
+        #endif
         } else {
-            printf("HAL_SPI_TransmitReceive_DMA failed(ret = %d)!\r\n", ret);
+            printf("[si91x]DMA transmit failed(ret = %d)!\r\n", ret);
             HAL_SPI_Abort(&hspi4);
+            sl_si91x_host_restore_spi4();
             osMutexRelease(mtx_id);
             return SL_STATUS_ABORT;
         }
 #else
-        HAL_SPI_TransmitReceive(&hspi4, (uint8_t *)tx_buffer, (uint8_t *)rx_buffer, buffer_length, 10);
+        HAL_SPI_TransmitReceive(&hspi4, (uint8_t *)spi_tx_buffer, (uint8_t *)spi_rx_buffer, buffer_length, 200);
 #endif
     }
-    osMutexRelease(mtx_id);
-    // printf("Received data: ");
+
+    // printf("[si91x] <= ");
     // for (uint16_t i = 0; i < buffer_length; i++) {
-    //     printf("%02X ", ((uint8_t *)rx_buffer)[i]);
+    //     printf("%02X ", ((uint8_t *)spi_rx_buffer)[i]);
     // }
     // printf("\r\n");
+
+    if (rx_buffer != NULL) memcpy(rx_buffer, spi_rx_buffer, buffer_length);
+    osMutexRelease(mtx_id);
     return SL_STATUS_OK;
 }
 
@@ -281,7 +321,7 @@ void sl_si91x_host_enable_high_speed_bus()
     hspi4.Init.CRCPolynomial = 0x7;
     hspi4.Init.NSSPMode = SPI_NSS_PULSE_DISABLE;
     hspi4.Init.NSSPolarity = SPI_NSS_POLARITY_LOW;
-    hspi4.Init.FifoThreshold = SPI_FIFO_THRESHOLD_01DATA;
+    hspi4.Init.FifoThreshold = SPI_FIFO_THRESHOLD_04DATA;
     hspi4.Init.MasterSSIdleness = SPI_MASTER_SS_IDLENESS_00CYCLE;
     hspi4.Init.MasterInterDataIdleness = SPI_MASTER_INTERDATA_IDLENESS_00CYCLE;
     hspi4.Init.MasterReceiverAutoSusp = SPI_MASTER_RX_AUTOSUSP_DISABLE;
@@ -316,43 +356,47 @@ void sl_si91x_host_disable_bus_interrupt(void)
     HAL_NVIC_DisableIRQ(EXTI8_IRQn);
 }
 
-static uint32_t sleep_state = GPIO_PIN_SET;
-
+// Sleep-confirm pin handshake. 4.1.1 toggles this per SPI transaction
+// (sli_si91x_req_wakeup sets, post-tx/rx clears) regardless of performance
+// profile — 4.0.2 gated the toggle on != HIGH_PERFORMANCE, so the old
+// "wup 0/1" debug only fired in low-power mode. 4.1.1 fires it every
+// transaction by design (the reference STM32 port does the same). The toggle
+// is harmless: the NCP firmware decides whether to actually sleep. Debug
+// printf removed to stop per-transaction log spam; re-add here if debugging
+// power-save.
 void sl_si91x_host_set_sleep_indicator(void)
 {
-    if (sleep_state != GPIO_PIN_SET) {
-        sleep_state = GPIO_PIN_SET;
-        printf("wup 1\n");
-    }
     HAL_GPIO_WritePin(WIFI_ULP_WAKEUP_GPIO_Port, WIFI_ULP_WAKEUP_Pin, GPIO_PIN_SET);
 }
 
 void sl_si91x_host_clear_sleep_indicator(void)
 {
-    if (sleep_state != GPIO_PIN_RESET) {
-        sleep_state = GPIO_PIN_RESET;
-        printf("wup 0\n");
-    }
     HAL_GPIO_WritePin(WIFI_ULP_WAKEUP_GPIO_Port, WIFI_ULP_WAKEUP_Pin, GPIO_PIN_RESET);
 }
 
 uint32_t sl_si91x_host_get_wake_indicator(void)
 {
-    static uint32_t wake_up_state = GPIO_PIN_SET;
-    osSemaphoreAcquire(sem_sta, 10);
-    if (wake_up_state != HAL_GPIO_ReadPin(WIFI_STA_GPIO_Port, WIFI_STA_Pin)) {
-        wake_up_state = HAL_GPIO_ReadPin(WIFI_STA_GPIO_Port, WIFI_STA_Pin);
-        printf("sta %lu\n", (unsigned long)wake_up_state);
+    uint32_t awake = HAL_GPIO_ReadPin(WIFI_STA_GPIO_Port, WIFI_STA_Pin);
+    // Already awake (HIGH_PERFORMANCE never sleeps): return immediately, zero
+    // per-transaction overhead. Only when sleeping do we block on the WIFI_STA
+    // rising-edge semaphore (EXTI5) for up to 10ms — this yields the RT1 thread
+    // so a wedged chip can't starve the scheduler (console dies / no reboot
+    // because wdgTask RT7 keeps feeding IWDG), and returns the instant the chip
+    // actually asserts WIFI_STA. req_wakeup() loops this up to 5s. 4.0.2 form,
+    // but gated on !awake so HIGH_PERFORMANCE keeps the old 10ms-per-tx hit off.
+    if (!awake) {
+        osSemaphoreAcquire(sem_sta, 10);
+        awake = HAL_GPIO_ReadPin(WIFI_STA_GPIO_Port, WIFI_STA_Pin);
     }
-    return wake_up_state;
+    return awake;
 }
 
-extern sl_wifi_system_performance_profile_t current_performance_profile;
 static void si91x_gpio_interrupt(void)
 {
-    // Trigger SiWx91x BUS Event
-    if (current_performance_profile != HIGH_PERFORMANCE) printf("#\r\n");
-    sli_si91x_set_event(SL_SI91X_NCP_HOST_BUS_RX_EVENT);
+    // Trigger SiWx91x BUS Event (4.1.x rx_irq callback model)
+    if (bus_config.rx_irq != NULL) {
+        bus_config.rx_irq();
+    }
 }
 
 static void si91x_sta_interrupt(void)

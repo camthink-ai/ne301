@@ -90,6 +90,7 @@ typedef struct schedule_job {
 
 typedef struct {
     get_time_func_t get_time;
+    get_time_func_t get_wakeup_time;
     scheduler_t *schedulers;
     int num_sched;
     wakeup_job_t *wake_jobs;
@@ -165,7 +166,7 @@ void free_query_results(query_result_t *results, int count);
 
 void scheduler_handle_event(scheduler_t *sched, scheduler_manager_t *mgr);
 
-void scheduler_init(scheduler_manager_t *mgr, get_time_func_t get_time, 
+void scheduler_init(scheduler_manager_t *mgr, get_time_func_t get_time, get_time_func_t get_wakeup_time, 
                    scheduler_t *scheds, int num_sched,
                    sched_lock_func_t lock, sched_unlock_func_t unlock) ;
 #endif

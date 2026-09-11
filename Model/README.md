@@ -51,6 +51,29 @@ make info
 make clean
 ```
 
+### Batch build all models (`Script/build_all_models.sh`)
+
+Compiles **every buildable model** in `weights/` and wraps each in an OTA
+package (`fw_type=ai_model`) stamped with the model OTA version
+(`STEDGEAI_BIT.MODEL_VERSION_OVERRIDE`, same as `make pkg-model`). A model is
+buildable when its `.json` has a sibling `.tflite`/`.onnx` **and** its
+`postprocess_type` is registered in `Custom/Common/Lib/pp/`. Configs without
+weights and unregistered postprocess types are skipped and reported.
+
+```bash
+bash Script/build_all_models.sh --list      # show buildable models + profiles
+bash Script/build_all_models.sh --dry-run   # show the plan
+bash Script/build_all_models.sh             # build all -> Model/build/models/<name>_v<ver>_pkg.bin
+bash Script/build_all_models.sh yolov8n_256_quant_pc_ui_od_meter   # just one
+```
+
+Reloc profiles are picked per model family (`yolox_od` for ST-YOLOX,
+`yolov8_mpe` for pose, `yolov8_od` otherwise — extend `profile_for_model()` to
+override). Per-model logs land in `Model/build/<name>_{reloc,pkg,ota}.log`.
+Models build sequentially (fixed `st_ai_c`/`st_ai_bin` intermediate dirs);
+`STEDGEAI_VARIANT`, `MODEL_VERSION`, `DEVICE_MODEL`, `DEFAULT_PROFILE` env
+vars override the derived defaults.
+
 ### `docs/how_to_train_quant_deploy_yolov8n.md`
 Complete guide for training, quantizing, and deploying YOLOv8 models to NE301 devices.
 
@@ -167,6 +190,7 @@ For detailed configuration instructions, see [docs/how_to_train_quant_deploy_yol
 The Makefile uses the following scripts:
 - `../Script/generate-reloc-model.sh`: Converts TFLite to relocatable binary
 - `../Script/model_packager.py`: Packages binary with JSON metadata
+- `../Script/build_all_models.sh`: Batch-builds every buildable model into OTA packages
 
 ## References
 
@@ -178,4 +202,4 @@ The Makefile uses the following scripts:
 
 ---
 
-**Last Updated:** 2026-06-03
+**Last Updated:** 2026-09-02

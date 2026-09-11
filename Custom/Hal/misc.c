@@ -696,7 +696,7 @@ static int battery_get_value(void)
     pwr_manager_release(g_battery.pwr_handle);
 
     voltage *= 4;
-    LOG_SIMPLE("batv: %ld \r\n",voltage);
+    // LOG_SIMPLE("batv: %ld \r\n",voltage);
     if (voltage < BATTERY_MIN_VOLTAGE / 2) {
         // maybe typec inserted
         rate = 255;

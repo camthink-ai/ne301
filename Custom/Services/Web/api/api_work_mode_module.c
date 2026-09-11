@@ -661,13 +661,34 @@ static aicam_result_t work_mode_triggers_get_handler(http_handler_context_t* ctx
     }
     cJSON_AddItemToObject(timer_trigger, "weekdays", weekdays);
 
-    // Interval mode and start time
+    // Interval mode, start time, end time
     cJSON_AddStringToObject(timer_trigger, "interval_mode",
         config.timer_trigger.interval_mode == AICAM_TIMER_INTERVAL_MODE_SCHEDULED
             ? "scheduled" : "normal");
     char* start_time_str = get_time_node_string(config.timer_trigger.start_time);
     cJSON_AddStringToObject(timer_trigger, "start_time", start_time_str);
     buffer_free(start_time_str);
+    /* SCHEDULED-mode daily window end (closed [start, end]), always emitted:
+     * 00:00 with start > 00:00 ends the window at midnight; an earlier end
+     * wraps past midnight. Scheduled-mode PUT rejects end == start (a full
+     * day there is any start T with end T-1min). */
+    char* end_time_str = get_time_node_string(config.timer_trigger.end_time);
+    cJSON_AddStringToObject(timer_trigger, "end_time", end_time_str);
+    buffer_free(end_time_str);
+
+    // Interval grid anchor (normal interval mode): seconds-of-day "HH:MM"
+    // (minute granularity — the seconds stamped at apply time don't survive
+    // a web round-trip; PUT keeps them when the echoed minute is unchanged).
+    // Rolling window [anchor, anchor+24h) crosses midnight: nodes flow past
+    // 00:00 (anchor 11:00 / 5h -> 11:00 16:00 21:00 02:00 07:00) and a new
+    // window opens at the next anchor instant, never at midnight. 0 = not
+    // stamped yet (the apply path stamps it with the current time-of-day on
+    // first enable) — omitted in that case.
+    if (config.timer_trigger.anchor_time != 0) {
+        char* anchor_str = get_time_node_string(config.timer_trigger.anchor_time);
+        cJSON_AddStringToObject(timer_trigger, "anchor", anchor_str);
+        buffer_free(anchor_str);
+    }
 
     // Next capture time (read-only)
     uint64_t next_capture_at = 0;
@@ -692,6 +713,7 @@ static aicam_result_t work_mode_triggers_get_handler(http_handler_context_t* ctx
     // Convert register value (0-3) to actual pulse count (1-4) for frontend
     cJSON_AddNumberToObject(pir_trigger, "pulse_count", config.pir_trigger.pulse_count + 1);
     cJSON_AddNumberToObject(pir_trigger, "window_time_s", config.pir_trigger.window_time_s);
+    cJSON_AddBoolToObject(pir_trigger, "disable_in_preview", config.pir_trigger.disable_in_preview);
     cJSON_AddItemToObject(response, "pir_trigger", pir_trigger);
 
     // Remote trigger configuration
@@ -858,6 +880,76 @@ static aicam_result_t work_mode_triggers_set_handler(http_handler_context_t* ctx
         } else {
             config.timer_trigger.start_time = 0;
         }
+
+        // Parse end_time ("HH:MM" or seconds-of-day; absent = keep stored).
+        // SCHEDULED-mode daily window end, CLOSED [start_time, end_time]:
+        // earlier than start_time wraps past midnight (00:00 with start >
+        // 00:00 = ends at midnight); equal to start_time is rejected below
+        // (it is the normal-mode full-day lattice's internal representation).
+        cJSON* end_time_item = cJSON_GetObjectItem(timer_trigger, "end_time");
+        if (end_time_item && cJSON_IsString(end_time_item)) {
+            config.timer_trigger.end_time = parse_time_node(cJSON_GetStringValue(end_time_item));
+        } else if (end_time_item && cJSON_IsNumber(end_time_item)) {
+            config.timer_trigger.end_time = (uint32_t)cJSON_GetNumberValue(end_time_item);
+        }
+
+        // Parse anchor (normal interval mode grid origin, "HH:MM" or
+        // seconds-of-day 1..86399). Absent = keep the stored value (the
+        // config copy above already holds it; the apply path stamps the
+        // current time-of-day if it has never been set). The anchor is a
+        // time-of-day, not a date: the lattice restarts at it every day.
+        cJSON* anchor_item = cJSON_GetObjectItem(timer_trigger, "anchor");
+        if (anchor_item && cJSON_IsString(anchor_item)) {
+            uint32_t parsed = parse_time_node(cJSON_GetStringValue(anchor_item));
+            /* "HH:MM" is minute-granular while the stored anchor may carry
+             * seconds (stamped at apply time): when the client echoes the
+             * same minute back, keep the stored value so a no-touch save
+             * doesn't shift the grid by up to 59s. Only an explicit minute
+             * change re-bases the anchor. */
+            if (parsed / 60u != config.timer_trigger.anchor_time / 60u) {
+                config.timer_trigger.anchor_time = parsed;
+            }
+        } else if (anchor_item && cJSON_IsNumber(anchor_item)) {
+            config.timer_trigger.anchor_time = (uint32_t)cJSON_GetNumberValue(anchor_item);
+        }
+    }
+
+    /* Cross-field validation once all timer_trigger fields are parsed.
+     * Both interval modes are daily lattices, so the interval must be a
+     * strict sub-day step, SCHEDULED's window must not be degenerate and
+     * must be longer than the interval (else no node ever fits inside). */
+    if (config.timer_trigger.enable &&
+        config.timer_trigger.capture_mode == AICAM_TIMER_CAPTURE_MODE_INTERVAL) {
+        if (config.timer_trigger.interval_sec == 0 ||
+            config.timer_trigger.interval_sec >= 86400) {
+            cJSON_Delete(request);
+            return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
+                "Invalid interval_sec: must be 1..86399 (less than 24h)");
+        }
+        if (config.timer_trigger.interval_mode == AICAM_TIMER_INTERVAL_MODE_SCHEDULED) {
+            uint32_t start = config.timer_trigger.start_time;
+            uint32_t end = config.timer_trigger.end_time;
+            /* Equal start/end is the normal-mode full-day lattice's internal
+             * representation — scheduled mode rejects it so the two modes
+             * stay disjoint; a full-day schedule is 00:00-23:59 (closed). */
+            if (end == start) {
+                cJSON_Delete(request);
+                return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
+                    "Invalid end_time: must differ from start_time "
+                    "(a full-day window is any start T with end T-1min, "
+                    "e.g. 00:00-23:59 or 01:00-00:59)");
+            }
+            /* Inclusive window: the window is CLOSED (a node landing exactly
+             * on end_time fires — span + 1). The +1 makes "window must be
+             * longer than the interval" mean: at least two nodes fit
+             * (start and end). */
+            uint32_t window = (end > start ? end - start : end + 86400u - start) + 1u;
+            if (window <= config.timer_trigger.interval_sec) {
+                cJSON_Delete(request);
+                return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
+                    "Invalid schedule: daily window must be longer than interval_sec");
+            }
+        }
     }
 
     // Parse PIR trigger settings
@@ -913,6 +1005,11 @@ static aicam_result_t work_mode_triggers_set_handler(http_handler_context_t* ctx
                 config.pir_trigger.window_time_s = window_time;
             }
         }
+
+        // Parse disable_in_preview (default: true)
+        cJSON* disable_in_preview_item = cJSON_GetObjectItem(pir_trigger, "disable_in_preview");
+        config.pir_trigger.disable_in_preview = (disable_in_preview_item && cJSON_IsBool(disable_in_preview_item))
+            ? cJSON_IsTrue(disable_in_preview_item) : AICAM_TRUE;
     }
 
     // Parse Remote trigger settings

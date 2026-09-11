@@ -26,23 +26,46 @@ extern "C" {
 #endif
 
 /* Includes ------------------------------------------------------------------*/
-#include "main.h"
+#include "stm32n6xx_hal.h"
 
-/* Flash commands */
-#define OCTAL_IO_READ_CMD           0xEC13
-#define OCTAL_IO_DTR_READ_CMD       0xEE11
-#define OCTAL_PAGE_PROG_CMD         0x12ED
-#define OCTAL_READ_STATUS_REG_CMD   0x05FA
-#define OCTAL_SECTOR_ERASE_CMD      0x21DE
-#define OCTAL_WRITE_ENABLE_CMD      0x06F9
+/* ============================================================================
+ * Flash commands — GD55LX01GE (JEDEC Xccela OPI)
+ * ============================================================================ */
+#define GD55_OCTAL_IO_READ_CMD          0xCC   /* 4-Byte Octal I/O Fast Read (STR) */
+#define GD55_OCTAL_IO_DTR_READ_CMD      0xFD   /* 4-Byte Octal I/O DTR Fast Read */
+#define GD55_OCTAL_PAGE_PROG_CMD        0x8E   /* 4-Byte Extended Octal Page Program */
+#define GD55_OCTAL_READ_STATUS_REG_CMD  0x05   /* Read Status Register */
+#define GD55_OCTAL_SECTOR_ERASE_CMD     0x21   /* 4-Byte Sector Erase */
+#define GD55_OCTAL_WRITE_ENABLE_CMD     0x06   /* Write Enable */
+#define GD55_WRITE_VOL_CFG_REG_CMD      0x81   /* Write Volatile Configuration Register */
+
+/* ============================================================================
+ * Flash commands — MX66UM1G45G (Macronix OctaBus OPI)
+ * ============================================================================ */
+#define MX66_OCTAL_IO_DTR_READ_CMD      0xEE11 /* Octal I/O DTR Read */
+#define MX66_OCTAL_PAGE_PROG_CMD        0x12ED /* Octal Page Program */
+#define MX66_OCTAL_READ_STATUS_REG_CMD  0x05FA /* Read Status Register */
+#define MX66_OCTAL_SECTOR_ERASE_CMD     0x21DE /* Sector Erase */
+#define MX66_OCTAL_WRITE_ENABLE_CMD     0x06F9 /* Write Enable */
+#define MX66_WRITE_CFG_REG_2_CMD        0x72   /* Write Configuration Register 2 */
+
+/* Common SPI commands */
 #define READ_STATUS_REG_CMD         0x05
-#define WRITE_CFG_REG_2_CMD         0x72
 #define WRITE_ENABLE_CMD            0x06
+#define WRITE_DISABLE_CMD           0x04
+#define READ_ID_CMD                 0x9F   /* JEDEC Read ID */
 
-/* Dummy clocks cycles */
-#define DUMMY_CLOCK_CYCLES_READ            6
-#define DUMMY_CLOCK_CYCLES_READ_REG        4
-#define DUMMY_CLOCK_CYCLES_READ_OCTAL      6
+/* ============================================================================
+ * Dummy clock cycles — GD55LX01GE (OPI DTR mode)
+ * ============================================================================ */
+#define GD55_DUMMY_CLOCK_CYCLES_READ            16  /* DTR Read: Config Byte<1> default = 16 */
+#define GD55_DUMMY_CLOCK_CYCLES_READ_OCTAL      8   /* RDSR in DTR OPI: 8 dummy cycles */
+
+/* ============================================================================
+ * Dummy clock cycles — MX66UM1G45G (OctaBus DTR mode)
+ * ============================================================================ */
+#define MX66_DUMMY_CLOCK_CYCLES_READ            6   /* DTR Read: 6 dummy cycles */
+#define MX66_DUMMY_CLOCK_CYCLES_READ_OCTAL      6   /* RDSR in OPI DTR: 6 dummy cycles */
 
 /* Auto-polling values */
 #define WRITE_ENABLE_MATCH_VALUE    0x02
@@ -53,16 +76,34 @@ extern "C" {
 
 #define AUTO_POLLING_INTERVAL       0x10
 
-/* Memory registers address */
-#define CONFIG_REG2_ADDR1           0x0000000
-#define CR2_DTR_OPI_ENABLE          0x02
+/* ============================================================================
+ * Configuration Register values — GD55LX01GE
+ * ============================================================================ */
+#define GD55_CFG_ADDR_IO_MODE       0x00000000  /* Byte<0>: I/O mode */
+#define GD55_CFG_VAL_OCTAL_DTR_DQS  0xE7        /* Octal DTR with DQS */
+#define GD55_CFG_ADDR_DUMMY_CYCLE   0x00000001  /* Byte<1>: Dummy cycle config (default 0x10=16) */
 
-#define CONFIG_REG2_ADDR3           0x00000300
-#define CR2_DUMMY_CYCLES_66MHZ      0x07
+/* ============================================================================
+ * Configuration Register values — MX66UM1G45G
+ * ============================================================================ */
+#define MX66_CFG_ADDR_IO_MODE       0x00000000  /* Configuration Register 2 */
+#define MX66_CFG_VAL_OCTAL_DTR      0x02        /* Enable Octal DTR mode */
 
 /* Memory delay */
 #define MEMORY_REG_WRITE_DELAY      40
 #define MEMORY_PAGE_PROG_DELAY      2
+
+/* ============================================================================
+ * Chip type detection
+ * ============================================================================ */
+#define MFI_MX66                    0xC2  /* Macronix Manufacturer ID */
+#define MFI_GD55                    0xC8  /* GigaDevice Manufacturer ID */
+
+typedef enum {
+    XSPI_NOR_CHIP_UNKNOWN = 0,
+    XSPI_NOR_CHIP_MX66,
+    XSPI_NOR_CHIP_GD55,
+} XSPI_NOR_ChipType;
 
 /* Size of the flash */
 #define XSPI_FLASH_SIZE             26
@@ -254,10 +295,14 @@ int32_t XSPI_PSRAM_EnableMemoryMappedMode(void);
 int psram_memory_test(void);
 int32_t XSPI_NOR_EnableMemoryMappedMode(void);
 int32_t XSPI_NOR_DisableMemoryMappedMode(void);
+void     XSPI_NOR_ResetAndDeInit(void);
 
 int32_t XSPI_NOR_Erase4K(uint32_t EraseAddr);
 int32_t XSPI_NOR_Write(const uint8_t *pData, uint32_t WriteAddr, uint32_t Size);
 int32_t XSPI_NOR_Read(uint8_t *pData, uint32_t ReadAddr, uint32_t Size);
+
+XSPI_NOR_ChipType XSPI_NOR_DetectChip(XSPI_HandleTypeDef *hxspi);
+extern XSPI_NOR_ChipType xspi_nor_chip;
 /* USER CODE BEGIN Prototypes */
 
 /* USER CODE END Prototypes */

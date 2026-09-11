@@ -25,9 +25,9 @@ export interface PhotoCaptureReq {
 }
 
 export interface RtmpConfigReq {
-  url: string;
-  stream_key: string;
-  enabled: boolean;
+  enable?: boolean;
+  url?: string;
+  stream_key?: string;
 }
 export interface RtmpStartReq {
   url?: string;
@@ -68,6 +68,7 @@ export interface PirConfigReq {
     ignore_time_s: number; // 0-15
     pulse_count: number; // 1-4
     window_time_s: number; // 0-3
+    disable_in_preview: boolean; // Disable PIR capture during preview (default: true)
   };
   timer_trigger?: {
     enable: boolean;
@@ -78,6 +79,9 @@ export interface PirConfigReq {
     weekdays: number[];
     interval_mode: 'normal' | 'scheduled';
     start_time: string;
+    end_time?: string; // Scheduled mode daily window end "HH:MM"; 00:00 = ends at midnight (full day is start T with end T-1min); absent = old firmware, falls back to a full-day display
+    anchor?: string; // Normal interval mode daily grid anchor "HH:MM" (time-of-day; device stamps current time when unset)
+    next_capture_at?: number; // Read-only: next capture node, unix seconds
   };
   remote_trigger?: {
     enable: boolean;
@@ -132,10 +136,8 @@ const deviceTool = {
   getRtspClientsReq: () => request.get('/api/v1/apps/rtsp/clients'),
   kickRtspClientReq: (id: string) => request.delete(`/api/v1/apps/rtsp/clients/${id}`),
 
-  getStreamTabPrefReq: () =>
-    request.get('/api/v1/device/preference/stream_tab'),
-  setStreamTabPrefReq: (data: { stream_tab: string }) =>
-    request.post('/api/v1/device/preference/stream_tab', data),
+  getStreamTabPrefReq: () => (request.get('/api/v1/device/preference/stream_tab')),
+  setStreamTabPrefReq: (data: { stream_tab: string }) => (request.post('/api/v1/device/preference/stream_tab', data)),
 
   // // PIR
   // getPirConfigReq: () => request.get('/api/v1/work-mode/triggers'),

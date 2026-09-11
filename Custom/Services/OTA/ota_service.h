@@ -50,6 +50,16 @@ uint32_t ota_get_update_partition(FirmwareType type);
 int ota_upgrade_begin(upgrade_handle_t *handle, FirmwareType type, firmware_header_t *header);
 
 /**
+ * @brief Begin firmware upgrade at an absolute flash address (bundle direct mode)
+ * @param handle Upgrade handle pointer
+ * @param type Firmware type
+ * @param header Firmware header information
+ * @param flash_addr Absolute flash address (e.g. APP1_BASE), 4K-aligned
+ * @return 0 on success, -1 on failure
+ */
+int ota_upgrade_begin_direct(upgrade_handle_t *handle, FirmwareType type, firmware_header_t *header, uint32_t flash_addr);
+
+/**
  * @brief Write firmware data chunk to update partition
  * @param handle Upgrade handle pointer
  * @param chunk_data Data chunk pointer

@@ -501,15 +501,16 @@ struct mg_connection *mg_mdns_listen(struct mg_mgr *mgr, char *name) {
 
 
 
-// Check if pointer is in valid code region (AXISRAM or Flash)
+// Check if pointer is in valid code region (SRAM_POOL + UNCACHED + APP)
 static inline bool mg_is_valid_code_ptr(void *ptr) {
   uint32_t addr = (uint32_t)ptr;
-  // Flash code region: 0x70000000 - 0x77FFFFFF
-  // AXISRAM code region: 0x90000000 - 0x9027FFFF
+  // SRAM_POOL:       0x34000000 - 0x341B1FFF
+  // UNCACHED:        0x341B2000 - 0x341FFFFF
+  // APP (PSRAM):     0x90000400 - 0x903FFFFF
   // Clear thumb bit for comparison
   addr &= ~1U;
-  return ((addr >= 0x70000000U && addr < 0x78000000U) ||
-          (addr >= 0x90000000U && addr < 0x90280000U));
+  return ((addr >= 0x34000000U && addr < 0x34200000U) ||
+          (addr >= 0x90000400U && addr < 0x90400000U));
 }
 
 void mg_call(struct mg_connection *c, int ev, void *ev_data) {

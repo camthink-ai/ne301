@@ -61,6 +61,18 @@ typedef struct {
     device_t *light_device;
     light_config_t light_config;
     aicam_bool_t light_initialized;
+
+    /* Fill-light-while-streaming runtime: when enabled, the light follows the
+     * light config continuously while the device is running (regardless of
+     * video stream viewers — captures must find the light already lit), and
+     * the capture paths stop flashing it. A dedicated task keeps the schedule
+     * window and brightness in sync; state tracking avoids redundant PWM
+     * ioctls. */
+    osEventFlagsId_t fill_light_events;
+    osThreadId_t fill_light_task;
+    volatile aicam_bool_t fill_light_task_run;
+    aicam_bool_t fill_light_active;
+    uint32_t fill_light_last_duty;
     
     // ISP management
     isp_config_t isp_config;
@@ -103,6 +115,8 @@ static device_service_context_t g_device_service = {0};
  * @param config Camera configuration to apply
  * @return aicam_result_t Operation result
  */
+static void device_service_build_isp_iq_param(const image_config_t *img_cfg, ISP_IQParamTypeDef *out_iq);
+
 static aicam_result_t apply_camera_config_to_hardware(const camera_config_t *config)
 {
     if (!config || !g_device_service.camera_device) {
@@ -196,6 +210,26 @@ static aicam_result_t apply_camera_config_to_hardware(const camera_config_t *con
     return AICAM_OK;
 }
 
+static void device_service_build_isp_iq_param(const image_config_t *img_cfg, ISP_IQParamTypeDef *out_iq)
+{
+    if (img_cfg == NULL || out_iq == NULL) {
+        return;
+    }
+
+    if (img_cfg->isp_mode == IMAGE_ISP_MODE_CUSTOM && g_device_service.isp_config.valid) {
+        json_config_config_to_isp_param(&g_device_service.isp_config, out_iq);
+    } else {
+        cam_iq_scene_t scene = CAM_IQ_SCENE_INDOOR;
+        if (img_cfg->isp_mode == IMAGE_ISP_MODE_OUTDOOR) {
+            scene = CAM_IQ_SCENE_OUTDOOR;
+        } else if (img_cfg->isp_mode == IMAGE_ISP_MODE_CUSTOM && !g_device_service.isp_config.valid) {
+            LOG_SVC_WARN("ISP mode custom without valid saved profile; using indoor IQ defaults");
+        }
+        camera_fill_isp_iq_scene(scene, out_iq);
+    }
+    camera_apply_grayscale_iq(out_iq, img_cfg->grayscale);
+}
+
 /**
  * @brief Initialize default device information
  */
@@ -281,14 +315,16 @@ static void init_default_camera_config(camera_config_t *config)
     config->image_config.capture_disable_comm = image_config.capture_disable_comm;
     config->image_config.capture_storage_ai = image_config.capture_storage_ai;
     config->image_config.isp_mode = image_config.isp_mode;
+    config->image_config.grayscale = image_config.grayscale;
 
-    LOG_SVC_DEBUG("Image configuration updated: brightness=%u, contrast=%u, h_flip=%d, v_flip=%d, aec=%d, isp_mode=%u, startup_skip=%u, fast_skip=%u, fast_res=%u, fast_jpeg_q=%u, cap_dis_comm=%d, cap_stor_ai=%d",
+    LOG_SVC_DEBUG("Image configuration updated: brightness=%u, contrast=%u, h_flip=%d, v_flip=%d, aec=%d, isp_mode=%u, grayscale=%d, startup_skip=%u, fast_skip=%u, fast_res=%u, fast_jpeg_q=%u, cap_dis_comm=%d, cap_stor_ai=%d",
                 config->image_config.brightness,
                 config->image_config.contrast,
                 config->image_config.horizontal_flip,
                 config->image_config.vertical_flip,
                 config->image_config.aec,
                 config->image_config.isp_mode,
+                config->image_config.grayscale,
                 config->image_config.startup_skip_frames,
                 config->image_config.fast_capture_skip_frames,
                 config->image_config.fast_capture_resolution,
@@ -322,9 +358,10 @@ static void init_default_light_config(light_config_t *config)
     config->brightness_level = light_config.brightness_level;
     config->auto_trigger_enabled = light_config.auto_trigger_enabled;
     config->light_threshold = light_config.light_threshold;
+    config->fill_light_while_streaming = light_config.fill_light_while_streaming;
 
-    LOG_SVC_DEBUG("Light configuration updated: connected=%u, mode=%u, start_hour=%u, start_minute=%u, end_hour=%u, end_minute=%u, brightness_level=%u, auto_trigger_enabled=%u, light_threshold=%u",
-                config->connected, config->mode, config->start_hour, config->start_minute, config->end_hour, config->end_minute, config->brightness_level, config->auto_trigger_enabled, config->light_threshold);
+    LOG_SVC_DEBUG("Light configuration updated: connected=%u, mode=%u, start_hour=%u, start_minute=%u, end_hour=%u, end_minute=%u, brightness_level=%u, auto_trigger_enabled=%u, light_threshold=%u, fill_light_while_streaming=%u",
+                config->connected, config->mode, config->start_hour, config->start_minute, config->end_hour, config->end_minute, config->brightness_level, config->auto_trigger_enabled, config->light_threshold, config->fill_light_while_streaming);
 }
 
 /**
@@ -388,7 +425,7 @@ void device_service_update_device_mac_address()
     netif_info_t netif_info;
     aicam_result_t result = nm_get_netif_info(NETIF_NAME_WIFI_AP, &netif_info);
     if (result == AICAM_OK) {
-        printf("IF_MAC: "NETIF_MAC_STR_FMT"\r\n", NETIF_MAC_PARAMETER(netif_info.if_mac));
+        // printf("IF_MAC: "NETIF_MAC_STR_FMT"\r\n", NETIF_MAC_PARAMETER(netif_info.if_mac));
         snprintf(g_device_service.device_info.mac_address, sizeof(g_device_service.device_info.mac_address), 
                 NETIF_MAC_STR_FMT,
                 NETIF_MAC_PARAMETER(netif_info.if_mac));
@@ -408,9 +445,14 @@ void device_service_update_device_mac_address()
  */
 void device_service_update_communication_type()
 {
-    
-    // Check WiFi connection status
-    communication_type_t communication_type = communication_get_selected_type();
+    /* Report the type actually carrying data (active), not the user's UI
+     * selection (selected) — the upload JSON must tell the server how this
+     * payload was delivered. Fall back to selected only when nothing is
+     * connected yet. */
+    communication_type_t communication_type = communication_get_current_type();
+    if (communication_type == COMM_TYPE_NONE) {
+        communication_type = communication_get_selected_type();
+    }
     snprintf(g_device_service.device_info.communication_type, sizeof(g_device_service.device_info.communication_type), "%s", communication_type_to_string(communication_type));
 
     LOG_SVC_DEBUG("Communication type updated: %s", g_device_service.device_info.communication_type);
@@ -426,35 +468,35 @@ void device_service_update_communication_type()
 static void update_storage_info(storage_info_t *info)
 {
     if (!info) return;
-    
+
+    // ── SD Card ──────────────────────────────────────────
     sd_disk_info_t sd_info;
     int result = sd_get_disk_info(&sd_info);
-    
-    info->sd_card_connected = (result == 0 && 
+
+    info->sd_card_connected = (result == 0 &&
                             (sd_info.mode == SD_MODE_NORMAL || sd_info.mode == SD_MODE_FORMATING));
-    
+
     if (info->sd_card_connected && sd_info.mode == SD_MODE_NORMAL) {
         info->total_capacity_mb = (uint64_t)sd_info.total_KBytes / 1024;
         info->available_capacity_mb = (uint64_t)sd_info.free_KBytes / 1024;
         info->used_capacity_mb = info->total_capacity_mb - info->available_capacity_mb;
-        
+
         if (info->total_capacity_mb > 0) {
             info->usage_percent = (float)info->used_capacity_mb / info->total_capacity_mb * 100.0f;
         } else {
             info->usage_percent = 0.0f;
         }
-        
-        g_device_service.device_info.storage_usage_percent = info->usage_percent;
-        
 
-        snprintf(g_device_service.device_info.storage_card_info, 
+        g_device_service.device_info.storage_usage_percent = info->usage_percent;
+
+        snprintf(g_device_service.device_info.storage_card_info,
                 sizeof(g_device_service.device_info.storage_card_info),
-                "%.1fGB %s SD Card (%.1f%% used)", 
-                info->total_capacity_mb / 1024.0f, 
+                "%.1fGB %s SD Card (%.1f%% used)",
+                info->total_capacity_mb / 1024.0f,
                 sd_info.fs_type,
                 info->usage_percent);
-                
-        LOG_SVC_DEBUG("SD Card Info: Total=%.1fGB, Used=%.1fGB, Free=%.1fGB, FS=%s", 
+
+        LOG_SVC_DEBUG("SD Card Info: Total=%.1fGB, Used=%.1fGB, Free=%.1fGB, FS=%s",
                     info->total_capacity_mb / 1024.0f,
                     info->used_capacity_mb / 1024.0f,
                     info->available_capacity_mb / 1024.0f,
@@ -464,9 +506,9 @@ static void update_storage_info(storage_info_t *info)
         info->used_capacity_mb = 0;
         info->available_capacity_mb = 0;
         info->usage_percent = 0.0f;
-        
+
         g_device_service.device_info.storage_usage_percent = 0.0f;
-        
+
         const char* status_msg = "No SD Card";
         switch (sd_info.mode) {
             case SD_MODE_UNPLUG:
@@ -482,12 +524,42 @@ static void update_storage_info(storage_info_t *info)
                 status_msg = "SD Card Not Ready";
                 break;
         }
-        
-        snprintf(g_device_service.device_info.storage_card_info, 
+
+        snprintf(g_device_service.device_info.storage_card_info,
                 sizeof(g_device_service.device_info.storage_card_info),
                 "%s", status_msg);
-                
+
         LOG_SVC_DEBUG("SD Card Status: mode=%d, result=%d", sd_info.mode, result);
+    }
+
+    // ── Internal Flash (LittleFS) ────────────────────────
+    /* Only check the mounted flag (RAM, O(1)) — do NOT call storage_get_disk_info()
+     * here. That runs lfs_fs_size(), a full-FS traverse whose cost grows linearly
+     * with file count. With thousands of capture records it takes 3-4 seconds,
+     * tripping the watchdog during boot. The free/total capacity is left at 0
+     * here; the web API (device_service_get_info → storage_get_disk_info with a
+     * 2s cache) fills it in lazily on actual request, not on every boot. */
+    info->flash_fs_mounted = storage_is_lfs_mounted();
+    info->flash_fs_error = AICAM_FALSE;
+    memset(info->flash_error, 0, sizeof(info->flash_error));
+
+    if (info->flash_fs_mounted) {
+        /* total is constant — derive from the known partition size, no traverse. */
+        info->flash_total_capacity_mb = LITTLEFS_SIZE / (1024 * 1024);
+        info->flash_available_capacity_mb = 0;  /* filled lazily by web API */
+        info->flash_used_capacity_mb = 0;
+        info->flash_usage_percent = 0.0f;
+        strncpy(info->flash_fs_type, "littlefs", sizeof(info->flash_fs_type) - 1);
+        info->flash_fs_type[sizeof(info->flash_fs_type) - 1] = '\0';
+    } else {
+        /* Not mounted — surface as an error so the web UI can offer a format. */
+        info->flash_fs_error = AICAM_TRUE;
+        strncpy(info->flash_error, "not_mounted", sizeof(info->flash_error) - 1);
+        info->flash_total_capacity_mb = 0;
+        info->flash_available_capacity_mb = 0;
+        info->flash_used_capacity_mb = 0;
+        info->flash_usage_percent = 0.0f;
+        memset(info->flash_fs_type, 0, sizeof(info->flash_fs_type));
     }
 }
 
@@ -639,14 +711,134 @@ static void apply_light_control(const light_config_t *config)
     
     // Control fill light hardware through HAL layer interface
     if (should_enable) {
-        // Set brightness level (0-100 converted to 0-255)
-        uint8_t duty = (uint8_t)((config->brightness_level * 255) / 100);
+        // Set brightness level
+        uint8_t duty = config->brightness_level;
         device_ioctl(g_device_service.light_device, MISC_CMD_PWM_SET_DUTY, (uint8_t *)&duty, 0);
         device_ioctl(g_device_service.light_device, MISC_CMD_PWM_ON, 0, 0);
         LOG_SVC_DEBUG("Light turned ON with brightness: %u%% (duty: %u)", config->brightness_level, duty);
     } else {
         device_ioctl(g_device_service.light_device, MISC_CMD_PWM_OFF, 0, 0);
         LOG_SVC_DEBUG("Light turned OFF");
+    }
+}
+
+/* ==================== Fill Light While Streaming ==================== */
+
+/* Fill-light evaluation period. Cheap no-op unless the feature is enabled and
+ * a stream is running; keeps the custom schedule window and stream start/stop
+ * edges in sync without hooking the Video Hub from this service. */
+#define FILL_LIGHT_SYNC_PERIOD_MS 2000U
+
+/* Wakes the fill-light task immediately (config change); the wait timeout is
+ * the periodic tick. */
+#define FILL_LIGHT_EVT_SYNC (1UL << 0)
+
+/* fill_light_sync() calls LOG (printf-family formatting), rtc_get_time() and
+ * PWM ioctls — far too deep for the ThreadX timer thread, whose stack is only
+ * TX_TIMER_THREAD_STACK_SIZE (1024) bytes. Running it from an osTimer callback
+ * overflowed that stack and hard-faulted (MSTKERR below _tx_timer_thread_
+ * stack_area). Same lesson as communication_service's startup-decision task:
+ * heavy work lives on a dedicated task, callers only set an event flag. */
+static uint8_t fill_light_task_stack[1024 * 4] ALIGN_32 IN_PSRAM;
+
+/**
+ * @brief Check if the current RTC time is inside the custom light schedule
+ * @details RTC-based and shared by the capture flash paths and the
+ *          fill-light sync: same-day window is [start, end), cross-day window
+ *          wraps midnight, start == end means the light never turns on.
+ */
+static aicam_bool_t light_custom_schedule_active_now(const light_config_t *config)
+{
+    RTC_TIME_S now_time = rtc_get_time();
+    int start_minutes = (int)(config->start_hour * 60 + config->start_minute);
+    int end_minutes = (int)(config->end_hour * 60 + config->end_minute);
+    int now_minutes = (int)(now_time.hour * 60 + now_time.minute);
+
+    if (start_minutes < end_minutes)
+    {
+        return (now_minutes >= start_minutes && now_minutes < end_minutes) ? AICAM_TRUE : AICAM_FALSE;
+    }
+    else if (start_minutes > end_minutes)
+    {
+        return (now_minutes >= start_minutes || now_minutes < end_minutes) ? AICAM_TRUE : AICAM_FALSE;
+    }
+    return AICAM_FALSE;
+}
+
+/**
+ * @brief Synchronize the light hardware with fill-light-while-streaming mode
+ * @details Target state:
+ *          - feature on -> the light follows the light config for as long as
+ *            the device runs, regardless of video stream viewers: ON/AUTO ->
+ *            on, CUSTOM -> on inside the schedule window, OFF -> off. This
+ *            way work-time captures always find the light already lit (the
+ *            "flash" effect) even when nobody is watching the stream;
+ *          - feature off -> off (captures fall back to capture-time flash).
+ *          Runs only on the fill-light task: periodically (wait timeout:
+ *          schedule window edges) and immediately after a config change
+ *          (event flag). Only issues PWM ioctls when the state or duty
+ *          changes.
+ */
+static void fill_light_sync(void)
+{
+    if (!g_device_service.light_initialized || !g_device_service.light_device) {
+        return;
+    }
+
+    aicam_bool_t want_on = AICAM_FALSE;
+    if (g_device_service.light_config.fill_light_while_streaming &&
+        g_device_service.light_config.connected) {
+        switch (g_device_service.light_config.mode) {
+            case LIGHT_MODE_ON:
+            case LIGHT_MODE_AUTO:
+                /* AUTO is the web "always on" mapping — the capture flash
+                 * path treats AUTO + auto_trigger_enabled the same way. */
+                want_on = AICAM_TRUE;
+                break;
+            case LIGHT_MODE_CUSTOM:
+                want_on = light_custom_schedule_active_now(&g_device_service.light_config);
+                break;
+            case LIGHT_MODE_OFF:
+            default:
+                want_on = AICAM_FALSE;
+                break;
+        }
+    }
+
+    if (want_on) {
+        uint32_t duty = g_device_service.light_config.brightness_level;
+        if (!g_device_service.fill_light_active || g_device_service.fill_light_last_duty != duty) {
+            uint8_t duty_u8 = (uint8_t)duty;
+            device_ioctl(g_device_service.light_device, MISC_CMD_PWM_SET_DUTY, (uint8_t *)&duty_u8, 0);
+            device_ioctl(g_device_service.light_device, MISC_CMD_PWM_ON, 0, 0);
+            g_device_service.fill_light_active = AICAM_TRUE;
+            g_device_service.fill_light_last_duty = duty;
+            LOG_SVC_INFO("Fill light ON while streaming (brightness: %u%%)", (unsigned)duty);
+        }
+    } else if (g_device_service.fill_light_active) {
+        device_ioctl(g_device_service.light_device, MISC_CMD_PWM_OFF, 0, 0);
+        g_device_service.fill_light_active = AICAM_FALSE;
+        LOG_SVC_INFO("Fill light OFF (feature disabled, schedule ended or mode off)");
+    }
+}
+
+/**
+ * @brief Fill-light worker task — sole owner of fill_light_sync()
+ * @details Wakes on config changes (event flag, immediate) and on the periodic
+ *          timeout (schedule window edges, stream start/stop). Runs at
+ *          osPriorityBelowNormal: slow housekeeping, must not compete with the
+ *          streaming paths.
+ */
+static void fill_light_task(void *argument)
+{
+    (void)argument;
+    while (g_device_service.fill_light_task_run) {
+        (void)osEventFlagsWait(g_device_service.fill_light_events, FILL_LIGHT_EVT_SYNC,
+                               osFlagsWaitAny, FILL_LIGHT_SYNC_PERIOD_MS);
+        if (!g_device_service.fill_light_task_run) {
+            break;
+        }
+        fill_light_sync();
     }
 }
 
@@ -815,6 +1007,29 @@ aicam_result_t device_service_start(void)
     } else {
         LOG_SVC_WARN("Light device not found: %s", FLASH_DEVICE_NAME);
     }
+
+    // Fill-light-while-streaming sync task (no-op unless the feature is on)
+    g_device_service.fill_light_active = AICAM_FALSE;
+    g_device_service.fill_light_last_duty = 0;
+    if (g_device_service.fill_light_events == NULL) {
+        g_device_service.fill_light_events = osEventFlagsNew(NULL);
+    }
+    if (g_device_service.fill_light_events != NULL && g_device_service.fill_light_task == NULL) {
+        const osThreadAttr_t fill_light_task_attr = {
+            .name = "FillLightTask",
+            .stack_mem = fill_light_task_stack,
+            .stack_size = sizeof(fill_light_task_stack),
+            .priority = osPriorityBelowNormal,
+        };
+        g_device_service.fill_light_task_run = AICAM_TRUE;
+        g_device_service.fill_light_task = osThreadNew(fill_light_task, NULL, &fill_light_task_attr);
+    }
+    if (g_device_service.fill_light_task != NULL) {
+        // Immediate first evaluation; further ticks come from the wait timeout
+        (void)osEventFlagsSet(g_device_service.fill_light_events, FILL_LIGHT_EVT_SYNC);
+    } else {
+        LOG_SVC_WARN("Fill light sync task creation failed");
+    }
     
     // Find and initialize LED device
     g_device_service.led_device = device_find_pattern(IND_EXT_DEVICE_NAME, DEV_TYPE_MISC);
@@ -823,9 +1038,16 @@ aicam_result_t device_service_start(void)
         g_device_service.led_config.connected = AICAM_TRUE;
         g_device_service.led_initialized = AICAM_TRUE;
         
-        // Set initial indicator state: system running, AP not yet started
-        g_device_service.indicator_state = SYSTEM_INDICATOR_RUNNING_AP_OFF;
-        device_service_set_indicator_state(SYSTEM_INDICATOR_RUNNING_AP_OFF);
+        // Set initial indicator state based on actual AP state. on_wifi_ap_ready
+        // runs on the async netif thread and may have already set AP_ON before
+        // device_service start; a blind AP_OFF here clobbers it (timing race).
+        if (communication_is_interface_connected(NETIF_NAME_WIFI_AP)) {
+            g_device_service.indicator_state = SYSTEM_INDICATOR_RUNNING_AP_ON;
+            device_service_set_indicator_state(SYSTEM_INDICATOR_RUNNING_AP_ON);
+        } else {
+            g_device_service.indicator_state = SYSTEM_INDICATOR_RUNNING_AP_OFF;
+            device_service_set_indicator_state(SYSTEM_INDICATOR_RUNNING_AP_OFF);
+        }
     }
     
     // Find and initialize button device
@@ -873,11 +1095,23 @@ aicam_result_t device_service_stop(void)
     }
     
     LOG_SVC_INFO("Stopping Device Service...");
-    
+
+    // Stop the fill-light sync task and turn the fill light off
+    if (g_device_service.fill_light_task != NULL) {
+        g_device_service.fill_light_task_run = AICAM_FALSE;
+        if (g_device_service.fill_light_events != NULL) {
+            (void)osEventFlagsSet(g_device_service.fill_light_events, FILL_LIGHT_EVT_SYNC);
+        }
+        osThreadJoin(g_device_service.fill_light_task);
+        osThreadTerminate(g_device_service.fill_light_task);
+        g_device_service.fill_light_task = NULL;
+    }
+
     // Turn off light if enabled
     if (g_device_service.light_initialized && g_device_service.light_device) {
-        device_ioctl(g_device_service.light_device, 0, NULL, 0);
+        device_ioctl(g_device_service.light_device, MISC_CMD_PWM_OFF, 0, 0);
     }
+    g_device_service.fill_light_active = AICAM_FALSE;
     
     // Stop camera if running
     if (g_device_service.camera_initialized && g_device_service.camera_device) {
@@ -904,7 +1138,13 @@ aicam_result_t device_service_deinit(void)
     }
     
     LOG_SVC_INFO("Deinitializing Device Service...");
-    
+
+    // Release the fill-light event flags before the context reset drops the id
+    if (g_device_service.fill_light_events != NULL) {
+        osEventFlagsDelete(g_device_service.fill_light_events);
+        g_device_service.fill_light_events = NULL;
+    }
+
     // Reset context
     memset(&g_device_service, 0, sizeof(device_service_context_t));
     
@@ -936,6 +1176,23 @@ aicam_result_t device_service_get_info(device_info_config_t *info)
     // Update dynamic information (requires full service start)
     if (g_device_service.running) {
         update_storage_info(&g_device_service.storage_info);
+        /* Lazily fetch flash free-space — update_storage_info skips this to
+         * avoid lfs_fs_size on the boot path. Here (web API request) the 2s
+         * cache in storage_get_disk_info makes repeated polls cheap; the first
+         * call per cache window does traverse, but that's a user-initiated
+         * request, not the boot hot path. */
+        storage_disk_info_t fi;
+        if (storage_get_disk_info(&fi) == 0 && fi.mounted) {
+            g_device_service.storage_info.flash_available_capacity_mb = (uint64_t)fi.free_KBytes / 1024;
+            g_device_service.storage_info.flash_used_capacity_mb =
+                g_device_service.storage_info.flash_total_capacity_mb -
+                g_device_service.storage_info.flash_available_capacity_mb;
+            if (g_device_service.storage_info.flash_total_capacity_mb > 0) {
+                g_device_service.storage_info.flash_usage_percent =
+                    (float)g_device_service.storage_info.flash_used_capacity_mb /
+                    g_device_service.storage_info.flash_total_capacity_mb * 100.0f;
+            }
+        }
         update_device_name(&g_device_service.device_info);
         //device_service_update_device_mac_address();
     }
@@ -965,7 +1222,30 @@ aicam_result_t device_service_update_info(const device_info_config_t *info)
     }
     
     LOG_SVC_INFO("Device information updated");
-    
+
+    return AICAM_OK;
+}
+
+/* Lightweight read of cached device info — no storage scan, no side effects.
+ * Use this in hot paths (e.g. capture metadata build) where only battery %,
+ * device name, and serial are needed. Avoids device_service_get_info() which
+ * internally calls update_storage_info() → storage_get_disk_info() → lfs_fs_size()
+ * (230 ms on a full 32 MB littlefs volume). */
+aicam_result_t device_service_get_cached_info(device_info_config_t *info)
+{
+    if (!info) return AICAM_ERROR_INVALID_PARAM;
+    if (!g_device_service.initialized) return AICAM_ERROR_NOT_INITIALIZED;
+
+    /* Battery is dynamic but fast (HAL GPIO read); update it here. */
+    update_battery_info(&g_device_service.device_info);
+
+    /* communication_type must reflect the live active connection (the link
+     * actually delivering this upload), not a stale boot-time default.
+     * Refresh here so every MQTT publish — real-time and batch — stamps the
+     * current type (both paths build JSON via this getter). */
+    device_service_update_communication_type();
+
+    memcpy(info, &g_device_service.device_info, sizeof(device_info_config_t));
     return AICAM_OK;
 }
 
@@ -989,14 +1269,44 @@ aicam_result_t device_service_storage_get_info(storage_info_t *info)
     if (!info) {
         return AICAM_ERROR_INVALID_PARAM;
     }
-    
+
     if (!g_device_service.initialized) {
         return AICAM_ERROR_NOT_INITIALIZED;
     }
-    
+
     update_storage_info(&g_device_service.storage_info);
+    /* Lazily fetch flash free-space — update_storage_info skips this on the boot
+     * path to avoid lfs_fs_size (O(file count), 3-4s with many files → watchdog).
+     * Here it's a web API request; the 2s cache in storage_get_disk_info makes
+     * repeated polls cheap. */
+    storage_disk_info_t fi;
+    int fi_ret = storage_get_disk_info(&fi);
+    if (fi_ret == 0 && fi.mounted) {
+        g_device_service.storage_info.flash_available_capacity_mb = (uint64_t)fi.free_KBytes / 1024;
+        g_device_service.storage_info.flash_used_capacity_mb =
+            g_device_service.storage_info.flash_total_capacity_mb -
+            g_device_service.storage_info.flash_available_capacity_mb;
+        if (g_device_service.storage_info.flash_total_capacity_mb > 0) {
+            g_device_service.storage_info.flash_usage_percent =
+                (float)g_device_service.storage_info.flash_used_capacity_mb /
+                g_device_service.storage_info.flash_total_capacity_mb * 100.0f;
+        }
+    } else {
+        LOG_SVC_WARN("storage_get_info: flash disk info failed (ret=%d, mounted=%d) -- lfs_fs_size may have errored on a corrupt FS",
+                     fi_ret, (int)fi.mounted);
+        /* Surface the failure so the web UI can offer a format. If the FS
+         * reported mounted but lfs_fs_size errored, it's corrupt; otherwise
+         * it's simply not mounted (already flagged by update_storage_info). */
+        g_device_service.storage_info.flash_fs_error = AICAM_TRUE;
+        if (fi.mounted) {
+            strncpy(g_device_service.storage_info.flash_error, "corrupt",
+                    sizeof(g_device_service.storage_info.flash_error) - 1);
+            g_device_service.storage_info.flash_error[
+                sizeof(g_device_service.storage_info.flash_error) - 1] = '\0';
+        }
+    }
     memcpy(info, &g_device_service.storage_info, sizeof(storage_info_t));
-    
+
     return AICAM_OK;
 }
 
@@ -1104,35 +1414,7 @@ aicam_result_t device_service_image_set_config(const image_config_t *config)
         return AICAM_ERROR_INVALID_PARAM;
     }
 
-    uint32_t prev_isp_mode = g_device_service.camera_config.image_config.isp_mode;
     memcpy(&g_device_service.camera_config.image_config, config, sizeof(image_config_t));
-
-    /* ISP mode affects IQ init buffer; refresh while camera is idle or restart stream */
-    if (prev_isp_mode != config->isp_mode && g_device_service.camera_initialized && g_device_service.camera_device) {
-        aicam_bool_t cam_streaming = g_device_service.camera_config.enabled;
-        if (cam_streaming) {
-            (void)device_service_camera_stop();
-        }
-        ISP_IQParamTypeDef iq = {0};
-        if (config->isp_mode == IMAGE_ISP_MODE_CUSTOM && g_device_service.isp_config.valid) {
-            json_config_config_to_isp_param(&g_device_service.isp_config, &iq);
-        } else {
-            cam_iq_scene_t scene = CAM_IQ_SCENE_INDOOR;
-            if (config->isp_mode == IMAGE_ISP_MODE_OUTDOOR) {
-                scene = CAM_IQ_SCENE_OUTDOOR;
-            } else if (config->isp_mode == IMAGE_ISP_MODE_CUSTOM && !g_device_service.isp_config.valid) {
-                LOG_SVC_WARN("ISP mode custom without valid saved profile; using indoor IQ defaults");
-            }
-            camera_fill_isp_iq_scene(scene, &iq);
-        }
-        (void)device_ioctl(g_device_service.camera_device,
-                    CAM_CMD_SET_ISP_PARAM,
-                    (uint8_t *)&iq,
-                    sizeof(ISP_IQParamTypeDef));
-        if (cam_streaming) {
-            (void)device_service_camera_start();
-        }
-    }
 
     
     // Apply configuration to camera device if initialized
@@ -1141,6 +1423,23 @@ aicam_result_t device_service_image_set_config(const image_config_t *config)
         if (result != AICAM_OK) {
             LOG_SVC_ERROR("Failed to apply camera configuration to hardware: %d", result);
             return result;
+        }
+
+        // Hot-swap ISP IQ for isp_mode / grayscale changes — no restart needed
+        {
+            ISP_IQParamTypeDef iq = {0};
+            device_service_build_isp_iq_param(&g_device_service.camera_config.image_config, &iq);
+            result = device_ioctl(g_device_service.camera_device,
+                                CAM_CMD_APPLY_ISP_IQ,
+                                (uint8_t *)&iq,
+                                sizeof(ISP_IQParamTypeDef));
+            if (result != AICAM_OK) {
+                LOG_SVC_ERROR("Failed to apply ISP IQ hot-swap: %d", result);
+                return result;
+            }
+            LOG_SVC_DEBUG("ISP IQ hot-swapped (mode=%u, grayscale=%d)",
+                         g_device_service.camera_config.image_config.isp_mode,
+                         g_device_service.camera_config.image_config.grayscale);
         }
     }
 
@@ -1151,9 +1450,9 @@ aicam_result_t device_service_image_set_config(const image_config_t *config)
     }
 
 
-    LOG_SVC_INFO("Image configuration applied: brightness=%u, contrast=%u, h_flip=%d, v_flip=%d, isp_mode=%u",
+    LOG_SVC_INFO("Image configuration applied: brightness=%u, contrast=%u, h_flip=%d, v_flip=%d, isp_mode=%u, grayscale=%d",
                 config->brightness, config->contrast, config->horizontal_flip, config->vertical_flip,
-                config->isp_mode);
+                config->isp_mode, config->grayscale);
 
     return AICAM_OK;
 }
@@ -1211,9 +1510,17 @@ aicam_result_t device_service_light_set_config(const light_config_t *config)
         LOG_SVC_ERROR("Failed to set light configuration: %d", result);
     }
     
-    LOG_SVC_INFO("Light configuration updated: mode=%d, brightness=%u%%", 
-                config->mode, config->brightness_level);
-    
+    /* Re-evaluate fill-light-while-streaming immediately so toggling the
+     * feature or changing mode/brightness/schedule takes effect right away
+     * (no wait for the next periodic sync). fill_light_sync() runs only on
+     * the fill-light task — wake it instead of calling it here. */
+    if (g_device_service.fill_light_events != NULL) {
+        (void)osEventFlagsSet(g_device_service.fill_light_events, FILL_LIGHT_EVT_SYNC);
+    }
+
+    LOG_SVC_INFO("Light configuration updated: mode=%d, brightness=%u%%, fill_light_while_streaming=%u",
+                config->mode, config->brightness_level, config->fill_light_while_streaming);
+
     return AICAM_OK;
 }
 
@@ -1222,29 +1529,19 @@ aicam_bool_t device_service_light_is_connected(void)
     return g_device_service.light_config.connected;
 }
 
-aicam_result_t device_service_light_control(aicam_bool_t enable)
+/* Raw light PWM helpers for the capture-time flash paths (work + wake). The
+ * fill-light-while-streaming sync uses the same ioctls directly inside
+ * fill_light_sync() where it tracks state/duty changes. */
+static void light_pwm_on(void)
 {
-    if (!g_device_service.initialized) {
-        return AICAM_ERROR_NOT_INITIALIZED;
-    }
-    
-    if (!g_device_service.light_initialized || !g_device_service.light_device) {
-        return AICAM_ERROR_NOT_FOUND;
-    }
-    
-    // Manual control - temporarily override automatic control
-    if (enable) {
-        // Set current configured brightness level
-        uint8_t duty = (uint8_t)((g_device_service.light_config.brightness_level * 255) / 100);
-        device_ioctl(g_device_service.light_device, MISC_CMD_PWM_SET_DUTY, (uint8_t *)&duty, 0);
-        device_ioctl(g_device_service.light_device, MISC_CMD_PWM_ON, 0, 0);
-        LOG_SVC_INFO("Light manually controlled: ON (brightness: %u%%)", g_device_service.light_config.brightness_level);
-    } else {
-        device_ioctl(g_device_service.light_device, MISC_CMD_PWM_OFF, 0, 0);
-        LOG_SVC_INFO("Light manually controlled: OFF");
-    }
-    
-    return AICAM_OK;
+    uint8_t duty = g_device_service.light_config.brightness_level;
+    device_ioctl(g_device_service.light_device, MISC_CMD_PWM_SET_DUTY, (uint8_t *)&duty, 0);
+    device_ioctl(g_device_service.light_device, MISC_CMD_PWM_ON, 0, 0);
+}
+
+static void light_pwm_off(void)
+{
+    device_ioctl(g_device_service.light_device, MISC_CMD_PWM_OFF, 0, 0);
 }
 
 aicam_result_t device_service_light_set_brightness(uint32_t brightness_level)
@@ -1264,8 +1561,8 @@ aicam_result_t device_service_light_set_brightness(uint32_t brightness_level)
     // Update brightness level in configuration
     g_device_service.light_config.brightness_level = brightness_level;
     
-    // Set PWM duty cycle (0-100 converted to 0-255)
-    uint8_t duty = (uint8_t)((brightness_level * 255) / 100);
+    // Set PWM duty cycle
+    uint8_t duty = brightness_level;
     device_ioctl(g_device_service.light_device, MISC_CMD_PWM_SET_DUTY, (uint8_t *)&duty, 0);
     
     LOG_SVC_INFO("Light brightness set to: %u%% (duty: %u)", brightness_level, duty);
@@ -1334,6 +1631,8 @@ aicam_result_t device_service_camera_init(void)
 
 aicam_result_t device_service_camera_start(void)
 {
+    aicam_result_t result;
+
     if (!g_device_service.camera_initialized) {
         return AICAM_ERROR_NOT_INITIALIZED;
     }
@@ -1350,28 +1649,17 @@ aicam_result_t device_service_camera_start(void)
                     g_device_service.camera_config.image_config.startup_skip_frames);
     }
 
-    // apply isp IQ init buffer (built-in scene or custom profile from NVS)
+    // apply isp IQ init buffer (built-in scene or custom profile from NVS) + grayscale overlay
     {
         ISP_IQParamTypeDef isp_param = {0};
-        uint32_t m = g_device_service.camera_config.image_config.isp_mode;
-        if (m == IMAGE_ISP_MODE_CUSTOM && g_device_service.isp_config.valid) {
-            json_config_config_to_isp_param(&g_device_service.isp_config, &isp_param);
-        } else {
-            cam_iq_scene_t scene = CAM_IQ_SCENE_INDOOR;
-            if (m == IMAGE_ISP_MODE_OUTDOOR) {
-                scene = CAM_IQ_SCENE_OUTDOOR;
-            } else if (m == IMAGE_ISP_MODE_CUSTOM && !g_device_service.isp_config.valid) {
-                LOG_SVC_WARN("ISP mode custom without valid saved profile; using indoor IQ defaults");
-            }
-            camera_fill_isp_iq_scene(scene, &isp_param);
-        }
+        device_service_build_isp_iq_param(&g_device_service.camera_config.image_config, &isp_param);
         device_ioctl(g_device_service.camera_device,
                     CAM_CMD_SET_ISP_PARAM,
                     (uint8_t *)&isp_param,
                     sizeof(ISP_IQParamTypeDef));
     }
 
-    aicam_result_t result = device_start(g_device_service.camera_device);
+    result = device_start(g_device_service.camera_device);
     if (result != AICAM_OK) {
         LOG_SVC_ERROR("Failed to start camera: %d", result);
         return result;
@@ -1509,39 +1797,31 @@ aicam_result_t device_service_camera_capture(uint8_t **buffer, int *out_len,
     jpegc_params_t jpeg_param;
 
 
-    // 1. light control
-    if (g_device_service.light_config.mode == LIGHT_MODE_AUTO &&
-        g_device_service.light_config.auto_trigger_enabled)
+    // 1. light control (capture-time flash). Skipped entirely in
+    //    fill-light-while-streaming mode: there the light is driven by the
+    //    continuous sync instead, and work-time captures must not toggle it.
+    if (!g_device_service.light_config.fill_light_while_streaming)
     {
-        light_on = AICAM_TRUE;
-    }
-    else if (g_device_service.light_config.mode == LIGHT_MODE_CUSTOM)
-    {
-        RTC_TIME_S now_time = rtc_get_time();
-        int start_minutes = g_device_service.light_config.start_hour * 60 + g_device_service.light_config.start_minute;
-        int end_minutes = g_device_service.light_config.end_hour * 60 + g_device_service.light_config.end_minute;
-        int now_minutes = now_time.hour * 60 + now_time.minute;
+        if (g_device_service.light_config.mode == LIGHT_MODE_AUTO &&
+            g_device_service.light_config.auto_trigger_enabled)
+        {
+            light_on = AICAM_TRUE;
+        }
+        else if (g_device_service.light_config.mode == LIGHT_MODE_CUSTOM)
+        {
+            light_on = light_custom_schedule_active_now(&g_device_service.light_config);
+        }
 
-        if (start_minutes < end_minutes)
+        if (light_on)
         {
-            light_on = (now_minutes >= start_minutes && now_minutes < end_minutes);
-        }
-        else if (start_minutes > end_minutes)
-        {
-            light_on = (now_minutes >= start_minutes || now_minutes < end_minutes);
-        }
-        else
-        {
-            light_on = AICAM_FALSE;
+            light_pwm_on();
         }
     }
 
-    if (light_on)
-    {
-        device_service_light_control(AICAM_TRUE);
-    }
-
-    // 2. get camera and jpeg config
+    // 2. get camera config (JPEG params are set in step 3.5, after the
+    //    camera buffers are acquired: SET_ENC_PARAM allocates the encode
+    //    output buffer, so a capture that fails before that point must not
+    //    have touched jpegc state)
     ret = device_ioctl(g_device_service.camera_device, CAM_CMD_GET_PIPE1_PARAM, (uint8_t *)&pipe_param, sizeof(pipe_params_t));
     if (ret != 0)
     {
@@ -1549,6 +1829,44 @@ aicam_result_t device_service_camera_capture(uint8_t **buffer, int *out_len,
         goto cleanup;
     }
 
+    // 3. get frame buffer with frame ID
+    uint32_t captured_frame_id = 0;
+    camera_buffer_with_frame_id_t buffer_with_id = {0};
+    aicam_result_t buffer_result = device_ioctl(g_device_service.camera_device, CAM_CMD_GET_PIPE1_BUFFER_WITH_FRAME_ID,
+                                                 (uint8_t *)&buffer_with_id, 0);
+    if (buffer_result == AICAM_OK && buffer_with_id.buffer != NULL && buffer_with_id.size > 0) {
+        fb = buffer_with_id.buffer;
+        fb_len = buffer_with_id.size;
+        captured_frame_id = buffer_with_id.frame_id;
+    } else {
+        // Fallback to old method if WITH_FRAME_ID is not supported
+        fb_len = device_ioctl(g_device_service.camera_device, CAM_CMD_GET_PIPE1_BUFFER, (uint8_t *)&fb, 0);
+        if (fb_len <= 0 || fb == NULL)
+        {
+            LOG_SVC_WARN("Failed to get pipe1 buffer");
+            result = AICAM_ERROR_INVALID_PARAM;
+            goto cleanup;
+        }
+    }
+
+    // Return frame ID if requested
+    if (frame_id != NULL) {
+        *frame_id = captured_frame_id;
+    }
+
+    if (need_ai_inference)
+    {
+        pipe2_fb_len = device_ioctl(g_device_service.camera_device, CAM_CMD_GET_PIPE2_BUFFER, (uint8_t *)&input_frame_buffer, 0);
+        if (pipe2_fb_len <= 0 || input_frame_buffer == NULL)
+        {
+            LOG_SVC_WARN("Failed to get pipe2 buffer");
+            result = AICAM_ERROR_INVALID_PARAM;
+            goto cleanup;
+        }
+    }
+
+    // 3.5 configure JPEG encoder (allocates the output buffer — keep this
+    //     after every step that can still fail, so no orphaned allocation)
     ret = device_ioctl(g_device_service.jpeg_device, JPEGC_CMD_GET_ENC_PARAM, (uint8_t *)&jpeg_param, sizeof(jpegc_params_t));
     if (ret != 0)
     {
@@ -1565,42 +1883,6 @@ aicam_result_t device_service_camera_capture(uint8_t **buffer, int *out_len,
     {
         result = AICAM_ERROR_IO;
         goto cleanup;
-    }
-
-    // 3. get frame buffer with frame ID
-    uint32_t captured_frame_id = 0;
-    camera_buffer_with_frame_id_t buffer_with_id = {0};
-    aicam_result_t buffer_result = device_ioctl(g_device_service.camera_device, CAM_CMD_GET_PIPE1_BUFFER_WITH_FRAME_ID, 
-                                                 (uint8_t *)&buffer_with_id, 0);
-    if (buffer_result == AICAM_OK && buffer_with_id.buffer != NULL && buffer_with_id.size > 0) {
-        fb = buffer_with_id.buffer;
-        fb_len = buffer_with_id.size;
-        captured_frame_id = buffer_with_id.frame_id;
-    } else {
-        // Fallback to old method if WITH_FRAME_ID is not supported
-        fb_len = device_ioctl(g_device_service.camera_device, CAM_CMD_GET_PIPE1_BUFFER, (uint8_t *)&fb, 0);
-        if (fb_len <= 0 || fb == NULL)
-        {
-            LOG_SVC_WARN("Failed to get pipe1 buffer");
-            result = AICAM_ERROR_INVALID_PARAM;
-            goto cleanup;
-        }
-    }
-    
-    // Return frame ID if requested
-    if (frame_id != NULL) {
-        *frame_id = captured_frame_id;
-    }
-
-    if (need_ai_inference)
-    {
-        pipe2_fb_len = device_ioctl(g_device_service.camera_device, CAM_CMD_GET_PIPE2_BUFFER, (uint8_t *)&input_frame_buffer, 0);
-        if (pipe2_fb_len <= 0 || input_frame_buffer == NULL)
-        {
-            LOG_SVC_WARN("Failed to get pipe2 buffer");
-            result = AICAM_ERROR_INVALID_PARAM;
-            goto cleanup;
-        }
     }
 
     // 4. JPEG encode
@@ -1653,7 +1935,7 @@ cleanup:
 
     if (light_on)
     {
-        device_service_light_control(AICAM_FALSE);
+        light_pwm_off();
     }
 
     return result;
@@ -1772,7 +2054,7 @@ aicam_result_t device_service_camera_capture_fast(uint8_t **buffer, int *out_len
         nn_state_t nn_state = nn_get_state();
         if (nn_state == NN_STATE_UNINIT || nn_state == NN_STATE_INIT) {
             LOG_SVC_INFO("[FAST] Loading AI model...");
-            uintptr_t model_ptr = json_config_get_ai_1_active() ? AI_1_BASE + 1024 : AI_DEFAULT_BASE + 1024;
+            uintptr_t model_ptr = json_config_get_ai_1_active() ? AI_2_BASE + 1024 : AI_1_BASE + 1024;
             LOG_SVC_INFO("[FAST] Loading model from %p", model_ptr);
             int nn_ret = nn_load_model(model_ptr);
             if (nn_ret != 0) {
@@ -1862,18 +2144,7 @@ aicam_result_t device_service_camera_capture_fast(uint8_t **buffer, int *out_len
 
         {
             ISP_IQParamTypeDef isp_param = {0};
-            uint32_t m = g_device_service.camera_config.image_config.isp_mode;
-            if (m == IMAGE_ISP_MODE_CUSTOM && g_device_service.isp_config.valid) {
-                json_config_config_to_isp_param(&g_device_service.isp_config, &isp_param);
-            } else {
-                cam_iq_scene_t scene = CAM_IQ_SCENE_INDOOR;
-                if (m == IMAGE_ISP_MODE_OUTDOOR) {
-                    scene = CAM_IQ_SCENE_OUTDOOR;
-                } else if (m == IMAGE_ISP_MODE_CUSTOM && !g_device_service.isp_config.valid) {
-                    LOG_SVC_WARN("[FAST] ISP mode custom without valid saved profile; using indoor IQ defaults");
-                }
-                camera_fill_isp_iq_scene(scene, &isp_param);
-            }
+            device_service_build_isp_iq_param(&g_device_service.camera_config.image_config, &isp_param);
             device_ioctl(g_device_service.camera_device,
                         CAM_CMD_SET_ISP_PARAM,
                         (uint8_t *)&isp_param,
@@ -1896,7 +2167,9 @@ aicam_result_t device_service_camera_capture_fast(uint8_t **buffer, int *out_len
         g_device_service.camera_config.enabled = AICAM_TRUE;
     }
 
-    // 7. Light control (same logic as device_service_camera_capture)
+    // 7. Light control (same logic as device_service_camera_capture). The wake
+    //    path is intentionally NOT affected by fill-light-while-streaming: it
+    //    always uses the capture-time flash behavior (no stream runs here).
     if (g_device_service.light_initialized && g_device_service.light_device) {
         if (g_device_service.light_config.mode == LIGHT_MODE_AUTO &&
             g_device_service.light_config.auto_trigger_enabled)
@@ -1905,54 +2178,20 @@ aicam_result_t device_service_camera_capture_fast(uint8_t **buffer, int *out_len
         }
         else if (g_device_service.light_config.mode == LIGHT_MODE_CUSTOM)
         {
-            RTC_TIME_S now_time = rtc_get_time();
-            int start_minutes = g_device_service.light_config.start_hour * 60 + g_device_service.light_config.start_minute;
-            int end_minutes = g_device_service.light_config.end_hour * 60 + g_device_service.light_config.end_minute;
-            int now_minutes = now_time.hour * 60 + now_time.minute;
-
-            if (start_minutes < end_minutes)
-            {
-                light_on = (now_minutes >= start_minutes && now_minutes < end_minutes);
-            }
-            else if (start_minutes > end_minutes)
-            {
-                light_on = (now_minutes >= start_minutes || now_minutes < end_minutes);
-            }
-            else
-            {
-                light_on = AICAM_FALSE;
-            }
+            light_on = light_custom_schedule_active_now(&g_device_service.light_config);
         }
 
         if (light_on)
         {
-            device_service_light_control(AICAM_TRUE);
+            light_pwm_on();
         }
     }
 
-    // 8. Get camera and JPEG config (same as device_service_camera_capture)
-    ret = device_ioctl(g_device_service.camera_device, CAM_CMD_GET_PIPE1_PARAM, 
+    // 8. Get camera config (JPEG params are set in step 9.5, after the
+    //    camera buffers are acquired — SET_ENC_PARAM allocates the encode
+    //    output buffer and must not run on a path that can still fail)
+    ret = device_ioctl(g_device_service.camera_device, CAM_CMD_GET_PIPE1_PARAM,
                        (uint8_t *)&pipe_param, sizeof(pipe_params_t));
-    if (ret != 0)
-    {
-        result = AICAM_ERROR_IO;
-        goto cleanup;
-    }
-
-    ret = device_ioctl(g_device_service.jpeg_device, JPEGC_CMD_GET_ENC_PARAM, 
-                       (uint8_t *)&jpeg_param, sizeof(jpegc_params_t));
-    if (ret != 0)
-    {
-        result = AICAM_ERROR_IO;
-        goto cleanup;
-    }
-
-    jpeg_param.ImageWidth = pipe_param.width;
-    jpeg_param.ImageHeight = pipe_param.height;
-    jpeg_param.ChromaSubsampling = JPEG_420_SUBSAMPLING;
-    jpeg_param.ImageQuality = g_device_service.camera_config.image_config.fast_capture_jpeg_quality;
-    ret = device_ioctl(g_device_service.jpeg_device, JPEGC_CMD_SET_ENC_PARAM, 
-                       (uint8_t *)&jpeg_param, sizeof(jpegc_params_t));
     if (ret != 0)
     {
         result = AICAM_ERROR_IO;
@@ -2002,6 +2241,28 @@ aicam_result_t device_service_camera_capture_fast(uint8_t **buffer, int *out_len
             result = AICAM_ERROR_INVALID_PARAM;
             goto cleanup;
         }
+    }
+
+    // 9.5 Configure JPEG encoder (same as device_service_camera_capture:
+    //     keep the allocating SET_ENC_PARAM after every step that can fail)
+    ret = device_ioctl(g_device_service.jpeg_device, JPEGC_CMD_GET_ENC_PARAM,
+                       (uint8_t *)&jpeg_param, sizeof(jpegc_params_t));
+    if (ret != 0)
+    {
+        result = AICAM_ERROR_IO;
+        goto cleanup;
+    }
+
+    jpeg_param.ImageWidth = pipe_param.width;
+    jpeg_param.ImageHeight = pipe_param.height;
+    jpeg_param.ChromaSubsampling = JPEG_420_SUBSAMPLING;
+    jpeg_param.ImageQuality = g_device_service.camera_config.image_config.fast_capture_jpeg_quality;
+    ret = device_ioctl(g_device_service.jpeg_device, JPEGC_CMD_SET_ENC_PARAM,
+                       (uint8_t *)&jpeg_param, sizeof(jpegc_params_t));
+    if (ret != 0)
+    {
+        result = AICAM_ERROR_IO;
+        goto cleanup;
     }
 
     // 10. JPEG encode (same as device_service_camera_capture)
@@ -2056,7 +2317,7 @@ cleanup:
 
     if (light_on && g_device_service.light_initialized && g_device_service.light_device)
     {
-        device_service_light_control(AICAM_FALSE);
+        light_pwm_off();
     }
 
     return result;
@@ -2249,8 +2510,8 @@ aicam_result_t device_service_reset_to_factory_defaults(void)
     SystemState *state = get_system_state();
     if (state) {
         // Mark both slots as IDLE
-        state->slot[FIRMWARE_AI_1][SLOT_A].status = IDLE;
-        state->slot[FIRMWARE_AI_1][SLOT_B].status = IDLE;
+        state->slot[FIRMWARE_AI_2][SLOT_A].status = IDLE;
+        state->slot[FIRMWARE_AI_2][SLOT_B].status = IDLE;
         save_system_state();
         LOG_SVC_INFO("AI model cleared");
     }

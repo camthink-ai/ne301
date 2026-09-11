@@ -24,6 +24,14 @@
 #define MAX_CLIENTS 2
 #define MAX_FRAME_SIZE (1024 * 512)
 
+ /* ==================== Web Debug Logging (see WEB_DEBUG in web_config.h) ==================== */
+ /* Per-video-frame (MG_EV_WAKEUP) logs are deliberately NOT emitted: 30 fps flood. */
+ #if WEB_DEBUG
+ #define WS_LOG(fmt, ...)  printf("[WSDBG][tick %lums] " fmt "\r\n", (unsigned long) osKernelGetTickCount(), ##__VA_ARGS__)
+ #else
+ #define WS_LOG(fmt, ...)  do { } while (0)
+ #endif
+
 /* ==================== Global Variables ==================== */
 
 /**
@@ -38,6 +46,12 @@ typedef struct {
     uint64_t last_ping_time_ms;             // Last ping send time
     uint64_t last_pong_time_ms;             // Last pong receive time
     aicam_bool_t ping_pending;              // Ping sent but pong not received
+    /* FALSE until this client has received a keyframe prefixed with SPS/PPS.
+     * The encoder emits SPS/PPS only once per session (enc.c latch), so a
+     * client connecting later never sees them in-band - without this gate
+     * jmuxer never sets readyToDecode and silently drops every frame (black
+     * screen + loading loop after each watchdog reconnect). */
+    aicam_bool_t sps_synced;
 } websocket_client_t;
 
 /**
@@ -324,6 +338,12 @@ aicam_result_t websocket_stream_server_start_stream(uint32_t stream_id) {
     g_websocket_server.stream_frame_counter = 0;
     g_websocket_server.stats.stream_active = AICAM_TRUE;
     g_websocket_server.stats.stream_id = stream_id;
+
+    /* New stream session: force every connected client to re-sync at the
+     * next keyframe with fresh SPS/PPS (encoder params may have changed). */
+    for (uint32_t i = 0; i < g_websocket_server.config.max_clients; i++) {
+        g_websocket_server.clients[i].sps_synced = AICAM_FALSE;
+    }
     
     osMutexRelease(g_websocket_server.mutex);
     
@@ -526,8 +546,235 @@ static void ws_stream_server_task(void *argument) {
     }
 }
 
+/* ==================== Frame copy FIFO (fix for the in-flight buffer race) ==
+ * Proven by probe ("WS RACE CONFIRMED ... after 48ms"): the wakeup pipe used
+ * to carry POINTERS into the encoder's single output buffer; a web-task
+ * stall > 40ms (one frame period) let the next encode's DMA overwrite the
+ * frame while mg_ws_send was reading it -> torn frame at every client
+ * (WebKit: MEDIA_ERR_DECODE; Chromium conceals).
+ * Frames are now COPIED into private PSRAM ring slots in the producer task
+ * (encoder context, mutex held) and drained by the web task on MG_EV_POLL -
+ * the copy can no longer be overwritten by the encoder.
+ * Overflow policy: drop new frames and resume at the next keyframe so P
+ * chains stay decodable (drops counted). */
+#define WS_FIFO_SLOTS      5
+#define WS_FIFO_SLOT_SIZE  (128u * 1024u)
+/* Cap a client's unsent outbound buffer: bounded worst-case for a dead
+ * connection, while allowing one full max-size frame to queue for a slow
+ * but live client. */
+#define WS_SEND_BUF_CAP    (512u * 1024u)
+static uint8_t s_ws_fifo_mem[WS_FIFO_SLOTS][WS_FIFO_SLOT_SIZE] ALIGN_32 IN_PSRAM;
+static struct {
+    uint8_t *data;  /* static slot, or heap buffer for oversize frames */
+    uint32_t size;
+    uint8_t is_heap;
+} s_ws_fifo_meta[WS_FIFO_SLOTS];
+static uint32_t s_ws_fifo_head = 0, s_ws_fifo_tail = 0, s_ws_fifo_count = 0;
+static aicam_bool_t s_ws_fifo_skip_until_key = AICAM_FALSE;
+static uint32_t s_ws_fifo_drops = 0;
+
+/* Producer (encoder task, g_websocket_server.mutex already held). */
+static void ws_frame_fifo_push(const void *packet, size_t size)
+{
+    const websocket_frame_header_t *hdr = (const websocket_frame_header_t *) packet;
+
+    /* Drop decisions FIRST - anything allocated below must be guaranteed a
+     * slot in the fifo or we leak it. */
+    if (s_ws_fifo_skip_until_key) {
+        if (hdr->frame_type != WS_FRAME_TYPE_H264_KEY) {
+            s_ws_fifo_drops++;
+            return; /* wait for a clean restart point */
+        }
+        s_ws_fifo_skip_until_key = AICAM_FALSE;
+    }
+
+    if (s_ws_fifo_count == WS_FIFO_SLOTS) {
+        s_ws_fifo_drops++;
+        s_ws_fifo_skip_until_key = AICAM_TRUE;
+        LOG_SVC_WARN("WS fifo full, dropping until next keyframe (total drops %lu)",
+                     (unsigned long) s_ws_fifo_drops);
+        return;
+    }
+
+    /* Static slot covers normal frames; oversize ones (e.g. huge I-frames at
+     * high bitrate) fall back to a heap copy instead of being dropped:
+     * dropping recurring keyframes would permanently break the stream. */
+    uint8_t *copy_dst = s_ws_fifo_mem[s_ws_fifo_head];
+    uint8_t is_heap = 0;
+    if (size > WS_FIFO_SLOT_SIZE) {
+        copy_dst = hal_mem_alloc_large(size);
+        if (copy_dst == NULL) {
+            s_ws_fifo_drops++;
+            s_ws_fifo_skip_until_key = AICAM_TRUE;
+            LOG_SVC_WARN("WS fifo: frame %lu > slot %lu and alloc failed, dropped (total %lu)",
+                         (unsigned long) size, (unsigned long) WS_FIFO_SLOT_SIZE,
+                         (unsigned long) s_ws_fifo_drops);
+            return;
+        }
+        is_heap = 1;
+    }
+
+    memcpy(copy_dst, packet, size);
+    s_ws_fifo_meta[s_ws_fifo_head].data = copy_dst;
+    s_ws_fifo_meta[s_ws_fifo_head].size = (uint32_t) size;
+    s_ws_fifo_meta[s_ws_fifo_head].is_heap = is_heap;
+    s_ws_fifo_head = (s_ws_fifo_head + 1) % WS_FIFO_SLOTS;
+    s_ws_fifo_count++;
+}
+
+
+/* Build the late-joiner frame [header][SPS][PPS][keyframe] in ONE buffer -
+ * the exact byte shape of an encoder session start, which is the only form
+ * a cold jmuxer reliably initializes from (an SPS/PPS-only feed would push
+ * a slice-less sample into MSE; a bare IDR leaves readyToDecode false).
+ * The hub cache stores bare NAL payloads (no start codes), so the annexB
+ * start code is re-inserted before each. Returns a hal_mem_alloc_large
+ * buffer the caller must free, or NULL when the cache is unavailable or
+ * the alloc fails - caller then falls back to the bare keyframe, which is
+ * self-sufficient when the frame itself carries in-band SPS/PPS. */
+#define WS_SPS_PPS_MAX 128
+static const uint8_t ws_annexb_start_code[4] = {0x00, 0x00, 0x00, 0x01};
+
+static uint8_t *ws_build_join_frame(const uint8_t *fifo_frame, uint32_t size,
+                                    size_t *join_size)
+{
+    video_hub_sps_pps_t hub_sp;
+
+    if (video_hub_get_sps_pps(&hub_sp) != AICAM_OK ||
+        hub_sp.sps_size == 0 || hub_sp.pps_size == 0 ||
+        hub_sp.sps_size > WS_SPS_PPS_MAX || hub_sp.pps_size > WS_SPS_PPS_MAX) {
+        LOG_SVC_WARN("WS join-sync: no usable SPS/PPS cache, sending bare keyframe");
+        return NULL;
+    }
+
+    const size_t hdr_size = sizeof(websocket_frame_header_t);
+    uint32_t key_size = size - (uint32_t) hdr_size;
+    uint32_t params_size = 4 + hub_sp.sps_size + 4 + hub_sp.pps_size;
+
+    /* Called with the ws mutex held; lock order ws->hub is safe because the
+     * hub never holds its mutex while calling back into this server
+     * (notify_frame/notify_sps_pps snapshot-and-release). */
+    uint8_t *buf = hal_mem_alloc_large(hdr_size + params_size + key_size);
+    if (buf == NULL) {
+        LOG_SVC_WARN("WS join-sync: alloc failed, sending bare keyframe");
+        return NULL;
+    }
+
+    memcpy(buf, fifo_frame, hdr_size);            /* reuse keyframe header */
+    uint8_t *p = buf + hdr_size;
+    memcpy(p, ws_annexb_start_code, 4); p += 4;
+    memcpy(p, hub_sp.sps_data, hub_sp.sps_size); p += hub_sp.sps_size;
+    memcpy(p, ws_annexb_start_code, 4); p += 4;
+    memcpy(p, hub_sp.pps_data, hub_sp.pps_size); p += hub_sp.pps_size;
+    memcpy(p, fifo_frame + hdr_size, key_size);
+
+    websocket_frame_header_t *hdr = (websocket_frame_header_t *) buf;
+    hdr->frame_size = WS_TO_NETWORK_32(params_size + key_size);
+
+    *join_size = hdr_size + params_size + key_size;
+    return buf;
+}
+
+/* Consumer (web task, MG_EV_POLL): send queued frames to all live clients. */
+static void ws_frame_fifo_drain(void)
+{
+    for (;;) {
+        uint8_t *data;
+        uint32_t size;
+        uint8_t heap;
+        uint8_t *join_buf = NULL;
+        size_t join_size = 0;
+        aicam_bool_t join_built = AICAM_FALSE;
+
+        osMutexAcquire(g_websocket_server.mutex, osWaitForever);
+        if (s_ws_fifo_count == 0) {
+            osMutexRelease(g_websocket_server.mutex);
+            return;
+        }
+        data = s_ws_fifo_meta[s_ws_fifo_tail].data;
+        size = s_ws_fifo_meta[s_ws_fifo_tail].size;
+        heap = s_ws_fifo_meta[s_ws_fifo_tail].is_heap;
+        s_ws_fifo_tail = (s_ws_fifo_tail + 1) % WS_FIFO_SLOTS;
+        s_ws_fifo_count--;
+
+        for (uint32_t i = 0; i < g_websocket_server.config.max_clients; i++) {
+            websocket_client_t *client = &g_websocket_server.clients[i];
+            struct mg_connection *conn = client->conn;
+            if (!(client->is_active &&
+                  conn &&
+                  !conn->is_closing &&
+                  ws_stream_is_client_alive(client))) {
+                continue;
+            }
+            /* Backpressure cap: a client that stops reading (abrupt
+             * disconnect before ping/pong detects it) would otherwise
+             * accumulate mg_ws_send data in conn->send unboundedly - the
+             * iobuf grew to 4MB and then failed every resize, flooding
+             * MG_ERROR at frame rate. Drop frames for a stalled client
+             * instead of buffering past one max frame. */
+            if (conn->send.len >= WS_SEND_BUF_CAP) {
+                LOG_SVC_WARN("WS send-buffer cap hit (%lu bytes), dropping frame for client %u",
+                             (unsigned long) conn->send.len,
+                             client->client_id);
+                continue;
+            }
+
+            if (!client->sps_synced) {
+                /* Late joiner: hold P-frames until a keyframe, then send
+                 * SPS/PPS + that keyframe as one frame. Without this the
+                 * client never gets parameter sets (encoder emits them
+                 * once per session, before it connected) and jmuxer drops
+                 * every frame with no error. */
+                const websocket_frame_header_t *hdr =
+                    (const websocket_frame_header_t *) data;
+                if (size < sizeof(*hdr) ||
+                    hdr->magic != WS_TO_NETWORK_32(WS_FRAME_MAGIC) ||
+                    hdr->frame_type != WS_FRAME_TYPE_H264_KEY) {
+                    continue; /* raw/headerless or delta frame - wait */
+                }
+                if (!join_built) {
+                    join_buf = ws_build_join_frame(data, size, &join_size);
+                    if (join_buf == NULL) {
+                        join_buf = data; /* bare-keyframe fallback */
+                        join_size = size;
+                    }
+                    join_built = AICAM_TRUE;
+                }
+                mg_ws_send(conn, join_buf, join_size, WEBSOCKET_OP_BINARY);
+                client->sps_synced = AICAM_TRUE;
+                WS_LOG("[WS] join-sync id=%lu client=%u frame=%luB (sps+pps+key)",
+                       (unsigned long) conn->id, client->client_id,
+                       (unsigned long) join_size);
+                continue;
+            }
+
+            mg_ws_send(conn, data, size, WEBSOCKET_OP_BINARY);
+        }
+        osMutexRelease(g_websocket_server.mutex);
+        if (heap) {
+            hal_mem_free(data);
+        }
+        if (join_built && join_buf != data) {
+            hal_mem_free(join_buf);
+        }
+    }
+}
+
 static void ws_stream_event_handler(struct mg_connection *c, int ev, void *ev_data) {
-    
+
+    /* Connection lifecycle logs (same purpose as web server's [CONN]):
+     * who disconnected the phone - us (replace/pong-timeout) or the peer */
+    if (ev == MG_EV_ACCEPT) {
+        WS_LOG("[WS] tcp-accept id=%lu", (unsigned long) c->id);
+    }
+    if (ev == MG_EV_ERROR) {
+        /* Socket-level failure on this conn (the mg_error "socket error" path
+         * the phone hits) - distinguish peer RST vs our tx failure */
+        WS_LOG("[WS] socket-error id=%lu err=%s",
+               (unsigned long) c->id,
+               ev_data ? (const char *) ev_data : "?");
+    }
+
     switch (ev) {
     #if IS_HTTPS
         case MG_EV_ACCEPT: {
@@ -595,9 +842,31 @@ static void ws_stream_event_handler(struct mg_connection *c, int ev, void *ev_da
             }
             break;
         }
+        case MG_EV_POLL: {
+            /* Drain queued frame copies once per poll tick (~20ms). Fired for
+             * every connection; empty-queue calls are a cheap locked check. */
+            ws_frame_fifo_drain();
+            break;
+        }
         case MG_EV_WS_CTL: {
             // Handle WebSocket control frames (ping/pong)
             struct mg_ws_message *wm = (struct mg_ws_message *)ev_data;
+            WS_LOG("[WS] ctl op=0x%x len=%u conn=%lu",
+                   wm ? (wm->flags & 0x0F) : 0, wm ? (unsigned) wm->data.len : 0,
+                   (unsigned long) c->id);
+            // Close frame: decode code+reason so the log shows WHO closed and
+            // why ('teardown' = frontend worker cleanup, 1006/empty = link died)
+            if (wm && (wm->flags & 0x0F) == WEBSOCKET_OP_CLOSE && wm->data.len >= 2) {
+                char reason[32];
+                size_t rlen = wm->data.len - 2;
+                if (rlen > sizeof(reason) - 1) rlen = sizeof(reason) - 1;
+                if (rlen > 0) memcpy(reason, wm->data.buf + 2, rlen);
+                reason[rlen] = '\0';
+                WS_LOG("[WS] peer-close id=%lu code=%u reason=%s",
+                       (unsigned long) c->id,
+                       (unsigned) (((uint8_t) wm->data.buf[0] << 8) | (uint8_t) wm->data.buf[1]),
+                       reason);
+            }
             if (wm && (wm->flags & 0x0F) == WEBSOCKET_OP_PONG) {
                 // Received pong, update client status
                 // Note: Mongoose automatically sends pong in response to ping,
@@ -646,7 +915,8 @@ static void ws_stream_add_client(struct mg_connection *conn) {
         // Send close frame and close connection
         ws_stream_send_close(conn, 1000, "Too many clients");
         osMutexRelease(g_websocket_server.mutex);
-        LOG_SVC_WARN("Rejected connection from %s: too many clients", client_ip);
+        LOG_SVC_WARN("Rejected connection id=%lu from %s: too many clients",
+                     (unsigned long) conn->id, client_ip);
         return;
     }
     
@@ -661,6 +931,9 @@ static void ws_stream_add_client(struct mg_connection *conn) {
             g_websocket_server.clients[i].last_ping_time_ms = current_time;
             g_websocket_server.clients[i].last_pong_time_ms = current_time;
             g_websocket_server.clients[i].ping_pending = AICAM_FALSE;
+            /* Wait for a keyframe+SPS/PPS join frame before streaming to
+             * this client (see ws_frame_fifo_drain). */
+            g_websocket_server.clients[i].sps_synced = AICAM_FALSE;
             
             // Store client IP for future identification
             strncpy(g_websocket_server.clients[i].client_ip, client_ip, sizeof(g_websocket_server.clients[i].client_ip) - 1);
@@ -668,8 +941,12 @@ static void ws_stream_add_client(struct mg_connection *conn) {
             
             g_websocket_server.client_count++;
             g_websocket_server.stats.total_connections++;
-            
-            LOG_SVC_INFO("Client connected - IP: %s, ID: %u, Total: %u", 
+
+            WS_LOG("[WS] open id=%lu ip=%s clients=%lu/%lu",
+                   (unsigned long) conn->id, client_ip,
+                   (unsigned long) g_websocket_server.client_count,
+                   (unsigned long) g_websocket_server.config.max_clients);
+            LOG_SVC_INFO("Client connected - IP: %s, ID: %u, Total: %u",
                         client_ip, g_websocket_server.clients[i].client_id, g_websocket_server.client_count);
             break;
         }
@@ -686,11 +963,15 @@ static void ws_stream_remove_client(struct mg_connection *conn) {
     
     for (uint32_t i = 0; i < g_websocket_server.config.max_clients; i++) {
         if (g_websocket_server.clients[i].is_active && g_websocket_server.clients[i].conn == conn) {
-            LOG_SVC_INFO("Client disconnected - IP: %s, ID: %u, Total: %u", 
+            LOG_SVC_INFO("Client disconnected - IP: %s, ID: %u, Total: %u",
                         g_websocket_server.clients[i].client_ip,
-                        g_websocket_server.clients[i].client_id, 
+                        g_websocket_server.clients[i].client_id,
                         g_websocket_server.client_count - 1);
-            
+            WS_LOG("[WS] closed id=%lu ip=%s clients=%lu (peer closed or our close finished)",
+                   (unsigned long) conn->id,
+                   g_websocket_server.clients[i].client_ip,
+                   (unsigned long) g_websocket_server.client_count - 1);
+
             g_websocket_server.clients[i].is_active = AICAM_FALSE;
             g_websocket_server.clients[i].client_ip[0] = '\0'; // Clear IP
             g_websocket_server.client_count--;
@@ -753,6 +1034,8 @@ static void ws_stream_cleanup_old_connections(const char *client_ip) {
             g_websocket_server.clients[i].conn = NULL; // Clear connection pointer
             g_websocket_server.client_count--;
             g_websocket_server.stats.total_disconnections++;
+            WS_LOG("[WS] replace-close id=%lu ip=%s (superseded by new conn from same ip)",
+                   (unsigned long) conn_ids_to_close[close_count - 1], client_ip);
         }
     }
     
@@ -797,22 +1080,11 @@ static aicam_bool_t ws_stream_is_client_alive(websocket_client_t *client) {
 static void ws_stream_broadcast_packet(const void *packet, size_t packet_size) {
     // Note: This function must be called with mutex already held
     if (g_websocket_server.client_count == 0) return;
-    
-    for (uint32_t i = 0; i < g_websocket_server.config.max_clients; i++) {
-        if (g_websocket_server.clients[i].is_active && 
-            g_websocket_server.clients[i].conn &&
-            !g_websocket_server.clients[i].conn->is_closing &&
-            ws_stream_is_client_alive(&g_websocket_server.clients[i])) {
-            // use mg_wakeup to send packet
-            struct MessageData message_data = {
-                .buf = (void *)packet,
-                .size = packet_size,
-                .ws_op = WEBSOCKET_OP_BINARY,
-                .target_id = g_websocket_server.clients[i].conn->id
-            };
-            mg_wakeup(&g_websocket_server.mgr, 1, &message_data, sizeof(message_data));
-        }
-    }
+
+    /* Copy into the private FIFO (see block above): the encoder reuses its
+     * output buffer 40ms later; handing raw pointers to the async web task
+     * is the torn-frame race. Web task drains on MG_EV_POLL. */
+    ws_frame_fifo_push(packet, packet_size);
 }
 
 static void ws_stream_send_ping_to_clients(void) {
@@ -873,10 +1145,12 @@ static void ws_stream_check_pong_timeout(void) {
             uint64_t time_since_ping = current_time_ms - g_websocket_server.clients[i].last_ping_time_ms;
             
             if (time_since_ping > g_websocket_server.config.pong_timeout_ms) {
-                LOG_SVC_WARN("Pong timeout for client %u (IP: %s), closing connection", 
+                LOG_SVC_WARN("Pong timeout for client %u (IP: %s), closing connection id=%lu since_ping=%lums",
                             g_websocket_server.clients[i].client_id,
-                            g_websocket_server.clients[i].client_ip);
-                
+                            g_websocket_server.clients[i].client_ip,
+                            (unsigned long) g_websocket_server.clients[i].conn->id,
+                            (unsigned long) time_since_ping);
+
                 // Close connection
                 ws_stream_send_close(g_websocket_server.clients[i].conn, 1000, "Pong timeout");
                 

@@ -109,6 +109,7 @@ UCHAR  *read_ptr;
 UCHAR   secondary_count;
 UCHAR   name_length = 0;
 UCHAR   name_pos = 0;
+UCHAR   u16_pos = 0;    /* NE301 patch: UTF-16 unit cursor for unicode_name - name_pos now counts UTF-8 BYTES (see the CHAR* copy loop) */
 UCHAR   copy_size = 0;
 USHORT  checksum = 0;
 USHORT  file_checksum;
@@ -640,16 +641,28 @@ ULONG   clusters_count = 0;
                 if (unicode_name)
                 {
 
-                    /* Loop to copy the unicode file name. from the file name directory entry.  */
-                    for (j = 0; j < copy_size * 2; ++j)
+                    /* NE301 patch: name_pos below counts UTF-8 bytes, not
+                     * UTF-16 units, so the unicode copy tracks its own unit
+                     * cursor (u16_pos) - offsets here and the length returned
+                     * at the end must stay in units. Names longer than the
+                     * caller's FX_MAX_LONG_NAME_LEN-unit buffer are simply not
+                     * copied (the read pointer is only advanced inside the
+                     * copy loop, so the skip leaves it untouched for the
+                     * CHAR* loop below). */
+                    if (u16_pos + copy_size < FX_MAX_LONG_NAME_LEN)
                     {
 
-                        /* Copy the unicode file name from the file name directory entry.  */
-                        unicode_name[name_pos * 2 + j] = *read_ptr++;
-                    }
+                        /* Loop to copy the unicode file name. from the file name directory entry.  */
+                        for (j = 0; j < copy_size * 2; ++j)
+                        {
 
-                    /* Revert the read pointer for later use.  */
-                    read_ptr -= copy_size * 2;
+                            /* Copy the unicode file name from the file name directory entry.  */
+                            unicode_name[u16_pos * 2 + j] = *read_ptr++;
+                        }
+
+                        /* Revert the read pointer for later use.  */
+                        read_ptr -= copy_size * 2;
+                    }
                 }
 
                 /* Loop to copy the non-unicode file name.  */
@@ -657,12 +670,81 @@ ULONG   clusters_count = 0;
                 {
 
                     /* Copy and convert the file name from the file name directory entry.  */
-                    destination_ptr -> fx_dir_entry_name[name_pos++] = (CHAR)_fx_utility_16_unsigned_read(read_ptr);
+                    {
+                        UINT cp = _fx_utility_16_unsigned_read(read_ptr);
+
+                        /* NE301 patch: encode the UTF-16 code point as UTF-8
+                         * so the CHAR* name carries the actual characters
+                         * (exFAT names are UTF-16 by specification; a PC card
+                         * reader shows them natively). The encoding is
+                         * lossless and round-trips: whatever this loop emits
+                         * converts back to the same UTF-16 name in the search
+                         * path, so every on-disk name remains reachable
+                         * through its CHAR* form. Surrogate pairs (code
+                         * points >= 0x10000, e.g. 4-byte-UTF-8 emoji) are
+                         * combined first so the output is valid UTF-8. */
+                        if (cp >= 0xD800 && cp <= 0xDBFF && (j + 1 < copy_size))
+                        {
+                            UINT lo = (UINT)read_ptr[2] | ((UINT)read_ptr[3] << 8);
+
+                            if (lo >= 0xDC00 && lo <= 0xDFFF)
+                            {
+                                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                                j++;
+                                read_ptr += 2;
+                            }
+                        }
+
+                        if (cp < 0x80)
+                        {
+                            if (name_pos < FX_MAX_LONG_NAME_LEN - 1)
+                            {
+                                destination_ptr -> fx_dir_entry_name[name_pos++] = (CHAR)cp;
+                            }
+                        }
+                        else if (cp < 0x800)
+                        {
+                            if (name_pos + 2 >= FX_MAX_LONG_NAME_LEN)
+                            {
+                                break;
+                            }
+                            destination_ptr -> fx_dir_entry_name[name_pos++] = (CHAR)(0xC0 | (cp >> 6));
+                            destination_ptr -> fx_dir_entry_name[name_pos++] = (CHAR)(0x80 | (cp & 0x3F));
+                        }
+                        else if (cp < 0x10000)
+                        {
+                            if (name_pos + 3 >= FX_MAX_LONG_NAME_LEN)
+                            {
+                                break;
+                            }
+                            destination_ptr -> fx_dir_entry_name[name_pos++] = (CHAR)(0xE0 | (cp >> 12));
+                            destination_ptr -> fx_dir_entry_name[name_pos++] = (CHAR)(0x80 | ((cp >> 6) & 0x3F));
+                            destination_ptr -> fx_dir_entry_name[name_pos++] = (CHAR)(0x80 | (cp & 0x3F));
+                        }
+                        else
+                        {
+                            if (name_pos + 4 >= FX_MAX_LONG_NAME_LEN)
+                            {
+                                break;
+                            }
+                            destination_ptr -> fx_dir_entry_name[name_pos++] = (CHAR)(0xF0 | (cp >> 18));
+                            destination_ptr -> fx_dir_entry_name[name_pos++] = (CHAR)(0x80 | ((cp >> 12) & 0x3F));
+                            destination_ptr -> fx_dir_entry_name[name_pos++] = (CHAR)(0x80 | ((cp >> 6) & 0x3F));
+                            destination_ptr -> fx_dir_entry_name[name_pos++] = (CHAR)(0x80 | (cp & 0x3F));
+                        }
+                    }
                     read_ptr += 2;
                 }
 
                 /* Modify the name_length to indicate the remaining length.  */
                 name_length = (UCHAR)(name_length - copy_size);
+
+                /* NE301 patch: advance the unicode unit cursor with the same
+                 * bound check as the copy above.  */
+                if (u16_pos + copy_size < FX_MAX_LONG_NAME_LEN)
+                {
+                    u16_pos = (UCHAR)(u16_pos + copy_size);
+                }
             }
             else if (((*read_ptr & (FX_EXFAT_ENTRY_TYPE_IN_USE_MASK | FX_EXFAT_ENTRY_TYPE_IMPORTANCE_MASK | FX_EXFAT_ENTRY_TYPE_CATEGORY_MASK)) ==
                       (FX_EXFAT_ENTRY_TYPE_IN_USE_MASK | FX_EXFAT_ENTRY_TYPE_CATEGORY_MASK)))
@@ -681,16 +763,17 @@ ULONG   clusters_count = 0;
     if (unicode_name)
     {
 
-        /* Terminate the unicode name string.  */
-        unicode_name[name_pos * 2] = 0;
-        unicode_name[name_pos * 2 + 1] = 0;
+        /* Terminate the unicode name string.  NE301 patch: unit cursor, not
+         * the UTF-8 byte count (name_pos).  */
+        unicode_name[u16_pos * 2] = 0;
+        unicode_name[u16_pos * 2 + 1] = 0;
 
         /* Check if we are requested to return the unicode name length.  */
         if (unicode_length)
         {
 
             /* Return the unicode name length.  */
-            *unicode_length = name_pos;
+            *unicode_length = u16_pos;
         }
     }
 

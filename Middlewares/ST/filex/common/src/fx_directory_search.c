@@ -31,6 +31,9 @@
 #include "fx_utility.h"
 #ifdef FX_ENABLE_EXFAT
 #include "fx_directory_exFAT.h"
+
+/* NE301 patch: defined in fx_directory_exFAT_entry_write.c */
+UINT  _fx_utility_exFAT_utf8_to_utf16(const CHAR *utf8, UCHAR *u16, UINT u16_max);
 #endif /* FX_ENABLE_EXFAT */
 
 #ifndef FX_NO_LOCAL_PATH
@@ -118,6 +121,12 @@ CHAR         *destination_name_ptr;
 FX_DIR_ENTRY  search_dir;
 FX_DIR_ENTRY *search_dir_ptr;
 CHAR         *name, alpha, name_alpha;
+#ifdef FX_ENABLE_EXFAT
+/* NE301 patch: real UTF-16 name of the exFAT entry just read (see the
+ * unicode match fallback in the entry loop below). */
+UCHAR         search_unicode_name[FX_MAX_LONG_NAME_LEN * 2];
+UINT          search_unicode_len;
+#endif
 #ifndef FX_MEDIA_DISABLE_SEARCH_CACHE
 UINT          index;
 CHAR         *path_ptr =  FX_NULL;
@@ -639,7 +648,21 @@ USHORT        hash = 0;
 
             /* Read an entry from the directory.  */
 #ifdef FX_ENABLE_EXFAT
-            status =  _fx_directory_entry_read_ex(media_ptr, search_dir_ptr, &i, entry_ptr, hash);
+            if (media_ptr -> fx_media_FAT_type == FX_exFAT)
+            {
+
+                /* NE301 patch: also capture the entry's real UTF-16 name so
+                 * the fallback compare below can match non-ASCII names. The
+                 * hash pre-filter is bypassed (hash argument 0) because the
+                 * UTF-16 fallback must see every entry. */
+                search_unicode_len =  0;
+                status =  _fx_directory_exFAT_entry_read(media_ptr, search_dir_ptr, &i, entry_ptr, 0, FX_FALSE,
+                                                         search_unicode_name, &search_unicode_len);
+            }
+            else
+            {
+                status =  _fx_directory_entry_read_ex(media_ptr, search_dir_ptr, &i, entry_ptr, hash);
+            }
 #else
             status =  _fx_directory_entry_read(media_ptr, search_dir_ptr, &i, entry_ptr);
 #endif /* FX_ENABLE_EXFAT */
@@ -731,6 +754,7 @@ USHORT        hash = 0;
                    information is in the directory entry field.  */
                 found =  FX_TRUE;
             }
+
             /* Determine if there is a short name to check.  */
 #ifdef FX_ENABLE_EXFAT
             else if ((media_ptr -> fx_media_FAT_type != FX_exFAT) &&
@@ -787,6 +811,40 @@ USHORT        hash = 0;
                     found =  FX_TRUE;
                 }
             }
+
+#ifdef FX_ENABLE_EXFAT
+            /* NE301 patch: match exFAT entries by their real UTF-16 name.
+             * The byte/short-name compares above cannot match names whose
+             * characters are >= 0x80 (e.g. Chinese names), so as a last
+             * resort compare the input name, decoded as UTF-8, against the
+             * entry's UTF-16 name. This is lossless with the UTF-8 encoding
+             * applied when names are read back
+             * (fx_directory_exFAT_entry_read.c), so every on-disk name
+             * round-trips through its CHAR* form. */
+            if ((found == FX_FALSE) && (media_ptr -> fx_media_FAT_type == FX_exFAT) && search_unicode_len)
+            {
+                UCHAR in_u16[FX_MAX_LONG_NAME_LEN * 2];
+                UINT  in_len;
+                UINT  k;
+
+                in_len =  _fx_utility_exFAT_utf8_to_utf16(name, in_u16, FX_MAX_LONG_NAME_LEN);
+                if (in_len && (in_len == search_unicode_len))
+                {
+                    for (k = 0; k < in_len * 2; k++)
+                    {
+                        if (in_u16[k] != search_unicode_name[k])
+                        {
+                            break;
+                        }
+                    }
+                    if (k == in_len * 2)
+                    {
+                        found =  FX_TRUE;
+                    }
+                }
+            }
+#endif /* FX_ENABLE_EXFAT */
+
         } while ((i < directory_size) && (!found));
 
         /* Now determine if we have a match.  */

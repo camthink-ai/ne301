@@ -52,6 +52,7 @@ typedef enum {
     API_BUSINESS_ERROR_STORAGE_FULL = 1401,           ///< Storage full
     API_BUSINESS_ERROR_FILE_NOT_FOUND = 1403,         ///< File not found
     API_BUSINESS_ERROR_INSUFFICIENT_SPACE = 1407,     ///< Insufficient storage space
+    API_BUSINESS_ERROR_DIR_NOT_EMPTY = 1408,          ///< Directory not empty (cannot delete)
     
     /* AI & Model Errors (1501-1599) */
     API_BUSINESS_ERROR_MODEL_NOT_LOADED = 1501,       ///< AI model not loaded

@@ -15,6 +15,13 @@ import { toast } from 'sonner';
 import WifiReloadMask from '@/components/wifi-reload-mask';
 import { retryFetch, sleep, sliceFile } from '@/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { usePartTableWarn } from '@/components/part-table-warn';
+import { useNavigate } from 'react-router-dom';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 
 type ImportFirmwareProps = {
   isImportFirmwareDialogOpen: boolean;
@@ -37,6 +44,8 @@ export default function ImportFirmware({
   const [webFile, setWebFile] = useState<File | null>(null);
   const [aiModelFile, setAiModelFile] = useState<File | null>(null);
   const [deviceFile, setDeviceFile] = useState<File | null>(null);
+  const [isAdvancedMenuOpen, setIsAdvancedMenuOpen] = useState(false);
+  const navigate = useNavigate();
   // const [updateLoadingValue, setUpdateLoadingValue] = useState(10);
   const [isUpdateLoading, setIsUpdateLoading] = useState(false);
   const [restartLoading, setRestartLoading] = useState(false);
@@ -49,6 +58,14 @@ export default function ImportFirmware({
   });
   type UploadCategory = keyof Pick<typeof uploadLoadings, 'app' | 'web' | 'ai'>;
   const uploadQueueRef = useRef<Promise<void>>(Promise.resolve());
+  // Partition-table drift confirm (precheck flags it): shared dialog; the
+  // "go bundle" choice closes this dialog and jumps to the bundle page.
+  const { ask: askLayoutChangeConfirm, dialog: layoutWarnDialog } = usePartTableWarn(
+    () => {
+      setIsImportFirmwareDialogOpen(false);
+      navigate('/import-bundle');
+    },
+  );
 
   const acceptFileType = {
     // Only accept .bin firmware files
@@ -120,7 +137,14 @@ export default function ImportFirmware({
           || 'Invalid firmware file'
         );
       }
-      await preCheckReq(contentPreview, type as FirmwareType);
+      const preRes = await preCheckReq(contentPreview, type as FirmwareType);
+      // Package stamped a different partition table than the running
+      // firmware: burn addresses for this path come from the running
+      // firmware's table — let the user decide before proceeding.
+      const preData = (preRes as { data?: { part_table_changed?: boolean } } | undefined)?.data;
+      if (preData?.part_table_changed && !(await askLayoutChangeConfirm())) {
+        return false;
+      }
       await uploadOTAFileReq(file, type as FirmwareType);
       await updateOTAReq({
         filename: file.name,
@@ -180,16 +204,27 @@ export default function ImportFirmware({
       setIsImportFirmwareDialogOpen(false);
       setRestartLoading(true);
       await restartDevice({ delay_seconds: 2 }, { skipErrorToast: true });
-      await sleep(8000);
-      const result = await retryFetch(
-        (signal) => getDeviceInfoReq({ skipErrorToast: true, signal }),
-        5000,
-        10
-      );
+      await sleep(5000);
+      // retryFetch throws when its retries are exhausted (it never resolves
+      // falsy) — catch it so an unreachable device goes to the guidance page
+      // instead of the success path never running and the mask just dropping.
+      let result: unknown = null;
+      try {
+        result = await retryFetch(
+          (signal) => getDeviceInfoReq({ skipErrorToast: true, signal }),
+          5000,
+          2
+        );
+      } catch {
+        /* handled below */
+      }
 
       if (result) {
         setIsUpdateLoading(false);
         toast.success(i18n._('sys.system_management.update_success'));
+      } else {
+        toast.error(i18n._('sys.system_management.network_disconnected'));
+        navigate('/upgrade-waiting');
       }
     } finally {
       setRestartLoading(false);
@@ -324,24 +359,80 @@ export default function ImportFirmware({
               </div>
             </ScrollArea>
           </DialogHeader>
-          <DialogFooter className="mt-4">
-            <Button
-              variant="outline"
-              className="w-1/2 md:w-auto"
-              onClick={() => setIsImportFirmwareDialogOpen(false)}
+          <DialogFooter className="mt-4 justify-between flex-col md:flex-row gap-2">
+            <Popover
+              open={isAdvancedMenuOpen}
+              onOpenChange={setIsAdvancedMenuOpen}
             >
-              {i18n._('common.cancel')}
-            </Button>
-            <Button
-              variant="primary"
-              className="w-1/2 md:w-auto"
-              onClick={() => handleUpdate()}
-            >
-              {i18n._('sys.system_management.confirm_burn')}
-            </Button>
+              <PopoverTrigger asChild>
+                <div className="inline-flex w-full md:w-auto">
+                  <Button variant="outline" className="w-full md:w-auto gap-1">
+                    {i18n._('sys.system_management.advanced_options')}
+                    <SvgIcon icon="bottom" className="w-4 h-4" />
+                  </Button>
+                </div>
+              </PopoverTrigger>
+              <PopoverContent
+                className="w-auto p-1"
+                align="start"
+                side="top"
+              >
+                <button
+                  type="button"
+                  className="flex w-full items-center rounded-sm px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
+                  onClick={() => {
+                    setIsAdvancedMenuOpen(false);
+                    setIsImportFirmwareDialogOpen(false);
+                    navigate('/import-fsbl');
+                  }}
+                >
+                  {i18n._('sys.system_management.advanced_fsbl_upgrade')}
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center rounded-sm px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
+                  onClick={() => {
+                    setIsAdvancedMenuOpen(false);
+                    setIsImportFirmwareDialogOpen(false);
+                    navigate('/import-wifi');
+                  }}
+                >
+                  {i18n._('sys.system_management.advanced_wifi_upgrade')}
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center rounded-sm px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
+                  onClick={() => {
+                    setIsAdvancedMenuOpen(false);
+                    setIsImportFirmwareDialogOpen(false);
+                    navigate('/import-bundle');
+                  }}
+                >
+                  {i18n._('sys.system_management.advanced_bundle_upgrade')}
+                </button>
+              </PopoverContent>
+            </Popover>
+            <div className="flex flex-row space-x-2 w-full md:w-auto">
+              <Button
+                variant="outline"
+                className="w-1/2 md:w-auto"
+                onClick={() => setIsImportFirmwareDialogOpen(false)}
+              >
+                {i18n._('common.cancel')}
+              </Button>
+              <Button
+                variant="primary"
+                className="w-1/2 md:w-auto"
+                onClick={() => handleUpdate()}
+              >
+                {i18n._('sys.system_management.confirm_burn')}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {layoutWarnDialog}
     </div>
   );
 }

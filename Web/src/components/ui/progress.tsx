@@ -19,9 +19,12 @@ const Progress = React.forwardRef<
   >
     <ProgressPrimitive.Indicator
       className="h-full w-full flex-1 transition-all"
-      style={{ 
+      style={{
         transform: `translateX(-${100 - (value || 0)}%)`,
-        backgroundColor: indicatorColor || 'hsl(var(--primary))'
+        // plain var() — the theme defines --primary as a hex color, so the
+        // shadcn-stock hsl(var(--primary)) default was invalid CSS and the
+        // indicator silently rendered transparent
+        backgroundColor: indicatorColor || 'var(--primary)'
       }}
     />
   </ProgressPrimitive.Root>

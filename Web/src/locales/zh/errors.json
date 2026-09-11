@@ -19,6 +19,7 @@
       "DEVICE_BUSY": "设备忙碌",
       "OPERATION_TIMEOUT": "操作超时",
       "STORAGE_FULL": "存储空间不足",
+      "DIR_NOT_EMPTY": "文件夹删除失败，可能部分文件被占用或超出数量限制，请重试或手动清空文件夹内容",
       "MODEL_INVALID": "模型无效",
       "NETWORK_ERROR": "网络错误",
       "CAMERA_ERROR": "摄像头错误",

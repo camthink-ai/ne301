@@ -50,6 +50,7 @@ extern SPI_HandleTypeDef hspi6;
 void MX_SPI2_Init(void);
 void MX_SPI4_Init(void);
 void MX_SPI6_Init(void);
+void MX_SPI6_DeInit(void);
 
 /* USER CODE BEGIN Prototypes */
 uint8_t SPI2_ReadWriteByte(uint8_t wByte);

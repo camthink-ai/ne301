@@ -279,7 +279,8 @@ int32_t yolov_d_pp_scoreFiltering_centroid_is8(od_yolo_d_pp_scratch_s8_t *ptrScr
                                                        uint8_t stride,
                                                        uint32_t nb_classes,
                                                        float32_t conf_threshold,
-                                                       uint32_t *p_nb_detect)
+                                                       uint32_t *p_nb_detect,
+                                                       int32_t det_cap)
 {
   int32_t error   = AI_OD_POSTPROCESS_ERROR_NO;
 
@@ -315,7 +316,7 @@ int32_t yolov_d_pp_scoreFiltering_centroid_is8(od_yolo_d_pp_scratch_s8_t *ptrScr
       {
         best_score_f = best_score_array[_i]*pRaw_detections[AI_YOLO_D_PP_OBJPROB];
 
-        if (best_score_f >= conf_threshold)
+        if ((best_score_f >= conf_threshold) && (nb_detect < det_cap))
         {
           /* AI_YOLO_D_PP_XCENTER */
           float32_t x_center = pRaw_detections[AI_YOLO_D_PP_XCENTER];
@@ -355,6 +356,7 @@ int32_t yolov_d_pp_getNNBoxes_centroid(od_yolo_d_pp_in_centroid_t *pInput,
 {
   int32_t error   = AI_OD_POSTPROCESS_ERROR_NO;
   float32_t *pRaw_detections = (float32_t *)pInput->pRaw_detections;
+  int32_t det_cap = pInput_static_param->max_boxes_limit; /* ne301: pOutBuff is sized to max_detections */
 
   // To be done 3 time for each stride
   for ( uint8_t stride_idx = 0; stride_idx < pInput_static_param->strides_nb; stride_idx++) {
@@ -367,7 +369,8 @@ int32_t yolov_d_pp_getNNBoxes_centroid(od_yolo_d_pp_in_centroid_t *pInput,
                                    stride,
                                    pInput_static_param->nb_classes,
                                    pInput_static_param->conf_threshold,
-                                   &pInput_static_param->nb_detect);
+                                   &pInput_static_param->nb_detect,
+                                   det_cap);
     if (error != AI_OD_POSTPROCESS_ERROR_NO) {
       break;
     }
@@ -384,7 +387,8 @@ static int32_t _yolov_d_pp_getNNBoxes_centroid_int8_stride(int8_t **pRaw_detecti
                                                           int16_t conf_threshold_s16,
                                                           uint32_t *p_nb_detect,
                                                           int8_t zero_point,
-                                                          float32_t scale)
+                                                          float32_t scale,
+                                                          int32_t det_cap)
 
 {
   int32_t error   = AI_OD_POSTPROCESS_ERROR_NO;
@@ -420,7 +424,7 @@ static int32_t _yolov_d_pp_getNNBoxes_centroid_int8_stride(int8_t **pRaw_detecti
       {
         int16_t best_score_s16 = ((int16_t)best_score_array[_i]-zero_point)*((int16_t)(pRaw_detections[AI_YOLO_D_PP_OBJPROB])-zero_point);
 
-        if ( best_score_s16 >= conf_threshold_s16)
+        if ( (best_score_s16 >= conf_threshold_s16) && (nb_detect < det_cap))
         {
           float32_t best_score_f = best_score_s16 * scale;
           best_score_f *= scale;
@@ -464,6 +468,7 @@ int32_t yolov_d_pp_getNNBoxes_centroid_int8(od_yolo_d_pp_in_centroid_t *pInput,
   int32_t error   = AI_OD_POSTPROCESS_ERROR_NO;
   int8_t *pRaw_detections = (int8_t *)pInput->pRaw_detections;
   int16_t conf_threshold_s16 = (int16_t)(pInput_static_param->conf_threshold / (pInput_static_param->raw_output_scale * pInput_static_param->raw_output_scale) + 0.5f);
+  int32_t det_cap = pInput_static_param->max_boxes_limit; /* ne301: pOutBuff is sized to max_detections */
 
   // To be done 3 time for each stride
   for ( uint8_t stride_idx = 0; stride_idx < pInput_static_param->strides_nb; stride_idx++) {
@@ -478,7 +483,8 @@ int32_t yolov_d_pp_getNNBoxes_centroid_int8(od_yolo_d_pp_in_centroid_t *pInput,
                                                         conf_threshold_s16,
                                                         &pInput_static_param->nb_detect,
                                                         pInput_static_param->raw_output_zero_point,
-                                                        pInput_static_param->raw_output_scale);
+                                                        pInput_static_param->raw_output_scale,
+                                                        det_cap);
     if (error != AI_OD_POSTPROCESS_ERROR_NO) {
       break;
     }

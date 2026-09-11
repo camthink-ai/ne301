@@ -224,7 +224,7 @@ static aicam_bool_t check_auth_required(rtsp_client_t *client, const char *cseq,
         return AICAM_TRUE;
     }
 
-    /* Client not authenticated — try to verify Authorization header */
+    /* Client not authenticated - try to verify Authorization header */
     const char *auth_hdr = rtsp_parse_authorization(request);
     if (auth_hdr) {
         static char uri[256];
@@ -326,7 +326,7 @@ static aicam_result_t handle_describe(rtsp_client_t *client, const char *cseq,
     /* Generate SDP (static to avoid ~2KB stack allocation) */
     static char sdp[2048];
     char ip_str[64];
-    /* Use the client socket's local address — this is the IP VLC actually connected to */
+    /* Use the client socket's local address - this is the IP VLC actually connected to */
     rtsp_service_get_client_local_ip(client, ip_str, sizeof(ip_str));
 
     rtsp_sps_pps_t sps_pps;
@@ -415,7 +415,7 @@ static aicam_result_t handle_setup(rtsp_client_t *client, const char *cseq,
         return AICAM_ERROR;
     }
 
-    /* Send SETUP response — include source, destination, ssrc, mode per RFC 2326 */
+    /* Send SETUP response - include source, destination, ssrc, mode per RFC 2326 */
     char server_ip[64];
     rtsp_service_get_client_local_ip(client, server_ip, sizeof(server_ip));
 
@@ -456,7 +456,7 @@ static aicam_result_t handle_play(rtsp_client_t *client, const char *cseq)
     }
 
     if (client->session_id[0] == '\0' || client->client_rtp_port == 0) {
-        LOG_SVC_WARN("RTSP: PLAY rejected — no session (session=%s rtp_port=%u)",
+        LOG_SVC_WARN("RTSP: PLAY rejected - no session (session=%s rtp_port=%u)",
                      client->session_id, client->client_rtp_port);
         send_simple_response(client->tcp_socket, 454, "Session Not Found", cseq, NULL);
         return AICAM_ERROR;
@@ -524,7 +524,7 @@ aicam_result_t rtsp_handle_request(rtsp_client_t *client,
 {
     (void)len;
 
-    /* Copy CSeq immediately — find_header_value() uses a static buffer that gets
+    /* Copy CSeq immediately - find_header_value() uses a static buffer that gets
      * overwritten by subsequent calls to rtsp_parse_transport/session/etc. */
     char cseq_buf[64] = "0";
     const char *cseq_parsed = rtsp_parse_cseq(request);

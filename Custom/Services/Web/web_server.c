@@ -26,9 +26,19 @@
 #include "api_business_error.h"
 #include "device_service.h"
 #include "api_ota_module.h"
+#include "api_file_module.h"
+#include "web_recovery.h"
+#include "netif_manager.h"
 
 #define WEB_SERVER_STACK_SIZE (1024 * 32)
 #define WEB_SERVER_AP_SLEEP_TIMER_STACK_SIZE (1024 * 8)
+
+ /* ==================== Web Debug Logging (see WEB_DEBUG in web_config.h) ==================== */
+ #if WEB_DEBUG
+ #define WEB_LOG(fmt, ...)  printf("[WEBDBG][tick %lums] " fmt "\r\n", (unsigned long) osKernelGetTickCount(), ##__VA_ARGS__)
+ #else
+ #define WEB_LOG(fmt, ...)  do { } while (0)
+ #endif
 
  /* ==================== Global Variables ==================== */
  static uint8_t web_server_stack[WEB_SERVER_STACK_SIZE] ALIGN_32 IN_PSRAM;
@@ -48,6 +58,7 @@
  static aicam_result_t web_server_validate_request(http_handler_context_t* ctx);
  static aicam_result_t web_server_log_request(http_handler_context_t* ctx);
  static char *my_strdup(const char *s);
+ static void web_server_ap_client_event_cb(netif_ap_client_event_t event, const uint8_t mac_addr[6]);
 
  /* ==================== FreeRTOS Task Attributes ==================== */
  static osThreadAttr_t web_server_task_attributes = {
@@ -126,7 +137,37 @@ static uint64_t get_relative_timestamp(void) {
 
  
  /* ==================== Core HTTP Server Implementation ==================== */
- 
+
+/* Keep-alive idle reaper: a peer that vanishes without closing (WiFi drop,
+ * tab kill) would leak its lwip netconn forever. Close web connections idle
+ * longer than WEB_CONN_IDLE_TIMEOUT_MS; browsers close their own idle pooled
+ * sockets well before this, so it should only ever fire on vanished peers.
+ * ponytail: fixed 16-slot id table, bump WEB_CONN_TRACK_MAX if ever short. */
+#define WEB_CONN_IDLE_TIMEOUT_MS  30000u
+#define WEB_CONN_TRACK_MAX        16
+static struct { unsigned long id; uint32_t last_ms; } s_conn_last_active[WEB_CONN_TRACK_MAX];
+
+static void web_conn_touch(struct mg_connection *c, uint32_t now_ms)
+{
+    for (int i = 0; i < WEB_CONN_TRACK_MAX; i++) {
+        if (s_conn_last_active[i].id == c->id || s_conn_last_active[i].id == 0) {
+            s_conn_last_active[i].id = c->id;
+            s_conn_last_active[i].last_ms = now_ms;
+            return;
+        }
+    }
+}
+
+static void web_conn_forget(struct mg_connection *c)
+{
+    for (int i = 0; i < WEB_CONN_TRACK_MAX; i++) {
+        if (s_conn_last_active[i].id == c->id) {
+            s_conn_last_active[i].id = 0;
+            return;
+        }
+    }
+}
+
  aicam_result_t http_server_init(const http_server_config_t* config)
  {
      if (!config) {
@@ -139,6 +180,7 @@ static uint64_t get_relative_timestamp(void) {
  
      /* Initialize Mongoose manager */
      mg_mgr_init(&g_web_server.mgr);
+     memset(s_conn_last_active, 0, sizeof(s_conn_last_active));
  
      /* Copy configuration */
      g_web_server.config = *config;
@@ -230,7 +272,19 @@ static uint64_t get_relative_timestamp(void) {
     if (!g_web_server.ap_sleep_timer_thread) {
         return AICAM_ERROR_SERVICE_INIT;
     }
- 
+
+    /* Subscribe once per boot: AP client association refreshes the sleep
+     * countdown (see web_server_ap_client_event_cb). http_server_start may
+     * run again after a stop cycle; keep the registration, only log retries. */
+    static uint8_t ap_client_evt_subscribed = 0;
+    if (!ap_client_evt_subscribed) {
+        if (nm_subscribe_ap_client_event(web_server_ap_client_event_cb) == AICAM_OK) {
+            ap_client_evt_subscribed = 1;
+        } else {
+            LOG_SVC_ERROR("[WEB_SERVER] AP client event subscribe failed");
+        }
+    }
+
      return AICAM_OK;
  }
  
@@ -375,6 +429,7 @@ aicam_result_t api_response_error(http_handler_context_t* ctx,
 }
 
 
+/* Keep-alive idle reaper helpers live above http_server_init */
  static void web_server_event_handler(struct mg_connection *c, int ev, void *ev_data)
  {
     #if IS_HTTPS
@@ -402,29 +457,92 @@ aicam_result_t api_response_error(http_handler_context_t* ctx,
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
         // check if the request is for ota upload
         if (mg_match(hm->uri, mg_str(API_PATH_PREFIX "/system/ota/upload"), NULL)) {
-            // call the processor: it will set c->pfn = NULL and delete headers, take over the subsequent data
             ota_upload_stream_processor(c, ev, ev_data);
+            return;
+        }
+        // check if the request is for file upload - stream to disk
+        if (mg_match(hm->uri, mg_str(API_PATH_PREFIX "/files/upload"), NULL) &&
+            mg_match(hm->method, mg_str("POST"), NULL)) {
+            file_upload_stream_processor(c, ev, ev_data);
             return;
         }
      }
 
-    // check if the request is for ota upload
-    // IMPORTANT: Do NOT process OTA stream on:
+    // check if the request is for ota upload or file upload
+    // IMPORTANT: Do NOT process streams on:
     // - Listener connections (is_listening = 1)
     // - During MG_EV_OPEN event (pfn not set yet, would be &g_web_server not ota_ctx)
     // - When fn_data is the server instance (&g_web_server)
     if (c->fn_data != NULL && c->pfn == NULL &&
         !c->is_listening && c->fn_data != &g_web_server) {
+        /* Streaming mode detached c->pfn, so MG_EV_HTTP_MSG never fires again
+         * and the idle-reaper's last_ms stays at ACCEPT time: a stream that
+         * outlives WEB_CONN_IDLE_TIMEOUT_MS (a ~3.8MB app package at
+         * ~125KB/s) is reaped on its FIRST post-completion poll - before the
+         * queued response can flush, since mg_iotest only asks for POLLOUT
+         * once send.len > 0 - and close_conn() discards the unsent response.
+         * Browser sees a failed XHR (0 B, ~30s) while the burn succeeded.
+         * Refresh on socket-progress events only: MG_EV_POLL fires every
+         * tick for open conns and would neuter the vanished-peer reap. */
+        if (ev == MG_EV_READ || ev == MG_EV_WRITE) {
+            web_conn_touch(c, osKernelGetTickCount());
+            /* Socket progress also keeps the AP sleep timer alive: this
+             * stream never fires MG_EV_HTTP_MSG, so without this a body
+             * transfer longer than the low-power 90 s window is killed by
+             * a mid-flight sleep. */
+            web_server_ap_sleep_timer_reset();
+        }
+        /* Streaming CLOSE returns below before the lifecycle block's
+         * web_conn_forget() - without this the ACCEPT-time entry leaks one
+         * of the 16 table slots per transfer until reaping stops working. */
+        if (ev == MG_EV_CLOSE) {
+            web_conn_forget(c);
+        }
         // use POLL or READ event to drive data write
         // most Mongoose versions will trigger callbacks after POLL or each IO
-        ota_upload_stream_processor(c, ev, ev_data);
+        /* Route by the connection's OWN context tag, not by the global
+         * OTA flag: a file upload and an OTA upload running concurrently
+         * (separate tabs/clients) would otherwise feed the file connection's
+         * context to the OTA processor - misinterpreted context, unconsumed
+         * body and a file handle leaked on close. Both context structs carry
+         * their magic as the first field. */
+        {
+            uint32_t stream_magic = *(const uint32_t *)c->fn_data;
+            if (stream_magic == OTA_UPLOAD_CTX_MAGIC) {
+                ota_upload_stream_processor(c, ev, ev_data);
+            } else {
+                file_upload_stream_processor(c, ev, ev_data);
+            }
+        }
         return;
+    }
+
+    /* Connection lifecycle logs: catch keep-alive sockets dying at link level
+     * (a POST sent on a dead pooled socket fails instantly browser-side) */
+    if (ev == MG_EV_ACCEPT) {
+        WEB_LOG("[CONN] accept id=%lu", (unsigned long) c->id);
+        web_conn_touch(c, osKernelGetTickCount());
+    } else if (ev == MG_EV_CLOSE) {
+        WEB_LOG("[CONN] close  id=%lu", (unsigned long) c->id);
+        web_conn_forget(c);
+    } else if (ev == MG_EV_POLL && !c->is_listening) {
+        uint32_t now = osKernelGetTickCount();
+        for (int i = 0; i < WEB_CONN_TRACK_MAX; i++) {
+            if (s_conn_last_active[i].id == c->id) {
+                if (now - s_conn_last_active[i].last_ms > WEB_CONN_IDLE_TIMEOUT_MS) {
+                    WEB_LOG("[CONN] idle-reap id=%lu", (unsigned long) c->id);
+                    c->is_closing = 1;
+                }
+                break;
+            }
+        }
     }
 
     if (ev == MG_EV_HTTP_MSG) {
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
+        web_conn_touch(c, osKernelGetTickCount());
         web_server_handle_request(c, hm);
-    } 
+    }
 
 
  }
@@ -450,24 +568,31 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
     aicam_result_t result = http_parse_request(&ctx);
     if (result != AICAM_OK) {
         api_response_error(&ctx, API_ERROR_INVALID_REQUEST, "Failed to parse request");
+        http_send_response(&ctx);   /* send the error, don't leave the client hanging until timeout */
         return result;
     }
 
     /* Handle CORS preflight OPTIONS request */
     if (strcmp(ctx.request.method, "OPTIONS") == 0) {
+        WEB_LOG("[REQ] OPTIONS %s (preflight)", ctx.request.uri);
         mg_http_reply(c, 200,
+                      "Connection: close\r\n"
                       "Access-Control-Allow-Origin: *\r\n"
                       "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
                       "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
                       "Access-Control-Max-Age: 86400\r\n",
                       "");
+        c->is_draining = 1;
         return AICAM_OK;
     }
+
+    WEB_LOG("[REQ] %s %s from %s", ctx.request.method, ctx.request.uri, ctx.request.client_ip);
 
     /* Validate request */
     result = web_server_validate_request(&ctx);
     if (result != AICAM_OK) {
-        return result; // Error response already sent
+        http_send_response(&ctx);   /* error fields already set by validate */
+        return result;
     }
  
      /* Log request */
@@ -485,9 +610,12 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
             http_send_response(&ctx);
          }
      } else {
-         /* Handle static resource request */
+         /* Handle static resource request (sends the response internally) */
          LOG_SVC_INFO("[WEB] handle static request\r\n");
          result = web_server_handle_static_request(&ctx);
+         WEB_LOG("[RSP] %s %s -> static, result=%d (%lu ms)",
+                 ctx.request.method, ctx.request.uri, (int) result,
+                 (unsigned long) (osKernelGetTickCount() - ctx.request.timestamp));
      }
  
      /* Clean up resources */
@@ -651,8 +779,8 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
          ctx->request.authorization[0] = '\0';
      }
  
-     /* Set timestamp */
-     ctx->request.timestamp = get_relative_timestamp();
+     /* Set timestamp: kernel tick (ms) — consumed by WEB_DEBUG duration log in http_send_response */
+     ctx->request.timestamp = (uint32_t) osKernelGetTickCount();
  
      return AICAM_OK;
  }
@@ -709,16 +837,27 @@ aicam_result_t http_send_response(http_handler_context_t* ctx) {
     mg_http_reply(ctx->conn,
                  http_status,
                  "Content-Type: application/json\r\n"
+                 "Connection: close\r\n"
                  "Access-Control-Allow-Origin: *\r\n"
                  "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
                  "Access-Control-Allow-Headers: Content-Type, Authorization\r\n",
                  "%s", json_str);
 
+    WEB_LOG("[RSP] %s %s -> http=%d err=%s (%lu ms)",
+            ctx->request.method, ctx->request.uri, http_status,
+            api_business_error_code_to_string(ctx->response.error_code),
+            (unsigned long) (osKernelGetTickCount() - ctx->request.timestamp));
+
     // Cleanup
     cJSON_free(json_str);  // free string allocated by cJSON
     cJSON_Delete(root);
 
-    // drain the connection
+    /* One request per connection, ANNOUNCED via "Connection: close" above:
+     * the browser then never pools the socket, so our close can't race a
+     * reused request (the old instant "Network Error"). Plain keep-alive was
+     * tried and the lwip/mongoose socket layer here proved unreliable with
+     * long-lived conns (idle conns sometimes stop getting POLL events). */
+
     ctx->conn->is_draining = 1;
 
     return AICAM_OK;
@@ -732,6 +871,26 @@ static aicam_result_t web_server_handle_static_request(http_handler_context_t* c
     char decoded_uri[256];
     const web_asset_t* asset = NULL;
     const char* path_to_find;
+
+    // Recovery mode: the normal web assets are missing, so serve the built-in
+    // recovery page for any path. The page uploads a web firmware package to
+    // the OTA endpoint to restore the full UI.
+    if (web_recovery_is_active()) {
+        const char* html = web_recovery_get_html();
+        size_t html_size = web_recovery_get_html_size();
+        mg_printf(ctx->conn,
+                  "HTTP/1.1 200 OK\r\n"
+                  "Content-Type: text/html; charset=utf-8\r\n"
+                  "Content-Length: %u\r\n"
+                  "Cache-Control: no-store\r\n"
+                  "Connection: close\r\n"
+                  "Access-Control-Allow-Origin: *\r\n"
+                  "\r\n",
+                  (unsigned int)html_size);
+        mg_send(ctx->conn, html, html_size);
+        ctx->conn->is_draining = 1;
+        return AICAM_OK;
+    }
 
     // URL Decode the request URI
     mg_url_decode(ctx->msg->uri.buf, ctx->msg->uri.len, decoded_uri, sizeof(decoded_uri), 0);
@@ -748,17 +907,69 @@ static aicam_result_t web_server_handle_static_request(http_handler_context_t* c
     asset = web_asset_find(path_to_find);
 
     if (asset != NULL) {
+        /* ETag = content CRC32, computed once per asset. Chrome re-fetches
+         * worker scripts and importScripts() on every player (re)start even
+         * with max-age set; without a validator it re-downloads the full
+         * bundle each time - hundreds of KB over a lossy link per tab switch.
+         * With the ETag those revalidations become 304s (a few hundred bytes). */
+        static struct { const void *asset; uint32_t crc; } s_etag[32];
+        uint32_t etag = 0;
+        int cached = 0;
+        for (int i = 0; i < (int) (sizeof(s_etag) / sizeof(s_etag[0])); i++) {
+            if (s_etag[i].asset == (const void *) asset) {
+                etag = s_etag[i].crc;
+                cached = 1;
+                break;
+            }
+            if (s_etag[i].asset == NULL) {
+                s_etag[i].asset = (const void *) asset;
+                s_etag[i].crc = etag = mg_crc32(0, (const char *) asset->data, asset->size);
+                cached = 1;
+                break;
+            }
+        }
+        if (!cached) {
+            etag = mg_crc32(0, (const char *) asset->data, asset->size);
+        }
+        char etag_hdr[16];
+        snprintf(etag_hdr, sizeof(etag_hdr), "\"%08lx\"", (unsigned long) etag);
+
+        struct mg_str *inm = mg_http_get_header(ctx->msg, "If-None-Match");
+        /* match `"tag"` or `W/"tag"` (single-tag form; Chrome never sends a
+         * list for a plain GET) */
+        bool not_modified = false;
+        if (inm != NULL) {
+            const char *v = inm->buf;
+            size_t len = inm->len;
+            if (len >= 2 && v[0] == 'W' && v[1] == '/') { v += 2; len -= 2; }
+            not_modified = (len == strlen(etag_hdr)) && (memcmp(v, etag_hdr, len) == 0);
+        }
+        if (not_modified) {
+            WEB_LOG("[RSP] %s -> 304 not modified", path_to_find);
+            mg_printf(ctx->conn, "HTTP/1.1 304 Not Modified\r\n"
+                                 "ETag: %s\r\n"
+                                 "Cache-Control: max-age=86400, public\r\n"
+                                 "Connection: close\r\n"
+                                 "\r\n",
+                      etag_hdr);
+            ctx->conn->is_draining = 1;
+            return AICAM_OK;
+        }
+
         mg_printf(ctx->conn, "HTTP/1.1 200 OK\r\n"
                              "Content-Type: %s\r\n"
                              "Content-Length: %d\r\n"
+                             "ETag: %s\r\n"
                              "Cache-Control: max-age=86400, public\r\n"
+                             "Connection: close\r\n"
                              "Access-Control-Allow-Origin: *\r\n"
                              "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
                              "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
-                             "%s"  
+                             "%s"
                              "\r\n",
                   asset->mime_type,
                   (int)asset->size,
+                  etag_hdr,
                   asset->is_compressed ? "Content-Encoding: gzip\r\n" : "");
 
         mg_send(ctx->conn, (uint8_t*)asset->data, asset->size);
@@ -766,12 +977,14 @@ static aicam_result_t web_server_handle_static_request(http_handler_context_t* c
         ctx->conn->is_draining = 1;
     } else {
         // File not found, send 404 with CORS headers
-        mg_http_reply(ctx->conn, 404, 
+        mg_http_reply(ctx->conn, 404,
                       "Content-Type: text/plain\r\n"
+                      "Connection: close\r\n"
                       "Access-Control-Allow-Origin: *\r\n"
                       "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-                      "Access-Control-Allow-Headers: Content-Type, Authorization\r\n", 
+                      "Access-Control-Allow-Headers: Content-Type, Authorization\r\n",
                       "Not Found\n");
+        ctx->conn->is_draining = 1;
     }
     
     return AICAM_OK;
@@ -904,6 +1117,23 @@ static char *my_strdup(const char *s) {
    return copy;
 }
 
+/* ==================== AP Client Event Handling ==================== */
+
+/* Runs in the WiFi driver's event context (see netif_manager.h) — short and
+ * non-blocking only. A station associating with the AP restarts the sleep
+ * countdown so the device cannot fall asleep between the client joining and
+ * its first HTTP request (user connected but has not opened the web UI yet). */
+static void web_server_ap_client_event_cb(netif_ap_client_event_t event,
+                                          const uint8_t mac_addr[6])
+{
+    if (event == NETIF_AP_CLIENT_CONNECTED) {
+        LOG_SVC_INFO("[WEB_SERVER] AP client %02X:%02X:%02X:%02X:%02X:%02X connected, resetting AP sleep timer",
+                     mac_addr[0], mac_addr[1], mac_addr[2],
+                     mac_addr[3], mac_addr[4], mac_addr[5]);
+        web_server_ap_sleep_timer_reset();
+    }
+}
+
 /* ==================== AP Sleep Timer Management Functions ==================== */
 
 aicam_result_t web_server_ap_sleep_timer_init(uint32_t sleep_timeout)
@@ -925,35 +1155,43 @@ aicam_result_t web_server_ap_sleep_timer_reset(void)
     if (!g_web_server.initialized) {
         return AICAM_ERROR_NOT_INITIALIZED;
     }
-    
-    if (g_web_server.ap_sleep_enabled) {
-        g_web_server.last_request_time = get_relative_timestamp();
-    }
-    
+
+    /* Unconditional: last_request_time is THE web-activity timestamp. It
+     * feeds both the AP sleep countdown and the low-power 90 s web-idle
+     * sleep check, so it must keep refreshing even when the AP sleep
+     * feature is disabled — system sleep is a separate config. */
+    g_web_server.last_request_time = get_relative_timestamp();
+
     return AICAM_OK;
 }
 
 aicam_result_t web_server_ap_sleep_timer_check(void)
 {
-    if (!g_web_server.initialized || !g_web_server.ap_sleep_enabled ) {
-        return AICAM_OK; // Not enabled, no action needed
+    if (!g_web_server.initialized) {
+        return AICAM_OK; // Not initialized, no action needed
     }
-    
+
     uint64_t current_time = get_relative_timestamp();
     uint64_t time_since_last_request = current_time - g_web_server.last_request_time;
 
     //get current power mode
     power_mode_t current_power_mode = system_service_get_current_power_mode();
-    
+
 
     if(time_since_last_request >= 90 && current_power_mode == POWER_MODE_LOW_POWER) {
-        //enter sleep mode
+        //enter sleep mode — system sleep is a SEPARATE config from AP sleep:
+        // it must keep triggering even when the AP sleep feature is disabled
         LOG_SVC_INFO("[WEB_SERVER] AP sleep timeout reached (90s) in low power mode, entering sleep");
         system_service_task_completed();
-        
+
         return AICAM_OK;
     }
-    else if(g_web_server.ap_sleep_timeout == 0) {
+
+    if (!g_web_server.ap_sleep_enabled ) {
+        return AICAM_OK; // AP sleep feature disabled — everything below is AP-sleep behavior only
+    }
+
+    if(g_web_server.ap_sleep_timeout == 0) {
         // no sleep timeout, keep AP running
         return AICAM_OK;
     }
@@ -983,16 +1221,6 @@ aicam_result_t web_server_ap_sleep_timer_check(void)
         }
 
         if(communication_is_interface_connected(NETIF_NAME_WIFI_AP) == AICAM_FALSE) {
-            // Skip AP startup when cellular is active to avoid SPI/UART DMA bus contention
-            if (communication_is_type_connected(COMM_TYPE_CELLULAR)) {
-                static uint32_t last_skip_log_time = 0;
-                if (current_time - last_skip_log_time >= 30) {
-                    last_skip_log_time = current_time;
-                    LOG_SVC_DEBUG("[WEB_SERVER] Skipping AP startup while cellular is active");
-                }
-                return AICAM_OK;
-            }
-
             LOG_SVC_INFO("[WEB_SERVER] AP is not connected, starting AP");
             aicam_result_t ret = communication_start_interface(NETIF_NAME_WIFI_AP);
             if (ret != AICAM_OK) {

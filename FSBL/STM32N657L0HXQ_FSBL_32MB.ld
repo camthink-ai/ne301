@@ -81,13 +81,6 @@ SECTIONS
     _etext = .;        /* define a global symbols at end of code */
   } >AXISRAM2_S
 
-  .swap_section :
-  {
-      . = ALIGN(4);
-      KEEP(*(.swap_section))
-      . = ALIGN(4);
-  } > SWAP
-
   .gnu.sgstubs :
   {
     . = ALIGN(4);

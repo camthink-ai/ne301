@@ -133,6 +133,14 @@ void HAL_TIM_PWM_MspDeInit(TIM_HandleTypeDef* tim_pwmHandle)
 }
 
 /* USER CODE BEGIN 1 */
+/* The flash LED driver does not produce stable output below ~4% duty
+ * (empirical: the light only comes on from 4% up; below that the pulse is
+ * too short for the driver). Keep the PWM frequency (ARR) unchanged —
+ * lowering it would risk banding in captures — and instead map the 1..100
+ * duty range onto compare values [4% ARR .. ARR], so every brightness step
+ * above 0 drives the LED and 0 stays fully off. */
+#define FLASH_PWM_MIN_DUTY   4U /* % of ARR: lowest stable LED drive */
+
 void MX_TIM3_DeInit(void)
 {
   HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
@@ -142,6 +150,14 @@ void MX_TIM3_DeInit(void)
 void TIM_set_duty(uint32_t duty)
 {
   if(duty > 100) duty = 100;
-  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 1599 * duty / 100);
+  uint32_t arr = __HAL_TIM_GET_AUTORELOAD(&htim3);
+  uint32_t min_compare = (arr * FLASH_PWM_MIN_DUTY) / 100U;
+  uint32_t compare;
+  if (duty == 0) {
+    compare = 0;
+  } else {
+    compare = min_compare + (arr - min_compare) * duty / 100U;
+  }
+  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, compare);
 }
 /* USER CODE END 1 */

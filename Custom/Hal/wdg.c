@@ -17,7 +17,7 @@ static wdg_t g_wdg = {0};
 static int wdg_flag = 0;
 const osThreadAttr_t wdgTask_attributes = {
     .name = "wdgTask",
-    .priority = (osPriority_t) osPriorityRealtime7,
+    .priority = (osPriority_t) osPriorityRealtime,
     .stack_size = 4096,
 };
 
@@ -58,14 +58,17 @@ static void wdgProcess(void *argument)
     MX_WWDG_Init();
 #endif
     while (wdg->is_init) {
-        if(wdg_flag == 1){
+        if (wdg_flag == 1) {
         #if WDG_IS_USE_IWDG
             HAL_IWDG_Refresh(&hiwdg);
         #else
             HAL_WWDG_Refresh(&hwwdg);
         #endif
-            osDelay(1000);
         }
+        /* osDelay stays outside the flag check: without it `wdg stop` spun
+         * this RT7-priority loop with no yield and starved the whole system
+         * for the remaining IWDG window. */
+        osDelay(1000);
     }
     wdg->wdg_processId = NULL;  // Thread cleans up its own ID
     osThreadExit();

@@ -15,8 +15,13 @@ import systemSettings from '@/services/api/systemSettings';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Input } from '@/components/ui/input';
 import WifiReloadMask from '@/components/wifi-reload-mask';
-import { sleep, retryFetch } from '@/utils';
+import { sleep } from '@/utils';
 import { useCommunicationData } from '@/store/communicationData';
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/tooltip';
+import { toast } from 'sonner';
+import { useLanguage } from '@/hooks/useLanguageProvider';
+import { getWifiRegionLabel } from './wifi-region';
 
 type WifiData = {
     ssid: string;
@@ -28,10 +33,34 @@ type WifiData = {
     is_known: boolean;
     last_connected_time: number;
 }
+
+type WifiDetailInfo = {
+    connected: boolean;
+    ssid: string;
+    bssid: string;
+    rssi: number;
+    channel: number;
+    security: string;
+    ip_mode: string;
+    ip_address: string;
+    netmask: string;
+    gateway: string;
+    dns_primary: string;
+    dns_secondary: string;
+    mac_address: string;
+}
+
+// When refreshing/reconnecting, poll the STA interface instead of failing fast on a
+// transient 500. Only surface "network disconnected" after this timeout elapses.
+const POLL_TIMEOUT = 20000;
+const POLL_INTERVAL = 1000;
+const POLL_REQUEST_TIMEOUT = 2000;
+
 export default function WifiNetworkPage() {
     const { i18n } = useLingui();
     const isMobile = useIsMobile();
-    const { getNetworkSTAReq, scanWifi, setWifi, disconnectWifi, deleteWifi } = systemSettings;
+    const { locale } = useLanguage();
+    const { getNetworkSTAReq, scanWifi, setWifi, disconnectWifi, deleteWifi, getWifiRegionReq, setWifiRegionReq, getWifiInfoReq } = systemSettings;
     const { getCommunicationData } = useCommunicationData();
     // const wifiDataList = wifiData.data.scan_results.known_networks;
     const [isLoading, setIsLoading] = useState(true);
@@ -46,6 +75,32 @@ export default function WifiNetworkPage() {
     const [loadingText, setLoadingText] = useState('');
     const [isReloading, setIsReloading] = useState(false);
     const [isErrorWifiPassword, setIsErrorWifiPassword] = useState(false);
+    const [region, setRegion] = useState('us');
+    const [activeRegion, setActiveRegion] = useState('us');
+    const [supportedRegions, setSupportedRegions] = useState<string[]>(['us', 'eu', 'jp', 'kr', 'cn']);
+    const [isConnMenuOpen, setIsConnMenuOpen] = useState(false);
+    const [isWifiDetailOpen, setIsWifiDetailOpen] = useState(false);
+    const [isWifiDetailLoading, setIsWifiDetailLoading] = useState(false);
+    const [wifiDetailInfo, setWifiDetailInfo] = useState<WifiDetailInfo | null>(null);
+
+    const handleGetWifiInfo = async () => {
+        try {
+            setIsWifiDetailLoading(true);
+            const res = await getWifiInfoReq();
+            setWifiDetailInfo(res.data);
+        } catch (error) {
+            console.error('handleGetWifiInfo', error);
+        } finally {
+            setIsWifiDetailLoading(false);
+        }
+    }
+
+    const openWifiDetailDialog = () => {
+        setIsConnMenuOpen(false);
+        setIsWifiDetailOpen(true);
+        handleGetWifiInfo();
+    }
+
     const getNetworkSTA = async () => {
         try {
             setIsLoading(true);
@@ -61,6 +116,35 @@ export default function WifiNetworkPage() {
     }
     useEffect(() => {
         getNetworkSTA();
+    }, []);
+
+    const loadWifiRegion = async () => {
+        try {
+            const res = await getWifiRegionReq();
+            if (res.data?.region) setRegion(res.data.region);
+            if (res.data?.active_region) setActiveRegion(res.data.active_region);
+            if (Array.isArray(res.data?.supported_regions) && res.data.supported_regions.length > 0) {
+                setSupportedRegions(res.data.supported_regions);
+            }
+        } catch (error) {
+            console.error(error);
+        }
+    };
+    const handleWifiRegionChange = async (value: string) => {
+        const prev = region;
+        setRegion(value);
+        try {
+            const res = await setWifiRegionReq({ region: value });
+            if (res.data?.restart_required) {
+                toast.info(i18n._('sys.system_management.wifi_region_restart_hint'));
+            }
+        } catch (error) {
+            setRegion(prev);
+            console.error(error);
+        }
+    };
+    useEffect(() => {
+        loadWifiRegion();
     }, []);
     const isValidateWifiPassword = (password: string, minLength: number, maxLength: number) => {
         const allowedPattern = /^[a-zA-Z0-9!@#$%^&*()_+\-=[\]{}|;':",./<>?`~]+$/;
@@ -166,7 +250,7 @@ export default function WifiNetworkPage() {
                     interface: 'wl'
                 }).then(resolve).catch(reject);
             })
-            await reloadMask(setWifiFn, 3000, 3, i18n._('sys.system_management.connecting_network'));
+            await reloadMask(setWifiFn, i18n._('sys.system_management.connecting_network'));
         } catch (error) {
             console.error('handleConnectWifi', error);
         } finally {
@@ -191,12 +275,51 @@ export default function WifiNetworkPage() {
             setIsErrorWifiPassword(false);
         }
     }, [wifiPassword]);
-    const handleScanWifi = async () => {
-        const waitScanWifi = async () => {
-            await scanWifi();
-            await sleep(3000);
+    const isWifiScanInProgress = (data: any) => {
+        if (!data) return false;
+        if (typeof data.scan_in_progress === 'boolean') {
+            return data.scan_in_progress;
+        }
+        return data.scan_results?.scan_in_progress === true;
+    };
+
+    const pollWifiScanComplete = async (maxWaitMs = 30000, intervalMs = 500) => {
+        const deadline = Date.now() + maxWaitMs;
+        const pollOnce = async (): Promise<boolean> => {
+            if (Date.now() >= deadline) {
+                await getNetworkSTA();
+                return false;
+            }
+            const res = await getNetworkSTAReq();
+            setCurrentWifiData(res.data);
+            setKnownWifiDataList(res.data.scan_results?.known_networks ?? []);
+            setOtherWifiDataList(res.data.scan_results?.unknown_networks ?? []);
+            if (!isWifiScanInProgress(res.data)) {
+                return true;
+            }
+            await sleep(intervalMs);
+            return pollOnce();
         };
-        reloadMask(waitScanWifi, 3000, 3, i18n._('sys.system_management.scanning_network'));
+        return pollOnce();
+    };
+
+    const handleScanWifi = async () => {
+        setLoadingText(i18n._('sys.system_management.scanning_network'));
+        setIsReloading(true);
+        setShowWifiReloadMask(true);
+        try {
+            await scanWifi();
+            // The scan runs in a background task; wait for it to actually
+            // finish (scan_in_progress flips false) before hiding the mask,
+            // otherwise the first STA response closes it with stale/empty
+            // results.
+            await pollWifiScanComplete();
+        } catch (error) {
+            console.error('handleScanWifi', error);
+        } finally {
+            setShowWifiReloadMask(false);
+            setIsReloading(false);
+        }
     }
     const handleDeleteWifi = async (wifiData: WifiData) => {
         try {
@@ -207,30 +330,92 @@ export default function WifiNetworkPage() {
         }
     }
 
-    const reloadMask = async (fetchFn: () => Promise<any>, loadingTime: number, loadCount: number, _loadingText: string) => {
+    // Raw STA request used while reconnecting. It throws on failure so the poll loop
+    // below can retry, and suppresses error toasts so a reconnecting device does not
+    // spam "500" notifications on every attempt.
+    const pollNetworkSTA = async (timeoutMs: number) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const res = await getNetworkSTAReq({ skipErrorToast: true, signal: controller.signal });
+            setCurrentWifiData(res.data);
+            setKnownWifiDataList(res.data.scan_results.known_networks);
+            setOtherWifiDataList(res.data.scan_results.unknown_networks);
+            return res;
+        } finally {
+            clearTimeout(timeoutId);
+        }
+    }
+
+    const reloadMask = async (fetchFn: () => Promise<any>, _loadingText: string) => {
         setLoadingText(_loadingText);
         setIsReloading(true);
         setShowWifiReloadMask(true);
-        fetchFn().then(async () => {
-            const result = await retryFetch(getNetworkSTA, loadingTime, loadCount);
-            if (result) {
-                setShowWifiReloadMask(false);
+        try {
+            await fetchFn();
+        } catch (error) {
+            console.error('reloadMask fetchFn', error);
+        }
+        // Poll the STA interface until it responds again or the timeout elapses.
+        // Only keep the "network disconnected" mask visible if polling truly times out.
+        let reconnected = false;
+        const start = Date.now();
+        /* eslint-disable no-await-in-loop -- sequential polling is intentional */
+        while (Date.now() - start < POLL_TIMEOUT) {
+            try {
+                await pollNetworkSTA(POLL_REQUEST_TIMEOUT);
+                reconnected = true;
+                break;
+            } catch {
+                await sleep(POLL_INTERVAL);
             }
-        }).catch(async (error) => {
-            if (error.status && error.status === 200) {
-                const result = await retryFetch(getNetworkSTA, loadingTime, loadCount);
-                if (result) {
-                    setShowWifiReloadMask(false);
-                }
-            }
-            throw error;
-        })
-            .finally(() => {
-                setIsReloading(false);
-            });
+        }
+        /* eslint-enable no-await-in-loop */
+        if (reconnected) {
+            setShowWifiReloadMask(false);
+        }
+        setIsReloading(false);
     }
     return (
         <div className="mt-2">
+            <div className="flex gap-2 justify-between items-center mb-4">
+                <Label className="text-sm font-bold text-text-primary">{i18n._('sys.system_management.wifi_region')}</Label>
+                <div className="flex items-center gap-2">
+                    {region !== activeRegion && region && activeRegion && (
+                        <Tooltip mbEnhance side="bottom">
+                            <TooltipTrigger>
+                                <span className="inline-flex items-center gap-0.5 text-xs font-medium text-red-500 whitespace-nowrap cursor-pointer">
+                                    {i18n._('sys.system_management.wifi_region_pending_badge')}
+                                    <SvgIcon icon="info" className="w-3 h-3" />
+                                </span>
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-72 text-pretty">
+                                <div className="flex flex-col gap-1">
+                                    <span>{i18n._('sys.system_management.wifi_region_active')}: {getWifiRegionLabel(activeRegion, locale)}</span>
+                                    <span>{i18n._('sys.system_management.wifi_region_pending_to')}: {getWifiRegionLabel(region, locale)}</span>
+                                </div>
+                            </TooltipContent>
+                        </Tooltip>
+                    )}
+                    <Select
+                      value={region}
+                      onValueChange={handleWifiRegionChange}
+                    >
+                        <SelectTrigger>
+                            <SelectValue placeholder={i18n._('sys.system_management.wifi_region')}>
+                                {region ? getWifiRegionLabel(region, locale) : null}
+                            </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                            {supportedRegions.map((code) => (
+                                <SelectItem key={code} value={code}>
+                                    {getWifiRegionLabel(code, locale)}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                </div>
+            </div>
             {isLoading && <CommunicationSkeleton />}
             {!isLoading && (
                 <div className="relative">
@@ -272,12 +457,14 @@ export default function WifiNetworkPage() {
                                             <p className="text-sm text-green-500">{i18n._('common.connected')}</p>
                                         </div>
                                         <SvgIcon icon={currentWifiData.rssi >= -55 ? 'wifi' : currentWifiData.rssi >= -75 ? 'wifi_middle' : 'wifi_low'} className="w-4 h-4 text-[#272E3B]" />
-                                        <Popover>
+                                        <Popover open={isConnMenuOpen} onOpenChange={setIsConnMenuOpen}>
                                             <PopoverTrigger onClick={(e: any) => e.stopPropagation()}>
                                                 <SvgIcon icon="more" className="w-4 h-4 text-white cursor-pointer" />
                                             </PopoverTrigger>
                                             <PopoverContent className="w-auto p-0">
                                                 <div className="flex flex-col gap-2 mx-2 py-2">
+                                                    <div className="text-sm px-4 py-1 cursor-pointer hover:bg-gray-100 hover:rounded-md" onClick={openWifiDetailDialog}>{i18n._('common.details')}</div>
+                                                    <Separator />
                                                     <div className="text-sm px-4 py-1 cursor-pointer hover:bg-gray-100 hover:rounded-md" onClick={() => handleForgetWifi()}>{i18n._('sys.system_management.disconnect')}</div>
                                                     <Separator />
                                                     <div className="text-sm px-4 py-1 cursor-pointer hover:bg-gray-100 hover:rounded-md" onClick={() => handleDeleteWifi(currentWifiData)}>{i18n._('sys.system_management.forget')}</div>
@@ -343,6 +530,79 @@ export default function WifiNetworkPage() {
             )}
             {connectWifiDialog()}
             {/* {refreshWifiDialog()} */}
+            <Dialog open={isWifiDetailOpen} onOpenChange={setIsWifiDetailOpen}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>{i18n._('common.details')}</DialogTitle>
+                    </DialogHeader>
+                    <div className="mt-4">
+                        {isWifiDetailLoading && <CommunicationSkeleton />}
+                        {!isWifiDetailLoading && (
+                            <div className="flex flex-col gap-2 bg-gray-100 p-4 rounded-lg">
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">SSID</Label>
+                                    <p>{wifiDetailInfo?.ssid || '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">BSSID</Label>
+                                    <p>{wifiDetailInfo?.bssid || '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.rssi')}</Label>
+                                    <p>{wifiDetailInfo ? `${wifiDetailInfo.rssi} dBm` : '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.channel')}</Label>
+                                    <p>{wifiDetailInfo ? (wifiDetailInfo.channel || '-') : '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.security')}</Label>
+                                    <p>{wifiDetailInfo?.security || '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.ip_mode')}</Label>
+                                    <p>{wifiDetailInfo ? (wifiDetailInfo.ip_mode === 'static' ? i18n._('sys.system_management.static') : i18n._('sys.system_management.dhcp')) : '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.ip_address')}</Label>
+                                    <p>{wifiDetailInfo?.ip_address || '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.netmask')}</Label>
+                                    <p>{wifiDetailInfo?.netmask || '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.gateway')}</Label>
+                                    <p>{wifiDetailInfo?.gateway || '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.dns_primary')}</Label>
+                                    <p>{wifiDetailInfo?.dns_primary || '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.dns_secondary')}</Label>
+                                    <p>{wifiDetailInfo?.dns_secondary || '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.mac_address')}</Label>
+                                    <p>{wifiDetailInfo?.mac_address || '-'}</p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </DialogContent>
+            </Dialog>
             {showWifiReloadMask && <WifiReloadMask loadingText={loadingText} isLoading={isReloading} />}
         </div>
     )

@@ -1976,12 +1976,15 @@ int32_t OS04C10_SetExposure(OS04C10_Object_t *pObj, int32_t exposure)
     {0x3502, 0x00},//long exp[7,0]
   };
 
-  lines=(1000*exposure)/OS04C10_1H_PERIOD_USEC;
-  if (lines < 2) lines = 2;
+  lines = (uint32_t)(exposure / OS04C10_1H_PERIOD_USEC);
+  if (lines < 2)
+  {
+    lines = 2;
+  }
 
-  tExpo_reg[1].val = (lines>>16) & 0x000f;
-  tExpo_reg[2].val = (lines>>8) & 0x00ff;
-  tExpo_reg[3].val = (lines>>0) & 0x00ff;
+  tExpo_reg[0].val = (lines >> 16) & 0x0F;
+  tExpo_reg[1].val = (lines >> 8) & 0xFF;
+  tExpo_reg[2].val = lines & 0xFF;
   
   hold = 0x00;
   if(os04c10_write_reg(&pObj->Ctx, 0x3208, &hold, 1) != OS04C10_OK)

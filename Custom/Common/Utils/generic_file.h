@@ -27,6 +27,7 @@ typedef struct file_ops_t {
     int (*fread)(void *context, void *fd, void *buf, size_t size);
     int (*remove)(void *context, const char *path);
     int (*rename)(void *context, const char *oldpath, const char *newpath);
+    int (*mkdir)(void *context, const char *path);
     long (*ftell)(void *context, void *fd);
     int (*fseek)(void *context, void *fd, long offset, int whence);
     int (*fflush)(void *context, void *fd);
@@ -102,5 +103,7 @@ int disk_file_closedir(FS_Type_t type, void *dd);
 int disk_file_readdir(FS_Type_t type, void *dd, char *info);
 
 int disk_file_stat(FS_Type_t type, const char *filename, struct stat *st);
+
+int disk_file_mkdir(FS_Type_t type, const char *path);
 
 #endif

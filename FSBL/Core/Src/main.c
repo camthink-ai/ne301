@@ -117,7 +117,7 @@ int main(void)
   /* Configure the config system clock (profile: SYSCLK_PROFILE_DEFAULT, see sysclk.h) */
   memcpy(&sys_clk_config, (void *)SYS_CLK_CONFIG_SAVE_FLASH_BASE, sizeof(sys_clk_config_t));
   XSPI_NOR_DisableMemoryMappedMode();
-  XSPI_NOR_EnableMemoryMappedMode();
+  XSPI_NOR_ResetAndDeInit();
   if (sys_clk_config.sys_clk_profile > SYSCLK_PROFILE_MIN && sys_clk_config.sys_clk_profile < SYSCLK_PROFILE_MAX && sys_clk_config.sys_clk_profile != SYSCLK_PROFILE_HSI_800MHZ && sys_clk_config.crc32 == hw_crc32_func((void *)&sys_clk_config, sizeof(sys_clk_config_t) - sizeof(sys_clk_config.crc32))) {
     if (sys_clk_config.sys_clk_profile <= SYSCLK_PROFILE_HSE_400MHZ) {
       __HAL_RCC_PWR_CLK_ENABLE();

@@ -67,7 +67,9 @@
         "manual": "Manual",
         "status": "Status",
         "start": "Start",
-        "secret_key": "Secret Key"
+        "secret_key": "Secret Key",
+        "yes": "Yes",
+        "no": "No"
     }
     
 }   

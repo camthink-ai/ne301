@@ -45,8 +45,9 @@
 #include "framework.h"
 #include "driver_core.h"
 #include "driver_test.h"
-#include "xspim.h"
+#include "../FSBL/Core/Inc/xspim.h"
 #include "rng.h"
+#include "mm_hal_common.h"
 #include "core_init.h"
 #include "service_init.h"
 #include "drtc.h"
@@ -106,6 +107,21 @@ const osThreadAttr_t mainTask_attributes = {
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+/// @brief Project-wide assert destination: newlib assert() override AND SDK
+/// SL_ASSERT/BREAKPOINT (declared in SDK sl_constants.h) land here.
+/// Production policy: print the exact site, then reboot. Halts on bkpt only
+/// when a debug session is live — a raw bkpt executed without a debugger
+/// escalates to HardFault (lockup in IRQ context) and silently hangs the unit.
+void __assert_func(const char *file, int line, const char *func, const char *failedexpr)
+{
+    printf("[ASSERT] %s:%d (%s): %s\r\n", file, line, func ? func : "?", failedexpr ? failedexpr : "?");
+    if ((CoreDebug->DHCSR & CoreDebug_DHCSR_C_DEBUGEN_Msk) != 0u) {
+        __asm volatile ("bkpt 0"); /* debugger attached: halt for inspection */
+    }
+    HAL_NVIC_SystemReset();
+    while (1) { } /* not reached */
+}
+
 void NPURam_enable()
 {
     __HAL_RCC_NPU_CLK_ENABLE();
@@ -154,13 +170,15 @@ void NPURam_disable()
 
 static void Setup_Mpu()
 {
-    MPU_Attributes_InitTypeDef attr;
-    MPU_Region_InitTypeDef region;
+    extern uint32_t _sstack;            /* linker: MSP bottom = _estack - _Min_Stack_Size */
+    MPU_Attributes_InitTypeDef attr = {0};
+    MPU_Region_InitTypeDef region = {0};
 
     attr.Number = MPU_ATTRIBUTES_NUMBER0;
     attr.Attributes = MPU_NOT_CACHEABLE;
     HAL_MPU_ConfigMemoryAttributes(&attr);
 
+    /* Region 0: .uncached_bss (SPI/DMA buffers) -- non-cacheable. */
     region.Enable = MPU_REGION_ENABLE;
     region.Number = MPU_REGION_NUMBER0;
     region.BaseAddress = (uint32_t)&__uncached_bss_start__;
@@ -169,6 +187,27 @@ static void Setup_Mpu()
     region.AccessPermission = MPU_REGION_ALL_RW;
     region.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE;
     region.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
+    HAL_MPU_ConfigRegion(&region);
+
+    /* Region 1: MSP stack-overflow sentinel. The bottom 256B of the 4KB MSP
+     * stack is privileged read-only, so a push that would overflow the stack
+     * into the newlib heap sitting directly below _sstack faults here instead
+     * of silently corrupting heap metadata. All handler-mode code and the
+     * pre-scheduler boot path run on MSP, so this is the stack at risk.
+     *
+     * This N6 MPU has no NO_ACCESS mode: its 2-bit AP field only encodes
+     * PRIV_RW/ALL_RW/PRIV_RO/ALL_RO. PRIV_RO faults on a privileged *write*,
+     * which is exactly what a stack push is (privileged reads of the guard are
+     * still allowed, so HardFault_Handler's frame dump won't double-fault). A
+     * survivable trip shows up as DACCVIOL + MMFAR=0x341b10xx in the existing
+     * HardFault print; a catastrophic deep overflow escalates to lockup+IWDG,
+     * which is itself the deterministic "4KB is too small" signal. */
+    #define MSP_GUARD_SIZE  0x100U          /* 256B tripwire at stack bottom */
+    region.Number = MPU_REGION_NUMBER1;
+    region.BaseAddress = (uint32_t)&_sstack;
+    region.LimitAddress = (uint32_t)&_sstack + MSP_GUARD_SIZE - 1;
+    region.AccessPermission = MPU_REGION_PRIV_RO;
+    region.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE;   /* guard is never executed */
     HAL_MPU_ConfigRegion(&region);
 
     HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
@@ -243,16 +282,8 @@ static void PLATFORM_Config(void)
     // NPUCache_config();
 #endif
     /*** External RAM and NOR Flash *********************************************/
-#ifdef BOOT_IN_PSRAM
     // BSP_XSPI_RAM_Init(0);
     // BSP_XSPI_RAM_EnableMemoryMappedMode(0);
-#else
-    // MX_XSPI1_Init();
-    // XSPI_PSRAM_EnableMemoryMappedMode();
-    BSP_XSPI_RAM_Init(0);
-    BSP_XSPI_RAM_EnableMemoryMappedMode(0);
-#endif
-
     MX_XSPI2_Init();
     XSPI_NOR_EnableMemoryMappedMode();
 
@@ -287,8 +318,8 @@ static void PLATFORM_Config(void)
 void StartMainTask(void *argument)
 {
     // Start time measurement using new uptime API
-    uint64_t total_start_time_ms = rtc_get_uptime_ms();
-    uint64_t step_start_time_ms, step_end_time_ms, step_duration_ms;
+    // uint64_t total_start_time_ms = rtc_get_uptime_ms();
+    // uint64_t step_start_time_ms, step_end_time_ms, step_duration_ms;
 
 #if defined(TX_INCLUDE_USER_DEFINE_FILE)
     threadx_resync_systick_from_rcc();
@@ -297,11 +328,11 @@ void StartMainTask(void *argument)
     // printf("\r\n========== SYSTEM BOOT TIME MEASUREMENT ==========\r\n");
     
     // Step 1: Platform configuration
-    step_start_time_ms = rtc_get_uptime_ms();
+    // step_start_time_ms = rtc_get_uptime_ms();
     PLATFORM_Config();
-    step_end_time_ms = rtc_get_uptime_ms();
-    step_duration_ms = step_end_time_ms - step_start_time_ms;
-    printf("[BOOT] Step 1 - PLATFORM_Config: %lu ms\r\n", (unsigned long)step_duration_ms);
+    // step_end_time_ms = rtc_get_uptime_ms();
+    // step_duration_ms = step_end_time_ms - step_start_time_ms;
+    // printf("[BOOT] Step 1 - PLATFORM_Config: %lu ms\r\n", (unsigned long)step_duration_ms);
     
     // printf("StartMainTask\r\n");
     // printf("\r\n-------------- CLK INFO --------------\r\n");
@@ -313,25 +344,25 @@ void StartMainTask(void *argument)
     // printf("-------------------------------------\r\n");
 
     // Step 2: Framework initialization
-    step_start_time_ms = rtc_get_uptime_ms();
+    // step_start_time_ms = rtc_get_uptime_ms();
     framework_init();
-    step_end_time_ms = rtc_get_uptime_ms();
-    step_duration_ms = step_end_time_ms - step_start_time_ms;
-    printf("[BOOT] Step 2 - framework_init: %lu ms\r\n", (unsigned long)step_duration_ms);
+    // step_end_time_ms = rtc_get_uptime_ms();
+    // step_duration_ms = step_end_time_ms - step_start_time_ms;
+    // printf("[BOOT] Step 2 - framework_init: %lu ms\r\n", (unsigned long)step_duration_ms);
     
     // Step 3: Driver core initialization
-    step_start_time_ms = rtc_get_uptime_ms();
+    // step_start_time_ms = rtc_get_uptime_ms();
     driver_core_init();
-    step_end_time_ms = rtc_get_uptime_ms();
-    step_duration_ms = step_end_time_ms - step_start_time_ms;
-    printf("[BOOT] Step 3 - driver_core_init: %lu ms\r\n", (unsigned long)step_duration_ms);
+    // step_end_time_ms = rtc_get_uptime_ms();
+    // step_duration_ms = step_end_time_ms - step_start_time_ms;
+    // printf("[BOOT] Step 3 - driver_core_init: %lu ms\r\n", (unsigned long)step_duration_ms);
 
     // Step 4: Core system initialization
-    step_start_time_ms = rtc_get_uptime_ms();
+    // step_start_time_ms = rtc_get_uptime_ms();
     core_system_init();
-    step_end_time_ms = rtc_get_uptime_ms();
-    step_duration_ms = step_end_time_ms - step_start_time_ms;
-    printf("[BOOT] Step 4 - core_system_init: %lu ms\r\n", (unsigned long)step_duration_ms);
+    // step_end_time_ms = rtc_get_uptime_ms();
+    // step_duration_ms = step_end_time_ms - step_start_time_ms;
+    printf("BOOT: %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
 
 #if POWER_MODULE_TEST
     for (;;) {
@@ -346,68 +377,101 @@ void StartMainTask(void *argument)
     }
 
     // Step 5: Service initialization
-    step_start_time_ms = rtc_get_uptime_ms();
+    // step_start_time_ms = rtc_get_uptime_ms();
     service_init();
-    step_end_time_ms = rtc_get_uptime_ms();
-    step_duration_ms = step_end_time_ms - step_start_time_ms;
-    printf("[BOOT] Step 5 - service_init: %lu ms\r\n", (unsigned long)step_duration_ms);
+    // step_end_time_ms = rtc_get_uptime_ms();
+    // step_duration_ms = step_end_time_ms - step_start_time_ms;
+    // printf("[BOOT] Step 5 - service_init: %lu ms\r\n", (unsigned long)step_duration_ms);
     
     // printf("[MAIN] All systems initialized successfully\r\n");
 
     // Step 6: Process wakeup event
-    step_start_time_ms = rtc_get_uptime_ms();
-    printf("[MAIN] Processing wakeup event...\r\n");
+    // step_start_time_ms = rtc_get_uptime_ms();
+    // printf("[MAIN] Processing wakeup event...\r\n");
     aicam_result_t result = system_service_process_wakeup_event();
-    step_end_time_ms = rtc_get_uptime_ms();
-    step_duration_ms = step_end_time_ms - step_start_time_ms;
+    // step_end_time_ms = rtc_get_uptime_ms();
+    // step_duration_ms = step_end_time_ms - step_start_time_ms;
     if (result != AICAM_OK) {
-        printf("[MAIN] Wakeup event processing completed with warnings: %d\r\n", result);
-    } else {
-        printf("[MAIN] Wakeup event processed successfully\r\n");
-    }
-    printf("[BOOT] Step 6 - process_wakeup_event: %lu ms\r\n", (unsigned long)step_duration_ms);
+        LOG_WARN("[MAIN] Failed to process wakeup event: %d", result);
+    } 
+    // else {
+    //     printf("[MAIN] Wakeup event processed successfully\r\n");
+    // }
+    // printf("[BOOT] Step 6 - process_wakeup_event: %lu ms\r\n", (unsigned long)step_duration_ms);
     
     // Calculate and print total boot time
-    uint64_t total_end_time_ms = rtc_get_uptime_ms();
-    uint64_t total_duration_ms = total_end_time_ms - total_start_time_ms;
-    printf("[BOOT] ============================================\r\n");
-    printf("[BOOT] TOTAL BOOT TIME: %lu ms (%.2f seconds)\r\n", 
-           (unsigned long)total_duration_ms, total_duration_ms / 1000.0f);
-    printf("[BOOT] ============================================\r\n\r\n");
+    // uint64_t total_end_time_ms = rtc_get_uptime_ms();
+    // uint64_t total_duration_ms = total_end_time_ms - total_start_time_ms;
+    // printf("[BOOT] ============================================\r\n");
+    // printf("[BOOT] TOTAL BOOT TIME: %lu ms (%.2f seconds)\r\n", 
+    //        (unsigned long)total_duration_ms, total_duration_ms / 1000.0f);
+    // printf("[BOOT] ============================================\r\n\r\n");
     
-    // wdg_task_change_priority(osPriorityNormal);
-    printf("[MAIN] Entering main loop\r\n");
+    wdg_task_change_priority(osPriorityNormal);
+    // printf("[MAIN] Entering main loop\r\n");
+
+    /* Dump the full reset-cause register before anything clears it. RSR flags
+       are only read/cleared here, and silent resets (software / NRST from U0 /
+       brownout / power cycle / CPU lockup) otherwise leave no trace at all.
+       Note: NRST pulses internally on software and power-on resets too, so read
+       PINRST combined with SFTRST/PORRST, not on its own. */
+    {
+        uint32_t rsr = READ_REG(RCC->RSR);
+        // Normally, the reset cause register is 0x00e00000 on a clean power-on reset. If it's not, print the flags that are set.
+        if (rsr != 0x00e00000) {
+            LOG_WARN("[MAIN] RSR=0x%08lx%s%s%s%s%s%s%s%s\r\n", (unsigned long)rsr,
+                (__HAL_RCC_GET_FLAG(RCC_FLAG_SFTRST)  ? " SFTRST(software)"  : ""),
+                (__HAL_RCC_GET_FLAG(RCC_FLAG_PINRST)  ? " PINRST(NRST-pin)"  : ""),
+                (__HAL_RCC_GET_FLAG(RCC_FLAG_BORRST)  ? " BORRST(brownout)"  : ""),
+                (__HAL_RCC_GET_FLAG(RCC_FLAG_PORRST)  ? " PORRST(power-on)"  : ""),
+                (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST) ? " IWDGRST"           : ""),
+                (__HAL_RCC_GET_FLAG(RCC_FLAG_WWDGRST) ? " WWDGRST"           : ""),
+                (__HAL_RCC_GET_FLAG(RCC_FLAG_LPWRRST) ? " LPWRRST(low-power)": ""),
+                (__HAL_RCC_GET_FLAG(RCC_FLAG_LCKRST)  ? " LCKRST(cpu-lockup)": ""));
+        }
+    }
+
+    if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) __HAL_RCC_CLEAR_RESET_FLAGS();
+    
+    printf("MAIN: %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
 
     /* Infinite loop */
+    uint32_t flush_poll_div = 0;  /* counts osDelay(100) ticks; poll flush every ~150 (15s) */
     for(;;)
     {
+        // Periodic scheduled-flush poll: catches upload nodes that arrive while
+        // awake (FULL_SPEED mode, or LOW_POWER awake periods spanning a node).
+        // The wake path only fires on cold-boot wake; this covers the gap.
+        if (++flush_poll_div >= 150) {
+            flush_poll_div = 0;
+            (void)system_service_poll_scheduled_flush();
+        }
+
         // Check if system needs to enter sleep mode
         aicam_bool_t sleep_pending = AICAM_FALSE;
         result = system_service_is_sleep_pending(&sleep_pending);
-        
+
         if (result == AICAM_OK && sleep_pending == AICAM_TRUE) {
-            printf("[MAIN] Sleep pending detected, entering sleep mode...\r\n");
-            
+            LOG_INFO("[MAIN] Sleep pending detected, entering sleep mode...\r\n");
+
             // Execute sleep operation
             result = system_service_execute_pending_sleep();
             if (result == AICAM_OK) {
                 // Note: After entering sleep, system will reset upon wakeup
                 // Execution will restart from main() -> StartMainTask()
                 // This line should not be reached
-                printf("[MAIN] Enter sleep mode successfully!\r\n");
+                printf("SLEEP: %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
+                osDelay(1000);  
+                // Normally, it wouldn't run over here
+                printf("[MAIN] Resetting system...\r\n");
+                HAL_NVIC_SystemReset();
             } else {
-                printf("[MAIN] Failed to enter sleep mode: %d, continuing...\r\n", result);
+                // printf("[MAIN] Failed to enter sleep mode: %d, continuing...\r\n", result);
+                LOG_WARN("[MAIN] Failed to enter sleep mode: %d", result);
                 osDelay(100); // Wait before retry
             }
         }
-        
-        // Main loop periodic tasks can be added here
-        // For example:
-        // - System health monitoring
-        // - Watchdog feeding
-        // - LED blinking
-        // ...
-        
+
         // Sleep 100ms to avoid busy waiting
         osDelay(100);
     }
@@ -582,7 +646,7 @@ static void SystemIsolation_Config(void)
   * @brief  This function is executed in case of error occurrence.
   * @retval None
   */
-void Error_Handler(void)
+void _Error_Handler_(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */

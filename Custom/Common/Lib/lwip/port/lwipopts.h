@@ -165,7 +165,7 @@ a lot of data that needs to be copied, this should be set high. */
 #define MEMP_NUM_TCP_PCB_LISTEN  6
 /* MEMP_NUM_TCP_SEG: the number of simultaneously queued TCP
    segments. */
-#define MEMP_NUM_TCP_SEG         64
+#define MEMP_NUM_TCP_SEG         128
 /* MEMP_NUM_SYS_TIMEOUT: the number of simultaneously active
    timeouts. */
 #define MEMP_NUM_SYS_TIMEOUT     20
@@ -184,7 +184,7 @@ a lot of data that needs to be copied, this should be set high. */
 
 /* ---------- Pbuf options ---------- */
 /* PBUF_POOL_SIZE: the number of buffers in the pbuf pool. */
-#define PBUF_POOL_SIZE          128
+#define PBUF_POOL_SIZE          256
 
 /* PBUF_POOL_BUFSIZE: the size of each pbuf in the pbuf pool. */
 #define PBUF_POOL_BUFSIZE       (1024 + 512)
@@ -220,15 +220,15 @@ a lot of data that needs to be copied, this should be set high. */
 
 /* TCP sender buffer space (pbufs). This must be at least = 2 *
    TCP_SND_BUF/TCP_MSS for things to work. */
-#define TCP_SND_QUEUELEN       (64)
+#define TCP_SND_QUEUELEN       (128)
 
 /* TCP writable space (bytes). This must be less than or equal
    to TCP_SND_BUF. It is the amount of space which must be
    available in the tcp snd_buf for select to return writable */
-#define TCP_SNDLOWAT           (TCP_SND_BUF / 16)
+#define TCP_SNDLOWAT           (TCP_MSS)
 
 /* TCP receive window. */
-#define TCP_WND                (TCP_MSS * 8)
+#define TCP_WND                (TCP_MSS * 16)
 
 /* Maximum number of retransmissions of data segments. */
 #define TCP_MAXRTX              12
@@ -265,9 +265,13 @@ a lot of data that needs to be copied, this should be set high. */
    interfaces. */
 #define LWIP_DHCP               LWIP_UDP
 
-/* 1 if you want to do an ARP check on the offered address
-   (recommended). */
-#define DHCP_DOES_ARP_CHECK    (LWIP_DHCP)
+/* Disable the RFC 5227 address conflict detection after DHCP ACK. The probe
+ * sequence (3 ARP probes 1-2 s apart + 2 announces) delays dhcp_bind() by
+ * 6-8 s on every acquire — measured on the HaLow link the DHCP exchange
+ * itself completes in ~130 ms. Skip it: the address comes from the router's
+ * managed pool, and a missed conflict self-corrects via ARP at first use.
+ * (DHCP_DOES_ARP_CHECK above was the lwip 2.1 name and is ignored here.) */
+#define LWIP_DHCP_DOES_ACD_CHECK    0
 
 
 /* ---------- AUTOIP options ------- */

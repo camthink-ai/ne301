@@ -38,6 +38,7 @@
 #include "sl_rsi_utility.h"
 #include "wifi.h"
 #include "debug.h"
+#include "dhcpserver.h"
 #include "generic_utils.h"
 #include "generic_file.h"
 #include "common_utils.h"
@@ -110,7 +111,7 @@ static int wifi_ant_flag = 0;
 static int wifi_update_flag = 0;
 static uint32_t wifi_update_times = 0;
 const sl_wifi_data_rate_t rate               = SL_WIFI_DATA_RATE_6;
-const sl_si91x_request_tx_test_info_t default_tx_test_info = {
+const sl_wifi_request_tx_test_info_t default_tx_test_info = {
   .enable      = 1,
   .power       = 127,
   .rate        = rate,
@@ -313,7 +314,7 @@ static int32_t sl_si91x_app_task_fw_update_via_xmodem(uint8_t *rx_data, uint32_t
                 
                 chunk_check = (fw_image_size + FW_HEADER_SIZE + SI91X_CHUNK_SIZE - 1) / SI91X_CHUNK_SIZE;
                 one_time = 0;
-                LOG_SIMPLE("Firmware upgrade started. Total chunks: %lu\r\n", chunk_check);
+                printf("Firmware upgrade started. Total chunks: %lu\r\n", chunk_check);
             }
 
             if (chunk_cnt >= chunk_check) {
@@ -333,7 +334,7 @@ static int32_t sl_si91x_app_task_fw_update_via_xmodem(uint8_t *rx_data, uint32_t
             // Execute firmware upgrade transfer
             status = sl_si91x_bl_upgrade_firmware(rx_data, SI91X_CHUNK_SIZE, transfer_mode);
             if (status != SL_STATUS_OK) {
-                LOG_SIMPLE("ERROR at chunk %lu: 0x%lx\r\n", chunk_cnt, status);
+                printf("ERROR at chunk %lu: 0x%lx\r\n", chunk_cnt, status);
                 return status;
             }
 
@@ -343,29 +344,32 @@ static int32_t sl_si91x_app_task_fw_update_via_xmodem(uint8_t *rx_data, uint32_t
             
             // Transfer completion handling
             if (chunk_cnt == chunk_check) {
-                LOG_SIMPLE("\r\nFirmware upgrade completed\r\n");
+                printf("\r\nFirmware upgrade completed\r\n");
                 si91x_wlan_app_cb.state = SI91X_WLAN_FW_UPGRADE_DONE;
             }
             break;
         }
         case SI91X_WLAN_FW_UPGRADE_DONE: {
+            sl_net_deinit(SL_NET_WIFI_CLIENT_INTERFACE);
+            osDelay(1000);
             status = sl_net_init(SL_NET_WIFI_CLIENT_INTERFACE, NULL, NULL, NULL);
             if (status != SL_STATUS_OK) {
+                printf("Failed to start Wi-Fi client interface: 0x%lx\r\n", status);
                 return status;
             }
 
             status = sl_wifi_get_firmware_version(&fw_version);
             if (status == SL_STATUS_OK) {
-                LOG_SIMPLE("New firmware version: ");
+                printf("New firmware version: ");
                 print_firmware_version(&fw_version);
             }
 
             t_end = osKernelGetTickCount();
             xfer_time = t_end - t_start;
             uint32_t secs = xfer_time / 1000;
-            LOG_SIMPLE("\r\nFirmware upgrade time: %d seconds\r\n", (int)secs);
-            LOG_SIMPLE("\r\nDEMO COMPLETED\r\n");
-            
+            printf("\r\nFirmware upgrade time: %d seconds\r\n", (int)secs);
+            printf("\r\nDEMO COMPLETED\r\n");
+
             break;
         }
         default:
@@ -499,6 +503,7 @@ static int firmware_upgrade_from_flash(void)
     printf("\n[FW UPGRADE] Starting firmware upgrade from flash\r\n");
 
     // Direct memory access via memory mapping
+    storage_lock_ext();
     flash_addr = (const uint8_t *)WIFI_FLASH_BASE_ADDR;
     
     printf("[FLASH] WiFi FW base address: 0x%08lX\r\n", (unsigned long)WIFI_FLASH_BASE_ADDR);
@@ -516,12 +521,14 @@ static int firmware_upgrade_from_flash(void)
         printf("[ERROR] Invalid flash header flags: 0x%08lX (expected: 0x%08lX)\r\n",
                (unsigned long)flash_header->valid_flags,
                (unsigned long)WIFI_FLASH_VALID_FLAGS);
+        storage_unlock_ext();
         return -1;
     }
 
     // Step 3: Validate total size
     if (flash_header->fw_total_size == 0 || flash_header->fw_total_size > (4 * 1024 * 1024)) {
         printf("[ERROR] Invalid firmware total size: %lu\r\n", flash_header->fw_total_size);
+        storage_unlock_ext();
         return -1;
     }
 
@@ -536,6 +543,7 @@ static int firmware_upgrade_from_flash(void)
     if (total_size != flash_header->fw_total_size) {
         printf("[ERROR] Size mismatch: FW header+image=%lu, Flash header=%lu\r\n",
                total_size, flash_header->fw_total_size);
+        storage_unlock_ext();
         return -1;
     }
 
@@ -547,7 +555,7 @@ static int firmware_upgrade_from_flash(void)
     crc_data_size = flash_header->fw_total_size;
     
     // Use hardware CRC to calculate (byte-wise, InputDataFormat is configured as BYTES)
-    calculated_crc = HAL_CRC_Calculate(&hcrc, (uint32_t *)crc_data_ptr, crc_data_size);
+    calculated_crc = CRC_Calculate((void *)crc_data_ptr, crc_data_size);
 
     printf("[CRC] Calculated CRC: 0x%08lX, Expected CRC: 0x%08lX\r\n",
            calculated_crc, flash_header->fw_crc);
@@ -556,6 +564,7 @@ static int firmware_upgrade_from_flash(void)
     if (calculated_crc != flash_header->fw_crc) {
         printf("[ERROR] CRC mismatch! Calculated: 0x%08lX, Expected: 0x%08lX\r\n",
                calculated_crc, flash_header->fw_crc);
+        storage_unlock_ext();
         return -1;
     }
 
@@ -615,6 +624,7 @@ static int firmware_upgrade_from_flash(void)
         status = sl_si91x_app_task_fw_update_via_xmodem(recv_buffer, SI91X_CHUNK_SIZE);
         if (status != SL_STATUS_OK) {
             printf("[ERROR] Chunk %lu processing failed: 0x%lx\r\n", i, status);
+            storage_unlock_ext();
             return -1;
         }
         
@@ -628,6 +638,7 @@ static int firmware_upgrade_from_flash(void)
     if (si91x_wlan_app_cb.state == SI91X_WLAN_FW_UPGRADE_DONE) {
         printf("\n[UPGRADE] Triggering final upgrade state\r\n");
         status = sl_si91x_app_task_fw_update_via_xmodem(NULL, 0);
+        storage_unlock_ext();
         return (status == SL_STATUS_OK) ? 0 : -1;
     }
     
@@ -638,10 +649,12 @@ static int firmware_upgrade_from_flash(void)
         if (si91x_wlan_app_cb.state == SI91X_WLAN_FW_UPGRADE_DONE) {
             printf("\n[UPGRADE] Triggering final upgrade state\r\n");
             status = sl_si91x_app_task_fw_update_via_xmodem(NULL, 0);
+            storage_unlock_ext();
             return (status == SL_STATUS_OK) ? 0 : -1;
         }
     }
     
+    storage_unlock_ext();
     return -1;
 }
 
@@ -666,21 +679,34 @@ static void wifi_update_process(void)
     // osDelay(100);
     storage_nvs_write(NVS_FACTORY, NVS_KEY_WIFI_MODE, WIFI_MODE_NORMAL, strlen(WIFI_MODE_NORMAL));
     
-    misc = device_find_pattern(IND_DEVICE_NAME, DEV_TYPE_MISC);
+    misc = device_find_pattern(IND_EXT_DEVICE_NAME, DEV_TYPE_MISC);
     if (misc != NULL) {
         blink_params.blink_times = INT32_MAX;
         blink_params.interval_ms = 50;
         device_ioctl(misc, MISC_CMD_LED_SET_BLINK, (uint8_t *)&blink_params, 0);
     }
     status = sl_net_init(SL_NET_WIFI_CLIENT_INTERFACE, &firmware_update_configuration, NULL, NULL);
-    if (status == SL_STATUS_OK) {
-        printf("wifi_update sl_net_init ok \r\n");
-        return;   
+    if (status != SL_STATUS_OK) {
+        printf("wifi_update sl_net_init failed(0x%lx) \r\n", status);
+        sl_net_deinit(SL_NET_WIFI_CLIENT_INTERFACE);
+        return;
     }
     
-    status = firmware_upgrade_from_file(WIFI_FIR_NAME);
-    if (status != 0) {
+    /* Pick the upgrade source from whichever trigger set wifi_mode=update:
+     * web OTA (wifi_mark_update_pending) writes FLASH → push the .rps at
+     * WIFI_FW_BASE; first-boot recovery (wifi_enter_update_mode) writes FILE
+     * → load `siwg917` from the file system (SD), flash as fallback. Absent
+     * key (old device) defaults to FILE to preserve the recovery order. This
+     * stops a stray siwg917 on SD from hijacking a web-uploaded firmware. */
+    char fw_source[8] = {0};
+    if (storage_nvs_read(NVS_FACTORY, NVS_KEY_WIFI_FW_SOURCE, fw_source, sizeof(fw_source)) > 0 &&
+        strcmp(fw_source, WIFI_FW_SOURCE_FLASH) == 0) {
         status = firmware_upgrade_from_flash();
+    } else {
+        status = firmware_upgrade_from_file(WIFI_FIR_NAME);
+        if (status != 0) {
+            status = firmware_upgrade_from_flash();
+        }
     }
     
     sl_net_deinit(SL_NET_WIFI_CLIENT_INTERFACE);
@@ -721,6 +747,7 @@ static void wifi_ant_process(void)
 
 void wifi_enter_update_mode(void)
 {
+    storage_nvs_write(NVS_FACTORY, NVS_KEY_WIFI_FW_SOURCE, WIFI_FW_SOURCE_FILE, strlen(WIFI_FW_SOURCE_FILE));
     storage_nvs_write(NVS_FACTORY, NVS_KEY_WIFI_MODE, WIFI_MODE_UPDATE, strlen(WIFI_MODE_UPDATE));
     LOG_SIMPLE("wifi update, System reset...\r\n");
     osDelay(200);
@@ -731,7 +758,88 @@ void wifi_enter_update_mode(void)
     HAL_NVIC_SystemReset();
 }
 
-static int wifi_update_cmd(int argc, char* argv[]) 
+void wifi_mark_update_pending(void)
+{
+    storage_nvs_write(NVS_FACTORY, NVS_KEY_WIFI_FW_SOURCE, WIFI_FW_SOURCE_FLASH, strlen(WIFI_FW_SOURCE_FLASH));
+    storage_nvs_write(NVS_FACTORY, NVS_KEY_WIFI_MODE, WIFI_MODE_UPDATE, strlen(WIFI_MODE_UPDATE));
+    LOG_SIMPLE("wifi update pending, will apply on next reboot\r\n");
+}
+
+int wifi_get_running_version(char *buf, size_t size)
+{
+    if (!buf || size < 16) return -1;
+
+    sl_wifi_firmware_version_t fw;
+    sl_status_t status = sl_wifi_get_firmware_version(&fw);
+    if (status != SL_STATUS_OK) {
+        snprintf(buf, size, "N/A");
+        return -1;
+    }
+
+    // Version encoding matches pack_to_hex.py / ota_packer.py:
+    // Major.Minor.Patch.(Security*100 + Build)
+    // e.g. {2,14,5,2,0,7} -> "2.14.5.207"
+    //
+    // NOTE: the SiWG917 SDK swaps the field names — security_version actually
+    //       holds the patch number, and patch_num holds the security version.
+    //       This mirrors the .rps binary header layout (see wifi_get_flash_version).
+    int encoded_build = (int)fw.patch_num * 100 + (int)fw.build_num;
+    snprintf(buf, size, "%u.%u.%u.%d",
+             fw.major, fw.minor, fw.security_version, encoded_build);
+    return 0;
+}
+
+int wifi_get_flash_version(char *buf, size_t size)
+{
+    if (!buf || size < 16) return -1;
+
+    // Both reads below dereference the XIP window at WIFI_FW_BASE (0x71A00000).
+    // While another task is inside a littlefs/NVS/OTA op, memory-mapped mode is
+    // temporarily disabled and an unlocked read in that window raises a precise
+    // BusFault. Hold the storage mutex for the whole function (same pattern as
+    // wifi_flash_boot).
+    storage_lock_ext();
+    const uint8_t *flash_addr = (const uint8_t *)WIFI_FLASH_BASE_ADDR;
+    const flash_header_t *hdr = (const flash_header_t *)flash_addr;
+    if (hdr->valid_flags != WIFI_FLASH_VALID_FLAGS) {
+        storage_unlock_ext();
+        snprintf(buf, size, "N/A");
+        return -1;
+    }
+
+    // .rps binary immediately follows the 32-byte flash_header_t.  Its first
+    // 64 bytes are a sl_wifi_firmware_header_t.  Version components are split
+    // across two sub-structures within that 64-byte block:
+    //
+    //   offset in .rps   field (SDK struct name)   our mapping
+    //   ───────────────  ─────
+    //   12               fw_version_info:
+    //                      build_num        [7:0]   build
+    //                      security_version [15:8]  patch  ← SDK naming quirk
+    //                      minor           [23:16]  minor
+    //                      major           [31:24]  major
+    //   44               fw_version_ext_info:
+    //                      patch_num        [7:0]   security ← SDK naming quirk
+    const uint8_t *rps = flash_addr + WIFI_FLASH_HEADER_SIZE;
+    uint32_t ver_info = *(const uint32_t *)(rps + 12);
+    uint32_t ver_ext  = *(const uint32_t *)(rps + 44);
+    storage_unlock_ext();
+
+    uint8_t major    = (ver_info >> 24) & 0xFF;
+    uint8_t minor    = (ver_info >> 16) & 0xFF;
+    uint8_t patch    = (ver_info >>  8) & 0xFF;  // SDK: security_version
+    uint8_t security = (ver_ext  >>  0) & 0xFF;  // SDK: patch_num
+    uint8_t build    = (ver_info >>  0) & 0xFF;
+
+    // Encode to 4-part version matching pack_to_hex.py / ota_packer.py:
+    // Major.Minor.Patch.(Security*100 + Build)
+    int encoded_build = (int)security * 100 + (int)build;
+    snprintf(buf, size, "%u.%u.%u.%d",
+             major, minor, patch, encoded_build);
+    return 0;
+}
+
+static int wifi_update_cmd(int argc, char* argv[])
 {
     wifi_enter_update_mode();
     return 0;
@@ -787,13 +895,13 @@ static int wifi_set_antenna_cmd(int argc, char* argv[])
 static int wifi_transmit_test_start_cmd(int argc, char* argv[]) 
 {
     sl_status_t status = SL_STATUS_OK;
-    sl_si91x_request_tx_test_info_t tx_test_info = { 0 };
+    sl_wifi_request_tx_test_info_t tx_test_info = { 0 };
 
     if (!is_wifi_ant()) {
         LOG_SIMPLE("Please use [wifitest] cmd to enter wifi test mode first!\r\n");
         return -1;
     }
-    memcpy(&tx_test_info, &default_tx_test_info, sizeof(sl_si91x_request_tx_test_info_t));
+    memcpy(&tx_test_info, &default_tx_test_info, sizeof(sl_wifi_request_tx_test_info_t));
     // wifi_ax_transmit_test_start power data rate length mode channel aggr.enable enable_11ax coding_type nominal_pe ul_dl he_ppdu_type beam_change bw stbc tx_bf gi_ltf dcm nsts_midamble spatial_reuse bss_color he_siga2_reserved ru_allocation n_heltf_tot sigb_dcm sigb_mcs user_sta_id user_idx sigb_compression_field
     if (argc > 1) {
         tx_test_info.power = atoi(argv[1]);
@@ -989,6 +1097,61 @@ static int wifi_cmd_spi(int argc, char *argv[])
     return 0;
 }
 
+static int wifi_ap_clients_cmd(int argc, char *argv[])
+{
+    /* Response is ~450B — keep it off the CLI task stack. */
+    static sl_wifi_client_info_response_t fw_clients;
+    static dhcps_client_t lease[DHCPS_MAX_CLIENTS];
+    sl_status_t status;
+    int i, n;
+
+    (void)argc;
+    (void)argv;
+
+    /* Firmware view: stations currently associated with the AP. */
+    memset(&fw_clients, 0, sizeof(fw_clients));
+    status = sl_wifi_get_ap_client_info(SL_WIFI_AP_2_4GHZ_INTERFACE, &fw_clients);
+    if (status == SL_STATUS_OK || status == SL_STATUS_INVALID_COUNT) {
+        LOG_SIMPLE("AP associated clients: %u", (unsigned)fw_clients.client_count);
+        for (i = 0; i < fw_clients.client_count && i < SL_WIFI_MAX_CLIENT_COUNT; i++) {
+            sl_wifi_client_info_t *ci = &fw_clients.client_info[i];
+            uint8_t *m = ci->mac_adddress.octet;   /* (sic) SDK field name */
+            if (ci->ip_address.type == SL_IPV4) {
+                uint8_t *ip = ci->ip_address.ip.v4.bytes;
+                LOG_SIMPLE("  [%d] %02x:%02x:%02x:%02x:%02x:%02x  ip %u.%u.%u.%u",
+                           i + 1, (unsigned)m[0], (unsigned)m[1], (unsigned)m[2],
+                           (unsigned)m[3], (unsigned)m[4], (unsigned)m[5],
+                           (unsigned)ip[0], (unsigned)ip[1], (unsigned)ip[2], (unsigned)ip[3]);
+            } else {
+                LOG_SIMPLE("  [%d] %02x:%02x:%02x:%02x:%02x:%02x",
+                           i + 1, (unsigned)m[0], (unsigned)m[1], (unsigned)m[2],
+                           (unsigned)m[3], (unsigned)m[4], (unsigned)m[5]);
+            }
+        }
+    } else {
+        LOG_SIMPLE("sl_wifi_get_ap_client_info failed: 0x%lX (is AP up?)", status);
+    }
+
+    /* Host view: what the lwIP DHCP server believes, including sticky cached
+     * bindings of stations that already left. Comparing the two lists is how
+     * client/server address split-brains show up. */
+    n = dhcps_get_clients(lease, DHCPS_MAX_CLIENTS);
+    LOG_SIMPLE("DHCP lease table: %d entries", n);
+    for (i = 0; i < n; i++) {
+        LOG_SIMPLE("  [%d] %02x:%02x:%02x:%02x:%02x:%02x -> %u.%u.%u.%u  %s",
+                   i + 1,
+                   (unsigned)lease[i].Client_Mac[0], (unsigned)lease[i].Client_Mac[1],
+                   (unsigned)lease[i].Client_Mac[2], (unsigned)lease[i].Client_Mac[3],
+                   (unsigned)lease[i].Client_Mac[4], (unsigned)lease[i].Client_Mac[5],
+                   (unsigned)ip4_addr1(&lease[i].Client_Address),
+                   (unsigned)ip4_addr2(&lease[i].Client_Address),
+                   (unsigned)ip4_addr3(&lease[i].Client_Address),
+                   (unsigned)ip4_addr4(&lease[i].Client_Address),
+                   lease[i].is_active ? "active" : "cached");
+    }
+    return 0;
+}
+
 debug_cmd_reg_t wifi_cmd_table[] = {
     {"wifiup",     "WiFi update.",      wifi_update_cmd},
     {"wifitest",   "WiFi test.",        wifi_test_cmd},
@@ -997,6 +1160,7 @@ debug_cmd_reg_t wifi_cmd_table[] = {
     {"wifi_transmit_test_stop",  "WiFi transmit test stop.",       wifi_transmit_test_stop_cmd},
     // {"wifi_ant",  "WiFi antenna test <start|stop>",      wifi_ant_cmd},
     {"wifispi", "wifi spi <hexdata> [count]", wifi_cmd_spi},
+    {"wifi_ap_clients", "Show AP associated clients + DHCP leases.", wifi_ap_clients_cmd},
 };
 
 

@@ -7,6 +7,8 @@ import { useLanguage } from '@/hooks/useLanguage'
 import { Separator } from '@/components/ui/separator'
 import { Button } from '@/components/ui/button'
 import { Link } from 'react-router-dom'
+import { toast } from 'sonner'
+import systemSettings from '@/services/api/systemSettings'
 // import { useAuthStore } from '@/store/auth'
 
 type NavRightProps = {
@@ -20,7 +22,23 @@ export default function NavRight({ onClose, handleOpenLogs }: NavRightProps) {
     const [openLocales, setOpenLocales] = useState(false)
     const [isVisible, setIsVisible] = useState(false)
     const [isAnimating, setIsAnimating] = useState(false)
+    const [isRestartDialogOpen, setIsRestartDialogOpen] = useState(false)
+    const [restartLoading, setRestartLoading] = useState(false)
     // const { isValidateToken } = useAuthStore()
+
+    const handleRestartDevice = async () => {
+        try {
+            setRestartLoading(true)
+            await systemSettings.restartDevice({ delaySeconds: 2 })
+            setIsRestartDialogOpen(false)
+            toast.success(i18n._('sys.system_management.device_restarting'))
+        } catch (error) {
+            // eslint-disable-next-line no-console
+            console.error(error)
+        } finally {
+            setRestartLoading(false)
+        }
+    }
 
     // Start animation when component mounts
     useEffect(() => {
@@ -80,6 +98,16 @@ export default function NavRight({ onClose, handleOpenLogs }: NavRightProps) {
                         <SvgIcon icon="menu_close" />
                     </Button>
                     <ul className="space-y-4">
+                        <Separator />
+                        {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
+                        <li className="flex justify-between items-center px-4 cursor-pointer" onClick={() => setIsRestartDialogOpen(true)}>
+                            <div className="flex items-center space-x-2">
+                                <div className="w-6 h-6">
+                                    <SvgIcon className="w-6 h-6 text-text-secondary" icon="restart" />
+                                </div>
+                                <span className="text-base text-text-primary">{i18n._('sys.header.restart_device')}</span>
+                            </div>
+                        </li>
                         <Separator />
                         <li className="flex justify-between items-center px-4" onClick={() => handleOpenLogs()}>
                             <div className="flex items-center space-x-2">
@@ -154,6 +182,45 @@ export default function NavRight({ onClose, handleOpenLogs }: NavRightProps) {
                     </ul>
                 </div>
             </div>
+
+            {/* Restart confirmation — rendered inside this z-[1000] overlay (not
+             * the shared Dialog, whose z-50 portal would be covered by the drawer) */}
+            {isRestartDialogOpen && (
+                <div
+                  className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 p-4"
+                  role="dialog"
+                  aria-modal="true"
+                  onClick={() => { if (!restartLoading) setIsRestartDialogOpen(false); }}
+                >
+                    <div
+                      className="w-full max-w-sm bg-white rounded-lg shadow-2xl p-6"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                        <p className="text-base font-semibold text-text-primary">
+                            {i18n._('sys.header.restart_device_confirm_title')}
+                        </p>
+                        <p className="text-sm text-text-secondary mt-3">
+                            {i18n._('sys.header.restart_device_confirm')}
+                        </p>
+                        <div className="flex justify-end gap-3 mt-6">
+                            <Button
+                              variant="outline"
+                              disabled={restartLoading}
+                              onClick={() => setIsRestartDialogOpen(false)}
+                            >
+                                {i18n._('common.cancel')}
+                            </Button>
+                            <Button
+                              variant="primary"
+                              disabled={restartLoading}
+                              onClick={() => handleRestartDevice()}
+                            >
+                                {i18n._('common.confirm')}
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>,
         document.body
     )

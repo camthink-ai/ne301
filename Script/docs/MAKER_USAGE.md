@@ -80,7 +80,7 @@ Flash firmware to device using ST-LINK debugger (SWD) with external loader suppo
 ./maker.sh flash ../bin/ne301_Appli_signed_v1.0.0.1_ota.bin 0x70500000
 
 # Flash Web Assets
-./maker.sh flash ../Web/firmware_assets/web-assets_v1.5.0.88_ota.bin 0x70400000
+./maker.sh flash ../Web/firmware_assets/web-assets_v1.5.0.88_ota.bin 0x71900000
 
 # Flash AI Model
 ./maker.sh flash ../bin/model_yolov8_uf_od_coco_v3.0.2.45_ota.bin 0x70900000
@@ -95,12 +95,10 @@ Flash firmware to device using ST-LINK debugger (SWD) with external loader suppo
 | OTA | 0x70090000 | 8KB | OTA State Information |
 | APP1 (Slot A) | 0x70100000 | 4MB | Main Application |
 | APP2 (Slot B) | 0x70500000 | 4MB | Main Application |
-| WEB | 0x70400000 | 1MB | Web User Interface |
-| AI_Default | 0x70900000 | 5MB | Default AI Model |
-| AI_1 | 0x70E00000 | 5MB | AI Model Slot 1 |
-| AI_2 | 0x71300000 | 5MB | AI Model Slot 2 |
-| AI_3 | 0x71800000 | 8MB | AI Model Slot 3 |
-| LittleFS | 0x72000000 | 64MB | File System |
+| WEB | 0x71900000 | 1MB | Web User Interface |
+| AI_1 | 0x70900000 | 8MB | AI Model Slot 1 |
+| AI_2 | 0x71100000 | 8MB | AI Model Slot 2 |
+| LittleFS | 0x71D00000 | 32MB | File System |
 
 ---
 
@@ -191,7 +189,7 @@ Creates `<filename>.hex` in the same directory.
 # Output: ../FSBL/Debug/ne301_FSBL.hex
 
 # Convert Web assets
-./maker.sh hex ../bin/web-assets.bin 0x70400000
+./maker.sh hex ../bin/web-assets.bin 0x71900000
 # Output: ../bin/web-assets.hex
 ```
 

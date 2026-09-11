@@ -45,7 +45,8 @@ All fields use **little-endian** byte order and the structure is **packed** (no 
 | 0x10   | 4    | uint32  | timestamp         | Unix timestamp |
 | 0x14   | 4    | uint32  | sequence          | Sequence number |
 | 0x18   | 4    | uint32  | total_package_size| Total size (header + firmware) |
-| 0x1C   | 36   | uint8[] | reserved2         | Reserved bytes |
+| 0x1C   | 4    | uint32  | device_model      | Device model id (0x3010 = NE301, 0 = unstamped/legacy); mismatched packages are rejected |
+| 0x20   | 32   | uint8[] | reserved2         | Reserved bytes |
 
 **Firmware Types:**
 - 0x00: Unknown
@@ -89,7 +90,7 @@ All fields use **little-endian** byte order and the structure is **packed** (no 
 
 | Offset | Size | Type    | Name              | Description |
 |--------|------|---------|-------------------|-------------|
-| 0xE0   | 4    | uint32  | target_addr       | Target flash address |
+| 0xE0   | 4    | uint32  | part_table_crc    | CRC32 of the mem_map.h partition table this package was built for (0 = not stamped) |
 | 0xE4   | 4    | uint32  | target_size       | Target region size |
 | 0xE8   | 4    | uint32  | target_offset     | Target offset address |
 | 0xEC   | 16   | char[]  | target_partition  | Target partition name |
@@ -133,7 +134,8 @@ typedef struct __attribute__((packed)) {
     uint32_t timestamp;                     // 0x10
     uint32_t sequence;                      // 0x14
     uint32_t total_package_size;            // 0x18
-    uint8_t  reserved2[36];                 // 0x1C-0x3F
+    uint32_t device_model;                  // 0x1C
+    uint8_t  reserved2[32];                 // 0x20-0x3F
     
     /* Firmware Information (160 bytes) */
     char     fw_name[32];                   // 0x40-0x5F
@@ -147,7 +149,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  reserved3[4];                  // 0xDC-0xDF
     
     /* Target Information (64 bytes) */
-    uint32_t target_addr;                   // 0xE0
+    uint32_t part_table_crc;                // 0xE0
     uint32_t target_size;                   // 0xE4
     uint32_t target_offset;                 // 0xE8
     char     target_partition[16];          // 0xEC-0xFB

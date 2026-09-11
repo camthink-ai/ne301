@@ -20,7 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32n6xx_it.h"
-
+#include "netif_manager.h"
 #include "cmw_camera.h"
 #include "debug.h"
 #include "usb_otg.h"
@@ -57,7 +57,49 @@
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/* Fault-frame dump shared by HardFault/MemManage handlers.
+ *
+ * Both parameters arrive from the naked handler wrapper: at naked entry LR
+ * still holds the real EXC_RETURN and SP still points at the top of the
+ * hardware-stacked fault frame. Every C-level way of getting them after the
+ * fact is broken -- `__asm("lr")` in the handler reads a clobbered code
+ * address, scanning the handler stack finds the scanner's own locals first
+ * (isr-mode test: deterministic false 0xfffffffd), and once the C bodies run,
+ * their prologues have pushed frames BELOW the hardware frame so __get_MSP()
+ * no longer lands on it either (isr-mode test: printed its own locals).
+ *
+ * Frame location: thread-mode fault (EXC_RETURN bit2 set) stacked onto PSP,
+ * which nothing else touches -> frame at [PSP]. Handler-mode fault stacked
+ * onto MSP at SP-at-entry -> frame at [entry_sp]. Dump that frame plus the
+ * other stack's frame as [alt] so a bad frame still leaves the real one. */
+static void fault_dump_frames(uint32_t exc_return, uint32_t entry_sp)
+{
+  uint32_t psp = __get_PSP();
+  uint32_t *sps[2];
+  int i;
 
+  sps[0] = (uint32_t *)((exc_return & 0x4u) ? psp : entry_sp);
+  sps[1] = (uint32_t *)((exc_return & 0x4u) ? entry_sp : psp);
+  printf("  EXC_RETURN=0x%08lx (MSP=0x%08lx PSP=0x%08lx)\r\n",
+         exc_return, __get_MSP(), psp);
+
+  for (i = 0; i < 2; i++) {
+    volatile uint32_t *sp = (volatile uint32_t *)sps[i];
+    const char *tag = i ? "  [alt]" : "";
+    int j;
+    printf("%s SP=0x%08lx PC=0x%08lx LR=0x%08lx\r\n", tag, (uint32_t)sp, sp[6], sp[5]);
+    printf("%s R0=0x%08lx R1=0x%08lx R2=0x%08lx R3=0x%08lx\r\n",
+           tag, sp[0], sp[1], sp[2], sp[3]);
+    /* Walk the stack for OCTOSPI-region (0x90xxxxxx) return addresses so
+     * addr2line can resolve frames above the stacked PC/LR. */
+    printf("%s BT:", tag);
+    for (j = 8; j < (i ? 64 : 256); j++) {
+      uint32_t v = sp[j];
+      if ((v >> 24) == 0x90u) printf(" 0x%08lx", (unsigned long)(v & ~1u));
+    }
+    printf("\r\n");
+  }
+}
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -137,34 +179,64 @@ void NMI_Handler(void)
   /* USER CODE END NonMaskableInt_IRQn 1 */
 }
 
-// /**
-//   * @brief This function handles Hard fault interrupt.
-//   */
-// void HardFault_Handler(void)
-// {
-//   /* USER CODE BEGIN HardFault_IRQn 0 */
-//   printf("HardFault_Handler\r\n");
-//   /* USER CODE END HardFault_IRQn 0 */
-//   while (1)
-//   {
-//     /* USER CODE BEGIN W1_HardFault_IRQn 0 */
-//     /* USER CODE END W1_HardFault_IRQn 0 */
-//   }
-// }
+__attribute__((noreturn)) static void hardfault_body(uint32_t exc_return, uint32_t entry_sp)
+{
+  fault_dump_frames(exc_return, entry_sp);
+  printf("HardFault CFSR=0x%08lx BFAR=0x%08lx MMFAR=0x%08lx HFSR=0x%08lx\r\n",
+         SCB->CFSR, SCB->BFAR, SCB->MMFAR, SCB->HFSR);
+  for (;;) { }
+}
+
+/**
+  * @brief This function handles Hard fault interrupt.
+  */
+__attribute__((naked)) void HardFault_Handler(void)
+{
+  /* EXC_RETURN (LR) and fault-frame-top (SP) still live at naked entry --
+   * pass them on before the C prologue can clobber them (fault_dump_frames). */
+  __asm volatile ("mov r0, lr\n"
+                  "mov r1, sp\n"
+                  "b hardfault_body");
+}
+
+__attribute__((noreturn)) static void memmanage_body(uint32_t exc_return, uint32_t entry_sp)
+{
+  volatile uint32_t cfsr  = SCB->CFSR;
+  volatile uint32_t mmfar = SCB->MMFAR;
+  uint32_t mmfsr = cfsr & 0xFFU;   /* low byte of CFSR = MMFSR */
+  int stacking_ok = ((mmfsr & ((1U << 4) | (1U << 3))) == 0U);
+
+  if (stacking_ok)
+    fault_dump_frames(exc_return, entry_sp);
+
+  printf("MemManage CFSR=0x%08lx MMFAR=0x%08lx\r\n", cfsr, mmfar);
+
+  /* MSP stack-guard (region 1, [&_sstack, &_sstack+0x100)): a faulting access
+   * whose address lands in this band is the sentinel catching MSP overflow
+   * into the newlib heap. Needs MMARVALID (MMFSR bit7) for a meaningful MMFAR. */
+  extern uint32_t _sstack;
+  if ((mmfsr & (1U << 7)) &&
+      mmfar >= (uint32_t)&_sstack && mmfar < (uint32_t)&_sstack + 0x100U)
+    printf("  *** MSP STACK GUARD TRIP (overflow into heap) ***\r\n");
+
+  /* Stacked frame is valid unless a stacking fault (MSTKERR/MUNSTKERR) means it
+   * was never stored. PRIV_RO keeps reads of the guard band non-faulting. */
+  if (!stacking_ok)
+    printf("  (stacking fault: stacked frame unreliable)\r\n");
+
+  for (;;) { }
+}
 
 /**
   * @brief This function handles Memory management fault.
   */
-void MemManage_Handler(void)
+__attribute__((naked)) void MemManage_Handler(void)
 {
-  /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-  printf("MemManage_Handler\r\n");
-  /* USER CODE END MemoryManagement_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_MemoryManagement_IRQn 0 */
-    /* USER CODE END W1_MemoryManagement_IRQn 0 */
-  }
+  /* EXC_RETURN (LR) and fault-frame-top (SP) still live at naked entry --
+   * pass them on before the C prologue can clobber them (fault_dump_frames). */
+  __asm volatile ("mov r0, lr\n"
+                  "mov r1, sp\n"
+                  "b memmanage_body");
 }
 
 /**
@@ -640,14 +712,14 @@ void SPI6_IRQHandler(void)
   /* USER CODE END SPI6_IRQn 0 */
   /* SPI6 is shared between SPI mode (TFT) and I2S mode (audio).
    * Dispatch to the correct HAL handler based on which is active. */
-  if (hi2s6.State != HAL_I2S_STATE_RESET)
-  {
-    HAL_I2S_IRQHandler(&hi2s6);
-  }
-  else
-  {
+  // if (hi2s6.State != HAL_I2S_STATE_RESET)
+  // {
+  //   HAL_I2S_IRQHandler(&hi2s6);
+  // }
+  // else
+  // {
     HAL_SPI_IRQHandler(&hspi6);
-  }
+  // }
   /* USER CODE BEGIN SPI6_IRQn 1 */
 
   /* USER CODE END SPI6_IRQn 1 */
@@ -826,11 +898,17 @@ void EXTI12_IRQHandler(void)
     HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_12);
 }
 
+/* EXTI15_IRQHandler is owned by the Morse HaLow driver (see
+ * MM_HALOW_BUSY_IRQ_HANDLER in mmhal_wlan.c, which #defines to
+ * EXTI15_IRQHandler). Keep this Cube-generated copy disabled to avoid a
+ * multiple-definition link error; mmhal_wlan.c's version also forwards to the
+ * HaLow busy callback, so it is the correct handler. */
+#if 0
 void EXTI15_IRQHandler(void)
 {
     HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_15);
 }
-
+#endif
 void CSI_IRQHandler(void)
 {
     HAL_DCMIPP_CSI_IRQHandler(CMW_CAMERA_GetDCMIPPHandle());

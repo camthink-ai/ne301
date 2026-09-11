@@ -1,11 +1,12 @@
-import { useState, useEffect } from 'preact/hooks';
+import { useState, useEffect, useRef } from 'preact/hooks';
 import { useLingui } from '@lingui/react';
 import { Label } from '@/components/ui/label';
-import { Input } from '@/components/ui/input';
+import { NumberField } from '@/components/number-field';
 import TimePicker from '@/components/time-picker';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import Slider from '@/components/slider';
 import hardwareServiceApi, { type SetLightConfigReq } from '@/services/api/hardware-management';
 
@@ -17,6 +18,7 @@ export default function Light() {
       mode: 'auto',
       brightness_level: 0,
       connected: false,
+      fill_light_while_streaming: false,
       custom_schedule: {
          start_hour: 0,
          start_minute: 0,
@@ -24,13 +26,20 @@ export default function Light() {
          end_minute: 0,
       },
    })
+   const lightConfigRef = useRef(lightConfig);
+   const brightnessApplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
    const [loading, setLoading] = useState(true);
    const { getLightConfigReq, setLightConfigReq } = hardwareServiceApi;
+
+   useEffect(() => {
+      lightConfigRef.current = lightConfig;
+   }, [lightConfig]);
+
    const initLightConfig = async () => {
       try {
          setLoading(true);
          const res = await getLightConfigReq();
-         setLightConfig(res.data);
+         setLightConfig({ ...res.data, fill_light_while_streaming: !!res.data.fill_light_while_streaming });
          setStartTime(`${res.data.custom_schedule.start_hour.toString().padStart(2, '0')}:${res.data.custom_schedule.start_minute.toString().padStart(2, '0')}`);
          setEndTime(`${res.data.custom_schedule.end_hour.toString().padStart(2, '0')}:${res.data.custom_schedule.end_minute.toString().padStart(2, '0')}`);
       } catch (error) {
@@ -58,7 +67,23 @@ export default function Light() {
       setLightConfig({ ...lightConfig, mode: value });
    }
    const handleSetLightBrightness = async (value: number) => {
-      await handleSetLightConfig({ ...lightConfig, brightness_level: value });
+      const nextCfg: SetLightConfigReq = { ...lightConfigRef.current, brightness_level: value };
+      await handleSetLightConfig(nextCfg);
+   }
+
+   /* Fill-light-while-working: stored in the device config. When enabled the
+    * firmware keeps the light in sync with the config above for as long as
+    * the device runs (regardless of stream viewers), so runtime captures
+    * always find it lit; work-time captures no longer flash the light. */
+   const handleToggleFillLight = async (checked: boolean) => {
+      const nextCfg: SetLightConfigReq = { ...lightConfigRef.current, fill_light_while_streaming: checked };
+      try {
+         await handleSetLightConfig(nextCfg);
+      } catch (error) {
+         console.error('handleToggleFillLight', error);
+         // Snap the switch back to the persisted config on failure
+         setLightConfig(lightConfigRef.current);
+      }
    }
 
    const handleSetStartTime = async (value: string) => {
@@ -80,6 +105,19 @@ export default function Light() {
          </div>
       </div>
    )
+
+   const scheduleRealtimeBrightnessApply = (value: number) => {
+      if (brightnessApplyTimerRef.current) {
+         clearTimeout(brightnessApplyTimerRef.current);
+      }
+      // Throttle to reduce POST spam while dragging.
+      brightnessApplyTimerRef.current = setTimeout(() => {
+         handleSetLightBrightness(value).catch(error => {
+            console.error('scheduleRealtimeBrightnessApply', error);
+         });
+      }, 150);
+   };
+
    return (
       <div>
          {loading ? skeletonScreen() : (
@@ -94,13 +132,13 @@ export default function Light() {
                {lightConfig?.connected && (
                   <>
                      <Separator />
-                     <div className="flex justify-between">
-                        <Label>{i18n._('sys.hardware_management.fill_light')}</Label>
+                     <div className="flex justify-between gap-2">
+                        <Label className="shrink-0">{i18n._('sys.hardware_management.fill_light')}</Label>
                         <Select value={lightConfig.mode} onValueChange={handleSetMode}>
                            <SelectTrigger className=" bg-transparent border-0 !shadow-none !outline-none
                                   focus:!outline-none focus:!ring-0 focus:!ring-offset-0 focus:!shadow-none focus:!border-transparent
                                   focus-visible:!outline-none focus-visible:!ring-0 focus-visible:!ring-offset-0
-                                  text-right"
+                                  text-right min-w-0"
                            >
                               <SelectValue
                                 placeholder={i18n._('sys.hardware_management.fill_light_desc')}
@@ -133,22 +171,39 @@ export default function Light() {
                            <div className="flex justify-between">
                               <Label>{i18n._('sys.hardware_management.light_brightness')}</Label>
                               <div className="flex items-center gap-2">
-                                 <Slider className="w-4xs md:w-2xs" value={lightConfig.brightness_level} onChange={value => setLightConfig({ ...lightConfig, brightness_level: value })} onChangeEnd={value => handleSetLightBrightness(value)} max={100} step={1} />
-                                 <Input
-                                   className="w-[65px]"
-                                   type="number"
+                                 <Slider
+                                   className="w-4xs md:w-2xs"
                                    value={lightConfig.brightness_level}
+                                   onChange={value => {
+                                      const nextCfg: SetLightConfigReq = {
+                                         ...lightConfigRef.current,
+                                         brightness_level: value,
+                                      };
+                                      setLightConfig(nextCfg);
+                                      scheduleRealtimeBrightnessApply(value);
+                                   }}
+                                   onChangeEnd={value => handleSetLightBrightness(value)}
+                                   max={100}
+                                   step={1}
+                                 />
+                                 <NumberField
+                                   className="w-[65px]"
                                    min={0}
                                    max={100}
                                    step={1}
-                                   onChange={(e) => {
-                                      const input = e.target as HTMLInputElement;
-                                      const n = Math.round(Number(input.value));
-                                      const clamped = Math.max(0, Math.min(100, Number.isFinite(n) ? n : 0));
-                                      input.value = String(clamped);
-                                      setLightConfig({ ...lightConfig, brightness_level: clamped });  
-                                    }}
-                                   onBlur={e => handleSetLightBrightness(Math.max(0, Math.min(100, Number.isNaN(Number((e.target as HTMLInputElement).value)) ? 0 : Number((e.target as HTMLInputElement).value))))}
+                                   value={lightConfig.brightness_level}
+                                   onCommit={v => {
+                                      const nextCfg: SetLightConfigReq = {
+                                         ...lightConfigRef.current,
+                                         brightness_level: v,
+                                      };
+                                      setLightConfig(nextCfg);
+                                      handleSetLightBrightness(v).catch((error) => {
+                                         console.error('handleSetLightBrightness', error);
+                                         // Snap the field back to the persisted config on failure
+                                         setLightConfig(lightConfigRef.current);
+                                      });
+                                   }}
                                  />
                               </div>
                            </div>
@@ -156,6 +211,14 @@ export default function Light() {
                      ) : (
                         null
                      )}
+                     <Separator />
+                     <div className="flex justify-between items-center">
+                        <div className="flex flex-col gap-1 max-w-[70%]">
+                           <Label>{i18n._('sys.hardware_management.fill_light_work')}</Label>
+                           <p className="text-xs text-gray-400">{i18n._('sys.hardware_management.fill_light_work_hint')}</p>
+                        </div>
+                        <Switch checked={!!lightConfig.fill_light_while_streaming} onCheckedChange={handleToggleFillLight} />
+                     </div>
                   </>
                )}
             </div>

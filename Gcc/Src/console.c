@@ -36,9 +36,9 @@ int _write(int file, char *ptr, int len)
   }
 
 #ifdef  STM32N6_DK_BOARD
-  status = HAL_UART_Transmit(&huart1, (uint8_t*)ptr, len, ~0);
+  status = HAL_UART_Transmit(&huart1, (uint8_t*)ptr, len, 200);
 #else
-  status = HAL_UART_Transmit(&huart2, (uint8_t*)ptr, len, ~0);
+  status = HAL_UART_Transmit(&huart2, (uint8_t*)ptr, len, 200);
 #endif
   return (status == HAL_OK ? len : 0);
 }

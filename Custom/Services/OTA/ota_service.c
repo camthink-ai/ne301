@@ -42,6 +42,11 @@ int ota_upgrade_begin(upgrade_handle_t *handle, FirmwareType type, firmware_head
     return upgrade_begin(handle, type, header);
 }
 
+int ota_upgrade_begin_direct(upgrade_handle_t *handle, FirmwareType type, firmware_header_t *header, uint32_t flash_addr)
+{
+    return upgrade_begin_direct(handle, type, header, flash_addr);
+}
+
 int ota_upgrade_write_chunk(upgrade_handle_t *handle, const void *chunk_data, size_t chunk_size)
 {
     return upgrade_write_chunk(handle, chunk_data, chunk_size);
@@ -251,11 +256,14 @@ ota_validation_result_t ota_validate_partition_availability(FirmwareType fw_type
         case FIRMWARE_WEB:
             partition_size = 0x200000;  // 2MB
             break;
-        case FIRMWARE_DEFAULT_AI:
-            partition_size = 0x1000000; // 16MB
-            break;
         case FIRMWARE_AI_1:
             partition_size = 0x1000000; // 16MB
+            break;
+        case FIRMWARE_AI_2:
+            partition_size = 0x1000000; // 16MB
+            break;
+        case FIRMWARE_WIFI:
+            partition_size = WIFI_FW_SIZE; // 3MB
             break;
         default:
             partition_size = 0x100000;  // 1MB default
@@ -594,7 +602,7 @@ int ota_upgrade_from_file(int fw_type, const char *filename, const ota_validatio
 
 
     // update json config
-    if(fw_type == FIRMWARE_AI_1) {
+    if(fw_type == FIRMWARE_AI_2) {
         json_config_set_ai_1_active(AICAM_TRUE);
     }
     
@@ -813,7 +821,7 @@ int ota_upgrade_from_memory(int fw_type, const void *firmware_data, size_t firmw
     }
 
     // Step 11: Update json config if needed
-    if (fw_type == FIRMWARE_AI_1) {
+    if (fw_type == FIRMWARE_AI_2) {
         json_config_set_ai_1_active(AICAM_TRUE);
     }
     

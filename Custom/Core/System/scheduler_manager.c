@@ -114,6 +114,36 @@ static void process_wakeup_jobs(scheduler_t *sched, scheduler_manager_t *mgr)
     wakeup_job_t *job = mgr->wake_jobs;
 
     while (job) {
+        if (job->sched == sched) {
+            /* Backward clock-step heal. A step back (NTP correction, manual
+             * set) leaves next_trigger on the old — ahead — clock scale, up
+             * to |step| in the future, while the catch-up loop below only
+             * walks forward. The job would stay not-due until wall time
+             * reaches the stale point (hours, with a real correction).
+             * Steady state never trips: after every fire next_trigger sits
+             * in (now, now + period]. Pull the due point back instead:
+             *  - INTERVAL: walk back whole intervals (lattice phase kept),
+             *    landing in (now, now + interval].
+             *  - DAILY/WEEKLY: recompute from the new clock, guarded by
+             *    "provably beyond one period" so a legit near value is
+             *    never rewritten (the recompute is idempotent, so even a
+             *    false trip on the weekly far-edge just rewrites the same
+             *    time).
+             * REPEAT_ONCE is skipped on purpose: its wall-clock point is
+             * the intent itself and doesn't go stale with a clock step. */
+            if (job->repeat == REPEAT_INTERVAL) {
+                while (job->interval > 0 &&
+                       job->next_trigger > now + job->interval) {
+                    job->next_trigger -= job->interval;
+                }
+            } else if (job->repeat == REPEAT_DAILY &&
+                       job->next_trigger > now + 86400u) {
+                job->next_trigger = calculate_wakeup_trigger(job, now);
+            } else if (job->repeat == REPEAT_WEEKLY &&
+                       job->next_trigger > now + 7u * 86400u) {
+                job->next_trigger = calculate_wakeup_trigger(job, now);
+            }
+        }
         if (job->sched == sched && job->next_trigger <= now) {
             if (job->repeat == REPEAT_ONCE) {
                 // Remove from list BEFORE callback so the callback can safely
@@ -275,6 +305,9 @@ int register_wakeup_ex(scheduler_manager_t *mgr, int sched_id,
     job->arg = arg;
 
     uint64_t now = mgr->get_time() + (mgr->timezone * 3600);
+    uint64_t wk_time = mgr->get_wakeup_time() + (mgr->timezone * 3600);
+    // printf("now=%lu\n", (uint32_t)now);
+    // printf("wk_time=%lu\n", (uint32_t)wk_time);
 
     if (type == WAKEUP_TYPE_ABSOLUTE) {
         job->trigger_sec = day_sec % 86400;
@@ -285,7 +318,12 @@ int register_wakeup_ex(scheduler_manager_t *mgr, int sched_id,
         job->next_trigger = calculate_wakeup_trigger(job, now);
     } else if (type == WAKEUP_TYPE_INTERVAL) {
         job->interval = day_sec;
-        job->next_trigger = now + job->interval;
+        if (wk_time != 0 && (now - wk_time) < (job->interval - 10)) {
+            job->next_trigger = wk_time + job->interval;
+        } else {
+            job->next_trigger = now + job->interval;
+        }
+        // printf("next_trigger=%lu\n", (uint32_t)job->next_trigger);
     }
 
     job->next = mgr->wake_jobs;
@@ -520,11 +558,12 @@ void scheduler_handle_event(scheduler_t *sched, scheduler_manager_t *mgr)
 }
 
 // Initialize scheduler manager
-void scheduler_init(scheduler_manager_t *mgr, get_time_func_t get_time, 
+void scheduler_init(scheduler_manager_t *mgr, get_time_func_t get_time, get_time_func_t get_wakeup_time,
                    scheduler_t *scheds, int num_sched,
                    sched_lock_func_t lock, sched_unlock_func_t unlock) 
 {
     mgr->get_time = get_time;
+    mgr->get_wakeup_time = get_wakeup_time;
     mgr->schedulers = scheds;
     mgr->num_sched = num_sched;
     mgr->wake_jobs = NULL;

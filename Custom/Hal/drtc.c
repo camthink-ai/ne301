@@ -41,15 +41,22 @@ int _gettimeofday_r(struct _reent *reent, struct timeval *tv, void *tz) {
 extern RTC_HandleTypeDef hrtc;
 
 static rtc_t g_rtc = {0};
-static uint8_t rtc_tread_stack[1024 * 8] ALIGN_32 IN_PSRAM;
+static uint64_t g_rtc_wakeup_timestamp = 0ULL;
+
+/* RTC rewrites with |delta| below this are skipped (same timezone): stepping
+ * the calendar for tiny drift can jump over the armed alarm second. */
+#define RTC_STEP_GUARD_SEC 2
+static uint8_t rtc_tread_stack[1024 * 32] ALIGN_32 IN_PSRAM;
 const osThreadAttr_t rtcTask_attributes = {
     .name = "rtcTask",
     .priority = (osPriority_t) osPriorityNormal,
     .stack_mem = rtc_tread_stack,
     .stack_size = sizeof(rtc_tread_stack),
 };
-
 uint8_t aShowTime[32] = "yyyy-mm-dd hh:mm:ss weekday"; 
+
+uint64_t time_to_timeStamp(unsigned int year, unsigned int mon, unsigned int day,
+                           unsigned int hour, unsigned int min, unsigned int sec);
 /**
   * @brief RTC Initialization Function
   * @param None
@@ -86,14 +93,24 @@ static void RTC_init(void)
         Error_Handler();
     }
 
+#if ENABLE_U0_MODULE
+    int ret = u0_module_sync_rtc_time();
+    if (ret == 0) {
+        HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+        HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+        g_rtc_wakeup_timestamp = time_to_timeStamp(sDate.Year + START_YEARS, sDate.Month, sDate.Date, sTime.Hours, sTime.Minutes, sTime.Seconds);
+        // printf("timestamp: %lu\n", (uint32_t)g_rtc_wakeup_timestamp);
+    }
+#else
+
     /* USER CODE BEGIN Check_RTC_BKUP */
-    if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) == RTC_BKP_FLAG) return;
+    if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) == RTC_BKP_FLAG) {
+        // printf("RTC already inited\n");
+        return;
+    }
     HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, RTC_BKP_FLAG);
     /* USER CODE END Check_RTC_BKUP */
 
-#if ENABLE_U0_MODULE
-    u0_module_sync_rtc_time();
-#else
     /** Initialize RTC and set the Time and Date
     */
     sTime.Hours = 0x2;
@@ -242,6 +259,10 @@ void timeStamp_to_time(uint64_t timestamp, RTC_TIME_S *rtc_time)
     rtc_time->timeStamp = timestamp;
 }
 
+uint64_t rtc_get_wakeup_timeStamp(void)
+{
+    return g_rtc_wakeup_timestamp;
+}
 
 uint64_t rtc_get_timeStamp(void)
 {
@@ -273,8 +294,12 @@ uint16_t rtc_get_timeMs(void)
         return 0;
 
     RTC_TimeTypeDef stimestructureget;
+    RTC_DateTypeDef sdatestructureget;
 
     HAL_RTC_GetTime(&hrtc, &stimestructureget, RTC_FORMAT_BCD);
+    /* ST HAL contract: GetDate must follow GetTime to unlock the calendar
+     * shadow register update — skipping it freezes the shadow values. */
+    HAL_RTC_GetDate(&hrtc, &sdatestructureget, RTC_FORMAT_BCD);
 
     // SubSeconds is a decrementing counter (255->0), convert to milliseconds (0-999)
     // Use same formula as rtc_get_time() for consistency
@@ -439,13 +464,34 @@ static void rtcProcess(void *argument)
 {
     rtc_t *rtc = (rtc_t *)argument;
     LOG_DRV_DEBUG("rtcProcess start\r\n");
+    uint32_t idle_loops = 0;
     for(;;){
         if(rtc->is_init){
+            uint8_t fired = 0;
             if (osSemaphoreAcquire(rtc->sem_sched1, 10) == osOK) {
                 scheduler_handle_event(&scheds[0], &g_rtc.sched_manager);
+                fired = 1;
             }
 
             if (osSemaphoreAcquire(rtc->sem_sched2, 10) == osOK) {
+                scheduler_handle_event(&scheds[1], &g_rtc.sched_manager);
+                fired = 1;
+            }
+
+            /* Fallback: with no alarm for ~30s (250 loops x ~120ms), run the
+             * scheduler anyway. The RTC alarm is an exact date+time match
+             * (RTC_ALARMMASK_NONE), so a clock step that jumps over the armed
+             * alarm second (e.g. SNTP correction) leaves it dead for up to a
+             * month — and this task is otherwise purely alarm-driven.
+             * scheduler_handle_event() is idempotent: with nothing due it only
+             * re-arms the alarm from the current time, so an expired job is
+             * caught up with at most ~30s lateness. Each idle iteration costs
+             * ~120ms (two 10ms semaphore timeouts + the 100ms delay below). */
+            if (fired) {
+                idle_loops = 0;
+            } else if (++idle_loops >= 250) {
+                idle_loops = 0;
+                scheduler_handle_event(&scheds[0], &g_rtc.sched_manager);
                 scheduler_handle_event(&scheds[1], &g_rtc.sched_manager);
             }
         }
@@ -504,9 +550,7 @@ static int rtc_init(void *priv)
     rtc->mtx_mgr = osMutexNew(NULL);
     rtc->sem_sched1 = osSemaphoreNew(1, 0, NULL);
     rtc->sem_sched2 = osSemaphoreNew(1, 0, NULL);
-    scheduler_init(&rtc->sched_manager, rtc_get_timeStamp, scheds, sizeof(scheds) / sizeof(scheds[0]), rtc_mgr_lock, rtc_mgr_unlock);
-    rtc->rtc_processId = osThreadNew(rtcProcess, rtc, &rtcTask_attributes);
-    RTC_init();
+    scheduler_init(&rtc->sched_manager, rtc_get_timeStamp, rtc_get_wakeup_timeStamp, scheds, sizeof(scheds) / sizeof(scheds[0]), rtc_mgr_lock, rtc_mgr_unlock);
     // rtc_setup(0x65, 0x6, 0x19, 0x8, 0x0, 0x0, 0x4);
     ret = storage_nvs_read(NVS_USER, TIMEZONE_NVS_KEY, tmp, sizeof(tmp));
     if (ret > 0) {
@@ -516,6 +560,8 @@ static int rtc_init(void *priv)
         rtc->timezone = TIMEZONE;
         rtc->sched_manager.timezone = rtc->timezone;
     }
+    RTC_init();
+    rtc->rtc_processId = osThreadNew(rtcProcess, rtc, &rtcTask_attributes);
     // printf("timezone: %d\r\n", rtc->timezone);
     rtc->is_init = true;
     LOG_DRV_DEBUG("rtc_init end\r\n");
@@ -590,7 +636,18 @@ static void rtc_cmd_register(void)
     debug_cmdline_register(rtc_cmd_table, sizeof(rtc_cmd_table) / sizeof(rtc_cmd_table[0]));
 }
 
-void rtc_setup(int year, int month, int day, int hour, int minute, int second, int weekday)
+/* Bumped on every calendar write — rtc_setup is the single writer, so real
+ * steps (both directions), timezone re-anchors (calendar rewritten under the
+ * new offset) and CLI setdate all land here. RAM-only, starts at 0 each boot:
+ * consumers compare against their boot-time baseline to detect a scale change. */
+static volatile uint32_t s_rtc_step_gen = 0;
+
+uint32_t rtc_step_generation(void)
+{
+    return s_rtc_step_gen;
+}
+
+static void rtc_setup_ex(int year, int month, int day, int hour, int minute, int second, int weekday, bool push_u0)
 {
     RTC_TimeTypeDef sTime = {0};
     RTC_DateTypeDef sDate = {0};
@@ -616,11 +673,23 @@ void rtc_setup(int year, int month, int day, int hour, int minute, int second, i
         Error_Handler();
     }
 #if ENABLE_U0_MODULE
-    u0_module_update_rtc_time();
+    /* Pushing the new time to U0 costs one bridging transaction. Skip it
+     * when the value itself came FROM U0 (boot sync): the round trip adds
+     * boot-window traffic (U0 comm there is already congested and flaky)
+     * and would set U0's clock back by the transaction latency. */
+    if (push_u0) {
+        u0_module_update_rtc_time();
+    }
 #endif
+    s_rtc_step_gen++;
 }
 
-void rtc_setup_by_timestamp(uint64_t timestamp, int timezone_offset_hours) 
+void rtc_setup(int year, int month, int day, int hour, int minute, int second, int weekday)
+{
+    rtc_setup_ex(year, month, day, hour, minute, second, weekday, true);
+}
+
+static bool rtc_setup_by_timestamp_ex(uint64_t timestamp, int timezone_offset_hours, bool push_u0)
 {
     char tmp[16] = {0};
     RTC_TIME_S rtc_time;
@@ -630,8 +699,20 @@ void rtc_setup_by_timestamp(uint64_t timestamp, int timezone_offset_hours)
         g_rtc.sched_manager.timezone = g_rtc.timezone;
         snprintf(tmp, sizeof(tmp), "%d", g_rtc.timezone);
         storage_nvs_write(NVS_USER, TIMEZONE_NVS_KEY, tmp, strlen(tmp) + 1);
+    } else {
+        /* Same timezone: skip sub-2s rewrites. Stepping the RTC for drift
+         * risks jumping over the armed RTC-alarm second (exact date+time
+         * match), which kills the alarm — the capture scheduler is otherwise
+         * purely alarm-driven. Frequent sources (SNTP poll, every web page
+         * load auto-syncing browser time) make the step-over inevitable. */
+        int64_t delta = (int64_t)timestamp - (int64_t)rtc_get_timeStamp();
+        if (delta > -RTC_STEP_GUARD_SEC && delta < RTC_STEP_GUARD_SEC) {
+            LOG_DRV_DEBUG("rtc_setup_by_timestamp: skipped %d s step\r\n", (int)delta);
+            return false;
+        }
+        LOG_DRV_INFO("rtc_setup_by_timestamp: stepping RTC by %d s\r\n", (int)delta);
     }
-    timeStamp_to_time(timestamp, &rtc_time); 
+    timeStamp_to_time(timestamp, &rtc_time);
 
     int year, month, day, hour,minute, second, weekday;
 
@@ -643,12 +724,31 @@ void rtc_setup_by_timestamp(uint64_t timestamp, int timezone_offset_hours)
     second = DEC_TO_BCD(rtc_time.second);
     weekday = DEC_TO_BCD(rtc_time.dayOfWeek);
 
-    rtc_setup(year, month, day, hour, minute, second, weekday);
+    rtc_setup_ex(year, month, day, hour, minute, second, weekday, push_u0);
+
+    /* RTC was stepped — the armed alarm targeted the old clock. Force the
+     * scheduler to recompute and re-arm it against the new time. */
+    rtc_trigger_scheduler_check(1);
+    rtc_trigger_scheduler_check(2);
+    return true;
 }
 
-void rtc_set_timeStamp(uint64_t timestamp) 
+bool rtc_setup_by_timestamp(uint64_t timestamp, int timezone_offset_hours)
 {
-    rtc_setup_by_timestamp(timestamp, g_rtc.timezone);
+    return rtc_setup_by_timestamp_ex(timestamp, timezone_offset_hours, true);
+}
+
+bool rtc_set_timeStamp(uint64_t timestamp)
+{
+    return rtc_setup_by_timestamp_ex(timestamp, g_rtc.timezone, true);
+}
+
+/* U0-sync entry: same gate (step guard, scheduler re-check, step generation)
+ * but does NOT push the result back to U0 — the value came from there, and
+ * bridging traffic in the boot window must stay minimal. */
+bool rtc_set_timeStamp_from_u0(uint64_t timestamp)
+{
+    return rtc_setup_by_timestamp_ex(timestamp, g_rtc.timezone, false);
 }
 
 void rtc_set_timezone(int timezone_offset_hours) 
@@ -675,7 +775,22 @@ int rtc_get_next_wakeup_time(int sched_id, uint64_t *next_wakeup)
     
     rtc_mgr_lock();
     
-    // Find minimum next_trigger for the specified scheduler
+    // Snapshot current time before taking the lock (rtc_get_timeStamp only
+    // reads hardware RTC, no manager lock -> no recursion).
+    /* next_trigger lives on the LOCAL scale (get_time() + timezone*3600 -
+     * see scheduler_manager.c): compare like with like. A UTC 'now' makes
+     * every trigger look timezone-hours into the future, so the strictly-
+     * future guard below would pass triggers stranded in the past by any
+     * forward clock step shorter than the offset. */
+    uint64_t now = rtc_get_timeStamp() +
+                   (uint64_t)(g_rtc.sched_manager.timezone * 3600);
+
+    // Find minimum next_trigger for the specified scheduler. Only accept
+    // triggers strictly in the future: a trigger at/before now (e.g. a job
+    // whose next_trigger hasn't been advanced past its just-fired time, or one
+    // stranded in the past by an NTP time correction) would arm an RTC alarm
+    // that fires immediately on standby entry -> U0 wakes/resets and the host
+    // never loses power ("never sleeps"). See enter_sleep_mode() alarm path.
     uint64_t min_trigger = UINT64_MAX;
     bool found = false;
     
@@ -683,7 +798,7 @@ int rtc_get_next_wakeup_time(int sched_id, uint64_t *next_wakeup)
     wakeup_job_t *job = g_rtc.sched_manager.wake_jobs;
     while (job) {
         if (job->sched && job->sched->id == sched_id) {
-            if (job->next_trigger < min_trigger) {
+            if (job->next_trigger > (now + 3) && job->next_trigger < min_trigger) {
                 min_trigger = job->next_trigger;
                 found = true;
             }
@@ -695,7 +810,7 @@ int rtc_get_next_wakeup_time(int sched_id, uint64_t *next_wakeup)
     schedule_job_t *sched_job = g_rtc.sched_manager.schedule_jobs;
     while (sched_job) {
         if (sched_job->sched && sched_job->sched->id == sched_id) {
-            if (sched_job->next_trigger < min_trigger) {
+            if (sched_job->next_trigger > (now + 3) && sched_job->next_trigger < min_trigger) {
                 min_trigger = sched_job->next_trigger;
                 found = true;
             }
@@ -750,3 +865,5 @@ void rtc_register(void)
 
     driver_cmd_register_callback(DRTC_DEVICE_NAME, rtc_cmd_register);
 }
+
+

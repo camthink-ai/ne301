@@ -7,6 +7,8 @@
  */
 
  #include "json_config_internal.h" // Includes all necessary headers
+#include "board_hw.h"
+ #include "netif_manager.h"
  #include "buffer_mgr.h"
  #include "version.h"              // Centralized version info
  #include "fsbl_app_common.h"
@@ -52,7 +54,7 @@
         .device_name = "AICAM-000000", // Default name, will be updated from MAC
         .mac_address = "00:00:00:00:00:00",
         .serial_number = "SN202500001",
-        .hardware_version = "V1.1",
+        .hardware_version = "V1.0",
         .software_version = FW_VERSION_STRING,  // From version.h (auto-generated)
         .camera_module = "IMX219 8MP Camera",
          .extension_modules = "-",
@@ -110,13 +112,14 @@
              .weekdays = {0}
          },
         .pir_trigger = {
-            .enable = AICAM_TRUE,
+            .enable = AICAM_FALSE,
             .pin_number = 2,
             .trigger_type = AICAM_TRIGGER_TYPE_RISING,
             .sensitivity_level = 30,    // Default sensitivity level
             .ignore_time_s = 7,         // Default ignore time (4 seconds)
             .pulse_count = 1,            // Default pulse count (2 pulses)
-            .window_time_s = 0           // Default window time (2 seconds)
+            .window_time_s = 0,          // Default window time (2 seconds)
+            .disable_in_preview = AICAM_TRUE // Default: disable PIR capture during preview
         },
         .remote_trigger = {
             .enable = AICAM_FALSE
@@ -131,6 +134,7 @@
              .vertical_flip = AICAM_FALSE,
              .aec = 1,  // Auto exposure enabled
              .isp_mode = IMAGE_ISP_MODE_OUTDOOR,
+             .grayscale = IMAGE_GRAYSCALE_OFF,
              .startup_skip_frames = 10,  // Default frames to skip for camera stabilization
              .fast_capture_skip_frames = 10,
              .fast_capture_resolution = 0,   // 0: 1280x720
@@ -147,18 +151,38 @@
              .end_minute = 0,
              .brightness_level = 50,
              .auto_trigger_enabled = AICAM_TRUE,
-             .light_threshold = 30
+             .light_threshold = 30,
+             .fill_light_while_streaming = AICAM_FALSE
          }
      },
      
      .network_service = {
-         .ap_sleep_time = 600,      // 10 minutes default sleep time
+         .ap_sleep_time = 0,        // Default AP sleep time (0 = no sleep)
          .ssid = "AICAM-AP",        // Default AP SSID
          .password = "",            // Default AP password
+         .wifi_country_code = "",   // Default: empty -> firmware default region (US)
          .known_network_count = 0,
          .preferred_comm_type = 0,  // No preferred type
          .enable_auto_priority = AICAM_TRUE,  // Enable auto priority
-         
+
+        // Wi-Fi HaLow last-connected info defaults
+        .halow_ssid = "",
+        .halow_password = "",
+        .halow_security = 0,
+        .halow_country_code = "",
+        .halow_bssid = "",
+        .halow_ip_mode = POE_IP_MODE_DHCP,
+        .halow_ip_addr = {192, 168, 12, 199},
+        .halow_netmask = {255, 255, 255, 0},
+        .halow_gateway = {192, 168, 12, 1},
+        .halow_tx_power_dbm = NETIF_WIFI_HALOW_DEFAULT_TX_PWR,
+        .halow_scan_dwell_ms = NETIF_WIFI_HALOW_DEFAULT_SCAN_DWELL,
+        .halow_rc_mcs = -1,
+        .halow_rc_bw_mhz = -1,
+        .halow_rc_gi = -1,
+        .halow_ps_mode = 0,
+        .halow_join_channel = 0,
+
          // PoE/Ethernet default configuration
          .poe = {
              .ip_mode = POE_IP_MODE_DHCP,                // Default to DHCP
@@ -440,6 +464,9 @@
      memcpy(config, &default_config, sizeof(aicam_global_config_t));
      config->timestamp = json_config_get_timestamp();
 
+     /* Fields not covered by the static default_config table */
+     json_config_capture_upload_defaults(&config->capture_upload);
+
      // Delegate checksum calculation
      aicam_result_t result = json_config_calculate_checksum(config, &config->checksum);
      return result;
@@ -615,6 +642,12 @@
      if (strlen(preserved_info.hardware_version) > 0)
      {
          strncpy(config->device_info.hardware_version, preserved_info.hardware_version,
+                 sizeof(config->device_info.hardware_version) - 1);
+     }
+     else
+     {
+         /* No factory-written hardware version: use the PE9 board strap band */
+         strncpy(config->device_info.hardware_version, board_hw_version_str(),
                  sizeof(config->device_info.hardware_version) - 1);
      }
 
@@ -1117,8 +1150,8 @@
          return result;
      }
 
-     LOG_CORE_INFO("Device service light configuration updated: connected=%u, mode=%u, start_hour=%u, start_minute=%u, end_hour=%u, end_minute=%u, brightness_level=%u, auto_trigger_enabled=%u, light_threshold=%u",
-                   light_config->connected, light_config->mode, light_config->start_hour, light_config->start_minute, light_config->end_hour, light_config->end_minute, light_config->brightness_level, light_config->auto_trigger_enabled, light_config->light_threshold);
+     LOG_CORE_INFO("Device service light configuration updated: connected=%u, mode=%u, start_hour=%u, start_minute=%u, end_hour=%u, end_minute=%u, brightness_level=%u, auto_trigger_enabled=%u, light_threshold=%u, fill_light_while_streaming=%u",
+                   light_config->connected, light_config->mode, light_config->start_hour, light_config->start_minute, light_config->end_hour, light_config->end_minute, light_config->brightness_level, light_config->auto_trigger_enabled, light_config->light_threshold, light_config->fill_light_while_streaming);
      return AICAM_OK;
  }
 
@@ -1551,11 +1584,22 @@ aicam_result_t json_config_save_poe_last_dhcp_ip(const uint8_t *ip_addr)
     }
 
     memcpy(g_json_config_ctx.current_config.network_service.poe.last_dhcp_ip, ip_addr, 4);
-    
+
     // Only save the last IP to NVS for quick recovery
     uint32_t ip_val = ((uint32_t)ip_addr[0] << 24) | ((uint32_t)ip_addr[1] << 16) |
                       ((uint32_t)ip_addr[2] << 8) | ip_addr[3];
     return json_config_nvs_write_uint32(NVS_KEY_POE_LAST_DHCP_IP, ip_val);
+}
+
+aicam_result_t json_config_save_halow_join_channel(uint8_t channel)
+{
+    if (!g_json_config_ctx.initialized)
+    {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+
+    g_json_config_ctx.current_config.network_service.halow_join_channel = channel;
+    return json_config_nvs_write_uint32(NVS_KEY_HALOW_JOIN_CHANNEL, (uint32_t)channel);
 }
 
 const char* poe_status_code_to_string(poe_status_code_t status)
@@ -1592,6 +1636,86 @@ aicam_result_t json_config_set_webhook_config(const webhook_config_t *config)
     aicam_result_t result = json_config_save_webhook_config_to_nvs(config);
     if (result == AICAM_OK) {
         memcpy(&g_json_config_ctx.current_config.webhook_config, config, sizeof(webhook_config_t));
+    }
+    return result;
+}
+
+/* ==================== Capture-Upload Configuration ==================== */
+
+void json_config_capture_upload_defaults(capture_upload_config_t *config)
+{
+    if (!config) return;
+    memset(config, 0, sizeof(*config));
+    config->version              = CAPTURE_UPLOAD_CFG_VERSION;
+    config->mode                 = CAPTURE_MODE_INSTANT;
+    config->storage              = CAPTURE_STORE_AUTO;
+    config->policy               = STORAGE_POLICY_WRAP;
+    config->upload_protocol      = UPLOAD_PROTO_MQTT;
+    config->retry_enable         = AICAM_TRUE;
+    config->retry_max_attempts   = 5;
+    config->batch_count          = 10;
+    config->schedule_node_count  = 0;
+    config->keep_sent_hours      = CAPUP_KEEP_SENT_MAX_HOURS;  /* keep forever; delete only on full/count cap */
+    config->max_pending_records  = 200;
+    config->flash_max_records    = CAPUP_FLASH_RECORDS_DEFAULT; /* total cap across all states */
+    config->upload_comm_type     = 0;  /* COMM_TYPE_NONE = default logic */
+}
+
+aicam_result_t json_config_get_capture_upload_config(capture_upload_config_t *config)
+{
+    if (!config) return AICAM_ERROR_INVALID_PARAM;
+    return json_config_load_capture_upload_from_nvs(config);
+}
+
+aicam_result_t json_config_set_capture_upload_config(const capture_upload_config_t *config)
+{
+    if (!config) return AICAM_ERROR_INVALID_PARAM;
+
+    /* Light normalization before persisting so callers don't have to. */
+    capture_upload_config_t norm = *config;
+    if (norm.version == 0) norm.version = CAPTURE_UPLOAD_CFG_VERSION;
+    if (norm.mode    >= CAPTURE_MODE_LOCAL_ONLY + 1) norm.mode    = CAPTURE_MODE_INSTANT;
+    if (norm.storage >  CAPTURE_STORE_NONE)          norm.storage = CAPTURE_STORE_AUTO;
+    if (norm.policy  >  STORAGE_POLICY_STOP)         norm.policy  = STORAGE_POLICY_WRAP;
+    if (norm.upload_protocol > UPLOAD_PROTO_WEBHOOK) norm.upload_protocol = UPLOAD_PROTO_MQTT;
+    /* retry_max_attempts: 0 = unlimited, 1..20 otherwise */
+    if (norm.retry_max_attempts > 20) norm.retry_max_attempts = 20;
+    /* batch_count: 2..20 (1 makes no sense for "batch") */
+    if (norm.batch_count < 2)  norm.batch_count = 2;
+    if (norm.batch_count > 20) norm.batch_count = 20;
+    if (norm.schedule_node_count > CAPTURE_SCHEDULE_MAX_NODES)
+        norm.schedule_node_count = CAPTURE_SCHEDULE_MAX_NODES;
+    for (uint8_t i = 0; i < CAPTURE_SCHEDULE_MAX_NODES; i++) {
+        if (norm.schedule_minutes[i] > 1439) norm.schedule_minutes[i] = 0;
+    }
+    if (norm.keep_sent_hours > CAPUP_KEEP_SENT_MAX_HOURS)
+        norm.keep_sent_hours = CAPUP_KEEP_SENT_MAX_HOURS;
+    if (norm.max_pending_records == 0)  norm.max_pending_records = 200;
+    if (norm.max_pending_records > 1000) norm.max_pending_records = 1000;
+    /* flash_max_records: 0 or out-of-range = default; floor at min */
+    if (norm.flash_max_records == 0 ||
+        norm.flash_max_records > CAPUP_FLASH_RECORDS_MAX) {
+        norm.flash_max_records = CAPUP_FLASH_RECORDS_DEFAULT;
+    }
+    if (norm.flash_max_records < CAPUP_FLASH_RECORDS_MIN) {
+        norm.flash_max_records = CAPUP_FLASH_RECORDS_MIN;
+    }
+
+    /* Cross-field constraints */
+    if (norm.storage == CAPTURE_STORE_NONE && norm.mode != CAPTURE_MODE_INSTANT) {
+        /* "none" only allowed with INSTANT; downgrade to AUTO. */
+        norm.storage = CAPTURE_STORE_AUTO;
+    }
+    if (norm.mode == CAPTURE_MODE_LOCAL_ONLY) {
+        norm.retry_enable = AICAM_FALSE;
+    }
+    if (norm.storage == CAPTURE_STORE_NONE) {
+        norm.retry_enable = AICAM_FALSE;
+    }
+
+    aicam_result_t result = json_config_save_capture_upload_to_nvs(&norm);
+    if (result == AICAM_OK) {
+        memcpy(&g_json_config_ctx.current_config.capture_upload, &norm, sizeof(capture_upload_config_t));
     }
     return result;
 }

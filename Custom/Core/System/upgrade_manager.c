@@ -9,10 +9,12 @@ static SystemState g_sys_state __attribute__ ((aligned (32))) = {0};
 static firmware_partition_t g_partitions[FIRMWARE_TYPE_COUNT] = {
     {FIRMWARE_FSBL, 0, FSBL_BASE - FLASH_BASE, FSBL_BASE - FLASH_BASE, FSBL_SIZE},
     {FIRMWARE_APP, APP_MAGIC, APP1_BASE - FLASH_BASE, APP2_BASE - FLASH_BASE, APP1_SIZE},
-    {FIRMWARE_WEB, WEB_MAGIC, 0x70400000U - FLASH_BASE, 0x70400000U - FLASH_BASE, 0x100000},
-    {FIRMWARE_DEFAULT_AI, AI_MAGIC, AI_DEFAULT_BASE - FLASH_BASE, AI_DEFAULT_BASE - FLASH_BASE, AI_DEFAULT_SIZE},
+    {FIRMWARE_WEB, WEB_MAGIC, WEB_BASE - FLASH_BASE, WEB_BASE - FLASH_BASE, WEB_SIZE},
     {FIRMWARE_AI_1, AI_MAGIC, AI_1_BASE - FLASH_BASE, AI_1_BASE - FLASH_BASE, AI_1_SIZE},
-    {FIRMWARE_RESERVED1, 0, 0, 0, 0},
+    {FIRMWARE_AI_2, AI_MAGIC, AI_2_BASE - FLASH_BASE, AI_2_BASE - FLASH_BASE, AI_2_SIZE},
+    // WiFi firmware: single-slot (A==B) at WIFI_FW_BASE. The OTA header is NOT
+    // written to flash for WiFi (only flash_header_t + .rps), mirroring FSBL.
+    {FIRMWARE_WIFI, WIFI_MAGIC, WIFI_FW_BASE - FLASH_BASE, WIFI_FW_BASE - FLASH_BASE, WIFI_FW_SIZE},
     {FIRMWARE_RESERVED2, 0, 0, 0, 0},
 };
 
@@ -203,7 +205,39 @@ int upgrade_begin(upgrade_handle_t *handle, FirmwareType type, firmware_header_t
     handle->base_offset = update_offset;
     handle->current_offset = 0;
     handle->total_size = header->file_size;
+    handle->direct = 0;
     return 0;
+}
+
+int upgrade_begin_direct(upgrade_handle_t *handle, FirmwareType type, firmware_header_t *header, uint32_t flash_addr)
+{
+    if (!flash_erase || type >= FIRMWARE_TYPE_COUNT || !handle || !header) return -1;
+    if (flash_addr < FLASH_BASE || (flash_addr % FLASH_BLK_SIZE) != 0) return -1;
+    /* Upper bound — defense in depth for the bundle path, whose addresses come
+     * from an externally supplied partition table: the whole erase/write window
+     * [addr, addr + file_size) must stay inside physical flash (RESERVE2 ends
+     * exactly on the chip boundary). Subtraction form so uint32_t cannot wrap;
+     * the addr <= RESERVE2_END guard keeps the right side from underflowing. */
+    if (flash_addr > RESERVE2_END || header->file_size > (RESERVE2_END + 1U) - flash_addr) return -1;
+
+    uint32_t base_offset = flash_addr - FLASH_BASE;
+    size_t erase_blocks = (header->file_size + FLASH_BLK_SIZE - 1) / FLASH_BLK_SIZE;
+    flash_erase(base_offset, erase_blocks);
+
+    handle->type = type;
+    handle->header = header;
+    handle->base_offset = base_offset;
+    handle->current_offset = 0;
+    handle->total_size = header->file_size;
+    handle->direct = 1;
+    return 0;
+}
+
+void upgrade_erase_ota_info(void)
+{
+    if (!flash_erase) return;
+    size_t erase_blocks = (sizeof(SystemState) + FLASH_BLK_SIZE - 1) / FLASH_BLK_SIZE;
+    flash_erase(OTA_BASE - FLASH_BASE, erase_blocks);
 }
 
 int upgrade_write_chunk(upgrade_handle_t *handle, const void *chunk_data, size_t chunk_size)
@@ -224,6 +258,16 @@ int upgrade_finish(upgrade_handle_t *handle)
     if (!flash_read || !handle || !handle->header) return -1;
 
     handle->crc32 = 0xFFFFFFFF;
+
+    // Direct-address writes (bundle layout migration) deliberately skip the
+    // slot bookkeeping: the OTA info partition has been (or is about to be)
+    // blanked, and the rebooted firmware rebuilds SystemState from the new
+    // partition table. Writing the stale in-RAM state back would resurrect
+    // old-layout slot records.
+    if (handle->direct) {
+        return 0;
+    }
+
     // uint8_t buffer[1024];
     // uint32_t remain = handle->total_size;
     // uint32_t offset = handle->base_offset;

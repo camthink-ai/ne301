@@ -19,14 +19,30 @@ TARGET = $(PROJECT_NAME)_App
 MODEL_DIR = ../Model
 BINARY_DIR = Binary
 
-# Local build directory
+# Local build directory. A single dir is guarded by a config stamp: shared
+# sources (mm_shims) compile differently per HALOW_SDK/HALOW_CHIP, and make
+# cannot track flag changes — the stamp check below wipes the directory at
+# parse time whenever the HaLow config changes, so switching trees or chips
+# always produces one clean full build instead of reusing stale objects.
+# (Early ?=s mirror mmx108.mk's defaults so BUILD_DIR resolves before the include.)
+HALOW_SDK ?= mmx108_2_13_1
+HALOW_CHIP ?= mm8108
 BUILD_DIR = build
+
+HALOW_CONFIG_KEY := $(HALOW_SDK):$(HALOW_CHIP)
+ifneq ($(shell cat $(BUILD_DIR)/.halow_config 2>/dev/null),$(HALOW_CONFIG_KEY))
+$(shell rm -rf $(BUILD_DIR) 2>/dev/null)
+$(shell mkdir -p $(BUILD_DIR) 2>/dev/null)
+$(shell echo '$(HALOW_CONFIG_KEY)' > $(BUILD_DIR)/.halow_config 2>/dev/null)
+$(info === HaLow config changed to $(HALOW_CONFIG_KEY): cleaned $(BUILD_DIR) ===)
+endif
 
 ######################################
 # Source Files
 ######################################
 # C source files - Application layer
 C_SOURCES =
+
 C_SOURCES += Core/Src/main.c
 C_SOURCES += Core/Src/syscalls.c
 C_SOURCES += Core/Src/sysmem.c
@@ -43,7 +59,8 @@ C_SOURCES += $(wildcard Core/Src/iwdg.c Core/Src/jpeg.c Core/Src/ramcfg.c)
 C_SOURCES += $(wildcard Core/Src/rng.c Core/Src/rtc.c Core/Src/sai.c)
 C_SOURCES += $(wildcard Core/Src/sdmmc.c Core/Src/spi.c Core/Src/tim.c)
 C_SOURCES += $(wildcard Core/Src/usart.c Core/Src/usb_otg.c Core/Src/venc.c)
-C_SOURCES += $(wildcard Core/Src/wwdg.c Core/Src/xspim.c Core/Src/secure_nsc.c)
+C_SOURCES += $(wildcard Core/Src/wwdg.c Core/Src/secure_nsc.c)
+C_SOURCES += ../FSBL/Core/Src/xspim.c
 C_SOURCES += $(wildcard Core/Src/crc.c)
 
 # Custom - Core
@@ -80,6 +97,8 @@ C_SOURCES += ../Custom/Core/System/ota_header.c
 C_SOURCES += ../Custom/Core/System/power_manager.c
 C_SOURCES += ../Custom/Core/System/scheduler_manager.c
 C_SOURCES += ../Custom/Core/System/upgrade_manager.c
+C_SOURCES += ../Custom/Core/System/ota_bundle.c
+C_SOURCES += ../Custom/Core/System/wake_scheduler.c
 
 # Custom - Core/Video
 C_SOURCES += ../Custom/Core/Video/ai_draw_service.c
@@ -94,14 +113,13 @@ C_SOURCES += ../Custom/Services/Video/video_stream_hub.c
 
 # Custom - Hal
 C_SOURCES += ../Custom/Hal/ai_draw.c
+C_SOURCES += ../Custom/Hal/board_hw.c
 C_SOURCES += ../Custom/Hal/camera.c
 C_SOURCES += ../Custom/Hal/cat1.c
 C_SOURCES += ../Custom/Hal/codec.c
 C_SOURCES += ../Custom/Hal/draw.c
 C_SOURCES += ../Custom/Hal/image_utils.c
 C_SOURCES += ../Custom/Hal/driver_core.c
-C_SOURCES += ../Custom/Hal/Quick_Bootstrap/quick_bootstrap.c
-C_SOURCES += ../Custom/Hal/Quick_Bootstrap/quick_network.c
 C_SOURCES += ../Custom/Hal/Quick_Bootstrap/quick_snapshot.c
 C_SOURCES += ../Custom/Hal/Quick_Bootstrap/quick_storage.c
 C_SOURCES += ../Custom/Hal/drtc.c
@@ -166,6 +184,8 @@ C_SOURCES += ../Custom/Hal/Network/http_client/http_client_test.c
 C_SOURCES += ../Custom/Hal/Network/netif_manager/eg912u_gl_netif.c
 C_SOURCES += ../Custom/Hal/Network/netif_manager/netif_manager.c
 C_SOURCES += ../Custom/Hal/Network/netif_manager/sl_net_netif.c
+C_SOURCES += ../Custom/Hal/Network/netif_manager/chip_id_mac.c
+C_SOURCES += ../Custom/Hal/Network/netif_manager/mm_halow_netif.c
 C_SOURCES += ../Custom/Hal/Network/netif_manager/w5500_netif.c
 C_SOURCES += ../Custom/Hal/Network/netif_manager/usb_ecm_netif.c
 C_SOURCES += ../Custom/Hal/Network/netif_manager/netif_init_manager.c
@@ -188,18 +208,21 @@ C_SOURCES += ../Custom/Services/RTSP/rtsp_server.c
 C_SOURCES += ../Custom/Services/RTSP/rtsp_rtp.c
 C_SOURCES += ../Custom/Services/RTSP/rtsp_digest_auth.c
 C_SOURCES += ../Custom/Services/Webhook/webhook_service.c
+C_SOURCES += ../Custom/Services/Upload/upload_coordinator.c
 C_SOURCES += ../Custom/Services/System/system_service.c
 # video_stream_hub moved to Core/Video
 
 # Custom - Services/Web
 C_SOURCES += ../Custom/Services/Web/web_api.c
 C_SOURCES += ../Custom/Services/Web/web_assets.c
+C_SOURCES += ../Custom/Services/Web/web_recovery.c
 C_SOURCES += ../Custom/Services/Web/web_server.c
 C_SOURCES += ../Custom/Services/Web/web_service.c
 C_SOURCES += ../Custom/Services/Web/websocket_stream_server.c
 C_SOURCES += ../Custom/Services/Web/api/api_ai_management_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_auth_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_device_module.c
+C_SOURCES += ../Custom/Services/Web/api/api_file_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_model_validation_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_mqtt_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_network_module.c
@@ -207,6 +230,7 @@ C_SOURCES += ../Custom/Services/Web/api/api_ota_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_rtmp_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_rtsp_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_webhook_module.c
+C_SOURCES += ../Custom/Services/Web/api/api_capture_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_preview_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_work_mode_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_business_error.c
@@ -283,56 +307,6 @@ C_SOURCES += $(wildcard ../Custom/Common/Lib/lwip/netif/*.c)
 C_SOURCES += $(wildcard ../Custom/Common/Lib/lwip/netif/ppp/*.c)
 C_SOURCES += $(wildcard ../Custom/Common/Lib/lwip/netif/ppp/polarssl/*.c)
 C_SOURCES += ../Custom/Common/Lib/lwip/port/sys_arch.c
-
-# Custom - Common/Lib/si91x
-C_SOURCES += ../Custom/Common/Lib/si91x/common/src/sl_slist.c
-C_SOURCES += ../Custom/Common/Lib/si91x/common/src/sl_utility.c
-C_SOURCES += ../Custom/Common/Lib/si91x/common/src/sli_wifi_command_engine.c
-C_SOURCES += ../Custom/Common/Lib/si91x/protocol/ble/src/rsi_ble_gap_apis.c
-C_SOURCES += ../Custom/Common/Lib/si91x/protocol/ble/src/rsi_ble_gatt_apis.c
-C_SOURCES += ../Custom/Common/Lib/si91x/protocol/ble/src/rsi_bt_ble.c
-C_SOURCES += ../Custom/Common/Lib/si91x/protocol/ble/src/rsi_bt_common_apis.c
-C_SOURCES += ../Custom/Common/Lib/si91x/protocol/ble/src/rsi_common_apis.c
-C_SOURCES += ../Custom/Common/Lib/si91x/protocol/ble/src/rsi_utils.c
-C_SOURCES += ../Custom/Common/Lib/si91x/protocol/ble/src/sl_si91x_ble.c
-C_SOURCES += ../Custom/Common/Lib/si91x/protocol/wifi/src/sl_wifi.c
-C_SOURCES += ../Custom/Common/Lib/si91x/protocol/wifi/src/sl_wifi_basic_credentials.c
-C_SOURCES += ../Custom/Common/Lib/si91x/protocol/wifi/src/sl_wifi_callback_framework.c
-C_SOURCES += ../Custom/Common/Lib/si91x/service/si91x/sl_http_client.c
-C_SOURCES += ../Custom/Common/Lib/si91x/service/si91x/sl_mdns.c
-C_SOURCES += ../Custom/Common/Lib/si91x/service/si91x/sl_mqtt_client.c
-# C_SOURCES += ../Custom/Common/Lib/si91x/service/si91x/sl_net_si91x.c  # Excluded per .cproject
-C_SOURCES += ../Custom/Common/Lib/si91x/service/si91x/sl_si91x_bsd_socket.c
-C_SOURCES += ../Custom/Common/Lib/si91x/service/si91x/sl_sntp.c
-C_SOURCES += ../Custom/Common/Lib/si91x/service/si91x/sli_net_common_utility.c
-C_SOURCES += ../Custom/Common/Lib/si91x/service/src/sl_http_server.c
-C_SOURCES += ../Custom/Common/Lib/si91x/service/src/sl_net.c
-C_SOURCES += ../Custom/Common/Lib/si91x/service/src/sl_net_basic_certificate_store.c
-C_SOURCES += ../Custom/Common/Lib/si91x/service/src/sl_net_basic_profiles.c
-C_SOURCES += ../Custom/Common/Lib/si91x/service/src/sl_net_credentials.c
-C_SOURCES += ../Custom/Common/Lib/si91x/service/src/sl_websocket_client.c
-C_SOURCES += ../Custom/Common/Lib/si91x/silabs_utility/src/sl_mem_pool.c
-C_SOURCES += ../Custom/Common/Lib/si91x/silabs_utility/src/sl_string.c
-C_SOURCES += ../Custom/Common/Lib/si91x/silabs_utility/src/sli_cmsis_os2_ext_task_register.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/firmware_upgradation.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/mem_pool_buffer_quota.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/sl_net_ping.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/sl_net_rsi_utility.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/sl_net_si91x_callback_framework.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/sl_net_si91x_integration_handler.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/sl_rsi_utility.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/sl_si91x_driver.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/sl_si91x_errno.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/sl_si91x_http_client_callback_framework.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/sl_si91x_ncp_driver.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/sl_si91x_net_credentials.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/sl_si91x_net_internal_stack.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/sl_si91x_socket.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/sl_si91x_socket_utility.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/sl_si91x_spi.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/sli_net_si91x_utility.c
-C_SOURCES += ../Custom/Common/Lib/si91x/wireless/src/sli_si91x_wifi_event_handler.c
-# Excluded: sli_si91x_multithreaded.c per .cproject
 
 # GCC support files
 C_SOURCES += ../Gcc/Src/console.c
@@ -608,7 +582,7 @@ ASM_SOURCES_S += ../Middlewares/ST/threadx/ports/cortex_M55/gnu/src/tx_timer_int
 # C Compiler Defines (Organized by Category)
 ######################################
 C_DEFS = $(COMMON_DEFS)
-C_DEFS += -DBOOT_IN_PSRAM
+C_DEFS += -DXSPI_SKIP_XSPIM_CONFIG
 # C_DEFS += -DSTM32N6_DK_BOARD
 
 # Basic
@@ -620,6 +594,22 @@ C_DEFS += -DUSE_MEMORY_POOL_ALLOCATION
 C_DEFS += -DUSE_OS04C10_SENSOR
 C_DEFS += -DSTM32_THREAD_SAFE_STRATEGY=2
 C_DEFS += -DENABLE_U0_MODULE=1
+# CLI fault injection on the Si91x SPI4 host transfer (validated 2026-08-17):
+# arms "ifconfig wl error_test dma_once|dma_ff|dma_off" — dma_ff = dead bus
+# (all-0xFF reads): simulates a fully dead NWP so recovery re-init fails at
+# C1C2 before submitting an RX buffer.
+# C_DEFS += -DSIMULATION_SPI4_DMA_ERROR
+# CLI fault injection: SDK dequeue-fail spin (test-only): arms
+# "ifconfig wl error_test sdk_qkill|sdk_qclear" — qkill force-fails dequeue on
+# non-empty queues; the drain loops `continue` without advancing, and one
+# failing dequeue inside the 0x19 recovery churn converts the zombie into the
+# full field death (validated 2026-08-26: 0x19 x30 -> recovery -> zombie ->
+# console dead, no watchdog reset, ~90s). THE reproducer for validating the
+# spin fixes; sdk_qclear disarms.
+# C_DEFS += -DSIMULATION_SDK_SPIN_ERROR
+# RELEASE NOTE: re-comment the SIMULATION_* lines above before any release
+# build (test-only fault injections; pool/nwp_mute/hal_spin/flagkill variants
+# were verified useless in the 0x19 hunt and removed 2026-08-26).
 # C_DEFS += -DISP_MW_TUNING_TOOL_SUPPORT
 
 # AI Runtime
@@ -658,6 +648,10 @@ C_DEFS += -DUX_HOST_CLASS_NETWORK_NO_NX
 C_DEFS += '-DMBEDTLS_CONFIG_FILE="config-ccm-psk-tls1_2.h"'
 C_DEFS += -DUSE_HAL_HASH_SUSPEND_RESUME=1
 C_DEFS += -DUSE_HAL_CRYP_SUSPEND_RESUME=1
+C_DEFS += -DMBEDTLS_SHA512_C
+C_DEFS += -DMBEDTLS_SHA384_C
+C_DEFS += -DMBEDTLS_PKCS5_C
+C_DEFS += -DMBEDTLS_CMAC_C
 
 # Mongoose
 C_DEFS += -DMG_ARCH=MG_ARCH_CMSIS_RTOS2
@@ -669,23 +663,6 @@ C_DEFS += -DSTM32N6
 
 # Video Encoder - increase HW timeout (default 100ms may be too short)
 C_DEFS += -DEWL_TIMEOUT=500UL
-
-# Si91x WiFi
-C_DEFS += -DSLI_SI917
-C_DEFS += -DSL_CATALOG_FREERTOS_KERNEL_PRESENT
-C_DEFS += -DSL_NET_COMPONENT_INCLUDED
-C_DEFS += -DSL_WIFI_COMPONENT_INCLUDED
-C_DEFS += -DSL_SI91X_SPI_HIGH_SPEED_ENABLE
-C_DEFS += -DSLI_SI91X_SOCKETS
-C_DEFS += -DSL_SI91X_EVENT_HANDLER_STACK_SIZE=3072
-C_DEFS += -DSLI_SI91X_OFFLOAD_NETWORK_STACK
-C_DEFS += -DSLI_SI91X_EMBEDDED_MQTT_CLIENT
-C_DEFS += -DSLI_SI91X_CONFIG_WIFI6_PARAMS=1
-C_DEFS += -DSLI_SI91X_NETWORK_DUAL_STACK_
-# C_DEFS += -DSLI_SI91X_ENABLE_BLE
-C_DEFS += -DSL_SI91X_ENABLE_LITTLE_ENDIAN
-C_DEFS += -DSPI_EXTENDED_TX_LEN_2K
-# C_DEFS += -DSLI_SI91X_SIMULATION_C1C2_ERROR
 
 ######################################
 # ISP Tuning Tool / USBX Integration
@@ -819,19 +796,13 @@ C_INCLUDES += -I../Custom/Common/Lib/mpool
 C_INCLUDES += -I../Custom/Common/Lib/nvs
 C_INCLUDES += -I../Custom/Common/Lib/PahoMqtt
 C_INCLUDES += -I../Custom/Common/Lib/pp
-C_INCLUDES += -I../Custom/Common/Lib/si91x
-C_INCLUDES += -I../Custom/Common/Lib/si91x/common/inc
-C_INCLUDES += -I../Custom/Common/Lib/si91x/protocol/ble/inc
-C_INCLUDES += -I../Custom/Common/Lib/si91x/protocol/wifi/inc
-C_INCLUDES += -I../Custom/Common/Lib/si91x/service/inc
-C_INCLUDES += -I../Custom/Common/Lib/si91x/silabs_utility/inc
-C_INCLUDES += -I../Custom/Common/Lib/si91x/wireless/inc
 C_INCLUDES += -I../Custom/Common/Lib/ms_bridging
 C_INCLUDES += -I../Custom/Hal/Network/rtmp_push_client
 C_INCLUDES += -I../Custom/Common/Lib/rtmpdump
 C_INCLUDES += -I../Custom/Common/Lib/rtmpdump/librtmp
 C_INCLUDES += -I../Custom/Services/RTSP
 C_INCLUDES += -I../Custom/Services/Webhook
+C_INCLUDES += -I../Custom/Services/Upload
 
 # Drivers - HAL & CMSIS
 C_INCLUDES += -I../Drivers/STM32N6xx_HAL_Driver/Inc
@@ -900,7 +871,7 @@ C_INCLUDES += -I../Secure_nsclib
 # Compiler and Linker Flags
 ######################################
 # C compiler flags (inherits COMMON_CFLAGS)
-CFLAGS = $(COMMON_CFLAGS) $(C_DEFS) $(C_INCLUDES)
+CFLAGS = $(COMMON_CFLAGS) $(C_DEFS) $(C_DEFS_EXTRA) $(C_INCLUDES)
 # Generate dependency information
 CFLAGS += -MMD -MP -MF"$(@:%.o=%.d)"
 # CMSE support for App
@@ -942,6 +913,14 @@ LDFLAGS += -Wl,--out-implib=$(BUILD_DIR)/secure_nsclib.o
 # Link libraries with start-group/end-group for circular dependencies
 LDFLAGS += -Wl,--start-group $(LIBS) -Wl,--end-group
 
+##################################################################
+# WiseConnect SDK. Was: SiliconLabs_SDK (v4.0.2). Switched to the
+# 4.1.1 port (Custom/Hal now uses 4.1.1 APIs: sli_wifi_send_command,
+# sli_buffer_manager_free_buffer, rx_irq bus model). Rollback to 4.0.2
+# = git revert the 4.1.1 port commit (restores SDK tree + Custom/Hal + this line).
+include ../Custom/Common/Lib/SiliconLabs_SDK_4_1_1/silabs_sdk.mk
+include ../Custom/Common/Lib/mmx108/mmx108.mk
+
 ######################################
 # Build Targets
 ######################################
@@ -964,14 +943,16 @@ build-dirs: $(BUILD_DIR)
 # Make all objects depend on directories
 $(OBJECTS): | build-dirs
 
-# Compile C source files
-$(BUILD_DIR)/%.o: %.c Makefile
+# Compile C source files (CFLAGS via @response file: Windows CMD ~8191 char limit)
+$(BUILD_DIR)/%.o: %.c Makefile | build-dirs
 	@echo "CC $<"
-	@$(CC) -c $(CFLAGS) -Wa,-a,-ad,-alms=$(BUILD_DIR)/$(notdir $(<:.c=.lst)) $< -o $@
+	@$(file >$@.rsp,$(CFLAGS) -Wa,-a,-ad,-alms=$(BUILD_DIR)/$(notdir $(<:.c=.lst)))
+	@$(CC) -c @$@.rsp $< -o $@
 
-$(BUILD_DIR)/%.o: ../%.c Makefile
+$(BUILD_DIR)/%.o: ../%.c Makefile | build-dirs
 	@echo "CC $<"
-	@$(CC) -c $(CFLAGS) -Wa,-a,-ad,-alms=$(BUILD_DIR)/$(notdir $(<:.c=.lst)) $< -o $@
+	@$(file >$@.rsp,$(CFLAGS) -Wa,-a,-ad,-alms=$(BUILD_DIR)/$(notdir $(<:.c=.lst)))
+	@$(CC) -c @$@.rsp $< -o $@
 
 # Compile assembly source files (.S)
 $(BUILD_DIR)/%.o: %.S Makefile

@@ -708,7 +708,7 @@ static aicam_result_t video_ai_node_load_model_active(video_node_t *node) {
     }
     
 
-    uintptr_t model_ptr = json_config_get_ai_1_active() ? AI_1_BASE + 1024 : AI_DEFAULT_BASE + 1024;
+    uintptr_t model_ptr = json_config_get_ai_1_active() ? AI_2_BASE + 1024 : AI_1_BASE + 1024;
     LOG_CORE_INFO("Load model from %p", model_ptr);
     int nn_ret = nn_load_model(model_ptr);
     if(nn_ret != 0) {
@@ -786,7 +786,7 @@ static aicam_result_t video_ai_node_init_callback(video_node_t *node) {
     pipe_param.fps = data->config.fps;
     pipe_param.format = data->config.input_format;
     pipe_param.bpp = data->config.bpp;
-    pipe_param.buffer_nb = 2;
+    pipe_param.buffer_nb = 3;
     printf("Set pipe2 param: %dx%d@%dfps, format=%d, bpp=%d\r\n",
                  pipe_param.width, pipe_param.height, pipe_param.fps, pipe_param.format, pipe_param.bpp);
     device_ioctl(camera_dev, CAM_CMD_SET_PIPE2_PARAM, (uint8_t*)&pipe_param, sizeof(pipe_params_t));

@@ -9,6 +9,7 @@
 #include "mem.h"
 #include "w5500.h"
 #include "w5500_netif.h"
+#include "chip_id_mac.h"
 
 #define W5500_EVENT_INTERRUPT               (1 << 0)
 #define W5500_EVENT_INT_SEND_OK             (1 << 1)
@@ -191,37 +192,9 @@ static err_t w5500_ethernetif_init(struct netif *netif)
 /// @param mac Generated MAC address
 static void w5500_net_get_chip_mac(uint8_t *mac)
 {
-    int i = 0;
-    uint8_t chip_id_bytes[12] = {0};
-    uint32_t chip_id[3] = {0};
-    uint32_t ui_mcu_id = 0;
-
-    chip_id[0] = *(uint32_t *)(UID_BASE);
-    chip_id[1] = *(uint32_t *)(UID_BASE + 4);
-    chip_id[2] = *(uint32_t *)(UID_BASE + 8);
-
-    W5500_LOGD("MCU UID: %08lX-%08lX-%08lX", chip_id[0], chip_id[1], chip_id[2]);
-    ui_mcu_id = (chip_id[0]>>1) + (chip_id[1]>>2) + (chip_id[2]>>3);
-
-    for(i = 0; i < 3; i++) {
-		chip_id_bytes[4 * i] += (uint8_t)(chip_id[i] & 0xFF);	
-        chip_id_bytes[4 * i + 1] += (uint8_t)((chip_id[i] >> 8) & 0xFF);	
-        chip_id_bytes[4 * i + 2] += (uint8_t)((chip_id[i] >> 16) & 0xFF);	
-        chip_id_bytes[4 * i + 3] += (uint8_t)((chip_id[i] >> 24) & 0xFF);	
-	}
-
-    mac[0] = (uint8_t)(ui_mcu_id & 0xFC);
-	mac[1] = (uint8_t)((ui_mcu_id >> 8) & 0xFF);	
-	mac[2] = (uint8_t)((ui_mcu_id >> 16) & 0xFF);	
-	mac[3] = (uint8_t)((ui_mcu_id >> 24) & 0xFF);	
-    mac[4] = 0;
-    mac[5] = 0;
-    for(i = 0; i < 12; i++) {
-		mac[4] += chip_id_bytes[i];	
-	}
-	for(i = 0; i < 12; i++) {
-		mac[5] ^= chip_id_bytes[i];		
-	}
+    netif_chip_id_get_mac(mac, NETIF_CHIP_MAC_W5500);
+    W5500_LOGD("MCU chip MAC: %02X:%02X:%02X:%02X:%02X:%02X",
+               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
 extern void netif_manager_change_default_if(void);

@@ -50,12 +50,19 @@ int mbedtls_alt_mutex_unlock(mbedtls_threading_mutex_t * mutex)
     return ret;
 }
 
+static unsigned mbedtls_threading_alt_inited;
+
 void mbedtls_threading_alt_init(void)
 {
+    if (mbedtls_threading_alt_inited != 0u) {
+        return;
+    }
+
     mbedtls_threading_set_alt(mbedtls_alt_mutex_init,
                                mbedtls_alt_mutex_free,
                                mbedtls_alt_mutex_lock,
                                mbedtls_alt_mutex_unlock);
+    mbedtls_threading_alt_inited = 1u;
 }
 
 void mbedtls_threading_alt_deinit(void)

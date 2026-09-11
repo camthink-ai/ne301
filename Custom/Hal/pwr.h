@@ -14,6 +14,8 @@
 #define PWR_PIR_NAME            "pir"
 #define PWR_USB_NAME            "usb"
 #define PWR_CAT1_NAME           "cat1"
+/** HaLow (Morse mmx108) shares Cat1 external supply: PWR_CAT1_ON + PWR_EXT_SWITCH_BIT */
+#define PWR_HALOW_NAME          PWR_CAT1_NAME
 #define PWR_TF_NAME             "tf"
 #define PWR_WIFI                "wifi"
 #define PWR_IOGROUP             "iogroup"

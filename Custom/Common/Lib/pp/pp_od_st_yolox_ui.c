@@ -215,6 +215,9 @@ static int32_t init(const char *json_str, void **pp_params, void *nn_inst)
                          params->grid_width_L * params->grid_height_L +
                          params->grid_width_M * params->grid_height_M +
                          params->grid_width_S * params->grid_height_S);
+    /* ne301: decode is capped at max_boxes_limit (od_pp_st_yolox.c): keep the
+     * cap in sync with the allocated buffer size. */
+    params->max_boxes_limit = (int32_t)boxes_limit;
     // Allocate per-instance output buffers
     pp_ctx->od_pp_buffer = (od_pp_outBuffer_t *)hal_mem_alloc_large(sizeof(od_pp_outBuffer_t) * boxes_limit);
     pp_ctx->od_detect_buffer = (od_detect_t *)hal_mem_alloc_large(sizeof(od_detect_t) * boxes_limit);

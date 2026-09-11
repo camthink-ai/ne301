@@ -21,7 +21,7 @@
 #include "mem_map.h"
 #include "rs485_driver.h"
 #include "storage.h"
-#include "xspim.h"
+#include "../FSBL/Core/Inc/xspim.h"
 #include "crc.h"
 
 static int create_file(const char* filename, const void* data, size_t data_size);
@@ -1000,11 +1000,11 @@ static int video_cmd(int argc, char* argv[])
             LOG_SIMPLE("ai has started\r\n");
             return -1;
         }
-        // uint32_t model_address = AI_DEFAULT_BASE;
+        // uint32_t model_address = AI_1_BASE;
 
         // if(argc > 2){
         //     if(strcmp(argv[2], "1") == 0){
-        //         model_address = AI_1_BASE;
+        //         model_address = AI_2_BASE;
         //     }
         // }
         // /*========= model load =========*/

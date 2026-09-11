@@ -35,6 +35,11 @@ typedef struct {
 #define IPERF_DEFAULT_BUFSZ                     (8 * 1024)
 #define IPERF_DEFAULT_RUN_TIME_SECONDS          10
 #define IPERF_DEFAULT_PRINT_INTERVAL_SECONDS    1
+/* Blocking-send cap. Without it a send() that straddles the last free TCP
+ * window space parks forever on lwIP's write semaphore once the peer has
+ * vanished (no ACKs ever re-open the window) — the task then ignores both
+ * -t and -x. Timeout is retried, not fatal, so a slow window only delays. */
+#define IPERF_SEND_TIMEOUT_MS                   5000
 static volatile uint8_t iperf_status[2] = {0};
 
 static void iperf_server_recv(int client_sock, uint8_t *recv_buf, uint32_t rlen, int print_interval_seconds)
@@ -226,6 +231,11 @@ static void iperf_client(void *args)
         goto iperf_client_end;
     }
 
+    if (!iperf_arg->is_udp) {
+        int snd_timeout_ms = IPERF_SEND_TIMEOUT_MS;
+        setsockopt(client_sock, SOL_SOCKET, SO_SNDTIMEO, &snd_timeout_ms, sizeof(snd_timeout_ms));
+    }
+
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(lwip_port_rand() % 0xfffe + 1);
@@ -272,6 +282,13 @@ static void iperf_client(void *args)
             while (remain > 0) {
                 if (iperf_status[0] == 2) break;
 
+                /* Deadline must hold inside the partial-write loop too: a
+                 * trickling window would otherwise spin here past -t. */
+                now_tick = sys_now();
+                diff_tick = now_tick < start_tick ? ((portMAX_DELAY - start_tick) + now_tick) : (now_tick - start_tick);
+                if (pdTICKS_TO_MS(diff_tick) >= (uint32_t)iperf_arg->run_time_seconds * 1000)
+                    goto iperf_client_end;
+
                 ret = iperf_wait_socket_writable(client_sock, 200);
                 if (ret == 0) {
                     LOG_SIMPLE("send delay!");
@@ -291,7 +308,10 @@ static void iperf_client(void *args)
             }
         }
         if (ret <= 0) {
-            if (errno != EAGAIN) {
+            /* EAGAIN/ETIMEDOUT = window closed or send timeout: retry until
+             * -t or -x decides. Anything else (reset, pipe, abort) is a dead
+             * peer — bail out. */
+            if (errno != EAGAIN && errno != ETIMEDOUT) {
                 LOG_SIMPLE("send failed!(errno = %d)", errno);
                 goto iperf_client_end;
             }
@@ -472,7 +492,10 @@ int iperf_test_cmd_deal(int argc, char* argv[])
 
     if (is_server) {
         if (is_exit) {
-            if (iperf_status[1] != 1) {
+            /* Accept the stop request from any non-idle state (1 = running,
+             * 2 = stop already pending): rejecting status 2 wedged the CLI
+             * when the task was blocked and never consumed the first stop. */
+            if (iperf_status[1] == 0) {
                 LOG_SIMPLE("iperf server already stopped");
                 hal_mem_free(iperf_arg);
                 return -2;
@@ -493,7 +516,7 @@ int iperf_test_cmd_deal(int argc, char* argv[])
         }
     } else {
         if (is_exit) {
-            if (iperf_status[0] != 1) {
+            if (iperf_status[0] == 0) {
                 LOG_SIMPLE("iperf client already stopped");
                 hal_mem_free(iperf_arg);
                 return -2;

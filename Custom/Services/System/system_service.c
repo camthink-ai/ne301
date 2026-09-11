@@ -5,18 +5,20 @@
  *         Integrated with json_config_mgr for configuration management
  */
 
- #include "system_service.h"
- #include "buffer_mgr.h"
- #include "debug.h"
- #include "drtc.h"
- #include "json_config_mgr.h"
- #include "device_service.h"
- #include "u0_module.h"
- #include "ms_bridging.h"
- #include "mqtt_service.h"
- #include <string.h>
- #include <stdlib.h>
- #include <time.h>
+#include "system_service.h"
+#include "buffer_mgr.h"
+#include "debug.h"
+#include "drtc.h"
+#include "json_config_mgr.h"
+#include "device_service.h"
+#if ENABLE_U0_MODULE
+#include "u0_module.h"
+#endif
+#include "ms_bridging.h"
+#include "mqtt_service.h"
+#include <string.h>
+#include <stdlib.h>
+#include <time.h>
 #include "ai_service.h"
 #include "device_service.h"
 #include "service_init.h"
@@ -26,10 +28,14 @@
 #include "web_service.h"
 #include "ai_draw_service.h"
 #include "nn.h"
+#include "drtc.h"
 #include "quick_snapshot.h"
 #include "cJSON.h"
 #include "webhook_service.h"
-#include "api_ota_module.h" 
+#include "upload_coordinator.h"
+#include "wake_scheduler.h"
+#include "api_ota_module.h"
+#include "Services/Video/video_stream_hub.h"
  
  /* ==================== System Controller Implementation ==================== */
  
@@ -669,7 +675,12 @@ static aicam_result_t unregister_pir_runtime_callback(void);
      if (!controller || !controller->is_initialized) {
          return AICAM_ERROR_INVALID_PARAM;
      }
-     
+
+     /* RTMP/RTSP APIs save video_stream_mode straight to NVS without
+      * touching this RAM copy; refresh it from NVS so this full write
+      * doesn't clobber those values with boot-time stale ones. */
+     (void)json_config_get_video_stream_mode(&controller->work_config.video_stream_mode);
+
      // Save configuration to json_config_mgr (includes NVS persistence)
      aicam_result_t config_result = json_config_set_work_mode_config(&controller->work_config);
      if (config_result != AICAM_OK) {
@@ -872,6 +883,11 @@ static aicam_result_t unregister_pir_runtime_callback(void);
   * @brief Timer trigger callback function for RTC scheduled tasks
   * @param user_data Pointer to system controller
   */
+/* Dedup-guarded chain capture + node timestamp helper (defined after the
+ * lattice helpers below). */
+static void guarded_chain_capture(system_controller_t *controller, uint64_t node_ts);
+static uint64_t node_abs_ts(uint32_t node_sod);
+
  static void timer_trigger_callback(void *user_data)
  {
      system_controller_t *controller = (system_controller_t *)user_data;
@@ -883,13 +899,29 @@ static aicam_result_t unregister_pir_runtime_callback(void);
      controller->timer_task_count++;
      LOG_SVC_INFO("Timer trigger activated (count: %lu)", controller->timer_task_count);
 
-     // Call the registered capture callback if available
-     if (controller->capture_callback) {
-         controller->capture_callback(CAPTURE_TRIGGER_RTC, controller->capture_callback_user_data);
+     /* Same dedup as the interval chain: find the configured time_node this
+      * job fired for (nearest by circular distance, must be within the wake
+      * tolerance of now) and skip the capture if the early-wake path already
+      * took that node. */
+     const timer_trigger_config_t *tc = &controller->work_config.timer_trigger;
+     RTC_TIME_S now_rtc = rtc_get_time();
+     uint32_t now_sec = now_rtc.hour * 3600 + now_rtc.minute * 60 + now_rtc.second;
+     uint64_t node_ts = 0;
+     uint32_t best_dist = WAKE_TOLERANCE_SEC + 1u;
+     uint32_t best_sod = 0;
+     for (uint32_t i = 0; i < tc->time_node_count && i < 10; i++) {
+         uint32_t d1 = (now_sec + 86400u - tc->time_node[i]) % 86400u;
+         uint32_t d = (d1 < 86400u - d1) ? d1 : (86400u - d1);
+         if (d < best_dist) {
+             best_dist = d;
+             best_sod = tc->time_node[i];
+         }
      }
-     else {
-         LOG_SVC_ERROR("No capture callback registered");
+     if (best_dist <= WAKE_TOLERANCE_SEC) {
+         node_ts = node_abs_ts(best_sod);
      }
+
+     guarded_chain_capture(controller, node_ts);
 
      // Update activity time to prevent power mode timeout during capture
      system_controller_update_activity(controller);
@@ -929,30 +961,135 @@ static aicam_result_t register_rtc_trigger_locked(system_controller_t *controlle
 }
 
 /**
- * @brief Calculate next trigger for scheduled_interval mode (continuous 24-hour cycle)
- * Schedule is a continuous cycle anchored at start_time with fixed interval, wrapping past midnight.
- * Example: start=8:00, interval=7min → points are 8:00, 8:07, ..., 23:59, 0:06, ..., 7:55, 8:00, ...
+ * @brief Calculate next trigger for scheduled_interval mode
+ * Daily window [start_time, end_time): end==0 -> full day (legacy configs),
+ * end>start -> same-day window, end<start -> window wraps past midnight
+ * (e.g. start=20:00 end=06:00). Inside the window the points are
+ * start + k*interval; the lattice restarts at start_time every day, so after
+ * the day's last point the next trigger is (possibly tomorrow's) start_time.
+ * @param end_time_sec  seconds-since-midnight window end (== start = full day;
+ *                      otherwise the window is CLOSED — a node landing exactly
+ *                      on end_time fires; 00:00 with start > 00:00 ends at
+ *                      midnight)
  * @return Seconds-since-midnight of next trigger
  */
 static uint32_t calculate_next_scheduled_interval_trigger(
-    uint32_t start_time_sec, uint32_t interval_sec, uint32_t now_sec)
+    uint32_t start_time_sec, uint32_t end_time_sec, uint32_t interval_sec, uint32_t now_sec)
 {
     if (interval_sec == 0) return start_time_sec;
 
-    // Position within the 24-hour cycle relative to anchor
+    /* Inclusive window length: windows are CLOSED (a grid node landing
+     * exactly on end_time fires — raw span + 1 so the strict `<` below
+     * includes the end second). end == start is NORMAL MODE'S internal
+     * full-day representation (scheduled mode's web API rejects equal
+     * start/end) and stays half-open at 86400 so adjacent days tile
+     * without a shared boundary node. A smaller end — including 00:00 —
+     * wraps past midnight. */
+    uint32_t window = 86400;
+    if (end_time_sec != start_time_sec) {
+        window = (end_time_sec > start_time_sec)
+               ? (end_time_sec - start_time_sec + 1)
+               : (end_time_sec + 86400 - start_time_sec + 1);
+    }
+
+    // Position within the day relative to window start
     uint32_t cycle_now = (now_sec - start_time_sec + 86400) % 86400;
-    // Next interval boundary within the cycle
+    // Next interval boundary within the window
     uint32_t cycle_next = (cycle_now / interval_sec + 1) * interval_sec;
 
-    if (cycle_next >= 86400) {
-        // Wrap around: next trigger is at start_time (cycle boundary resets)
+    if (cycle_next >= window) {
+        // Window exhausted: next trigger is the next window start. Returning
+        // start_time_sec means "today's start" — callers detect the wrap via
+        // "returned value <= now_sec" and move it to tomorrow.
         return start_time_sec;
     }
     return (start_time_sec + cycle_next) % 86400;
 }
 
 /**
- * @brief Scheduled interval timer callback — fires capture, then re-registers next
+ * @brief Resolve the daily lattice window for INTERVAL mode, shared by both
+ *        interval modes. Scheduled: [start_time, end_time) (end == start =
+ *        full day, may wrap past midnight). Normal: the anchor_time
+ *        seconds-of-day grid start with a full-day window (anchor 11:00 /
+ *        5h interval -> 11:00 16:00 21:00 02:00 07:00, restarting at 11:00
+ *        every day).
+ */
+static void interval_capture_window(const timer_trigger_config_t *tc,
+                                    uint32_t *start_sec, uint32_t *end_sec)
+{
+    if (tc->interval_mode == AICAM_TIMER_INTERVAL_MODE_SCHEDULED) {
+        *start_sec = tc->start_time;
+        *end_sec = tc->end_time;
+    } else {
+        *start_sec = tc->anchor_time;
+        *end_sec = *start_sec;
+    }
+}
+
+/* Midnight-anchored absolute timestamp for a seconds-of-day node — the same
+ * construction wake_scheduler's collectors use (now_ts - local sec-of-day),
+ * so the result compares equal against the NVS handled markers. 0 = RTC
+ * invalid. */
+static uint64_t node_abs_ts(uint32_t node_sod)
+{
+    RTC_TIME_S r = rtc_get_time();
+    uint64_t now_ts = rtc_get_timeStamp();
+    uint32_t sod = r.hour * 3600 + r.minute * 60 + r.second;
+    if (now_ts <= sod) return 0;
+    uint64_t t = (now_ts - sod) + node_sod;
+    /* Snap to the instance of this daily node_sod NEAREST to now: callers
+     * only ask for nodes within ±WAKE_TOLERANCE_SEC of the clock, but a
+     * node_sod straddling midnight built on the current day's midnight
+     * lands on the wrong side — a 00:00 node claimed from 23:59:xx gets
+     * TODAY 00:00 (24h early), a 23:5x node from 00:00:xx gets 24h late.
+     * A constructed time more than 12h away from now is the adjacent
+     * day's instance; shift it so the dedup marker compares against the
+     * node the trigger really fired for (healed_handled_at would
+     * otherwise read a legitimate forward marker as poison and clear it). */
+    if (t + 43200u < now_ts) {
+        t += 86400u;
+    } else if (now_ts + 43200u < t && t >= 86400u) {
+        t -= 86400u;
+    }
+    return t;
+}
+
+/**
+ * @brief Dedup-guarded capture for the RTC job-chain callbacks.
+ *
+ * The U0-wake path (process_u0_wakeup_flag) captures nodes that fall inside
+ * the ±WAKE_TOLERANCE_SEC window — i.e. up to 60 s EARLY — and marks the
+ * node's due time handled (NVS-persisted before its drain). The job chain
+ * registered at boot is NOT marker-aware, so if the device stays awake past
+ * the exact node time (slow capture pipeline, long drain, delayed sleep),
+ * the chain job fires again and the SAME node gets a second photo. Guard
+ * both directions: skip when the node is already marked, and mark after the
+ * chain takes it so a wake landing in the node's window doesn't re-judge it
+ * due. node_ts == 0 (RTC invalid / now not within tolerance of a node)
+ * degrades to the old unconditional fire.
+ */
+static void guarded_chain_capture(system_controller_t *controller,
+                                  uint64_t node_ts)
+{
+    if (node_ts != 0 && wake_scheduler_is_handled(WAKE_DUTY_CAPTURE, node_ts)) {
+        LOG_SVC_INFO("Capture node %lu already handled (early-wake capture) - skip duplicate",
+                     (unsigned long)node_ts);
+        return;
+    }
+    if (controller->capture_callback) {
+        controller->capture_callback(CAPTURE_TRIGGER_RTC,
+                                     controller->capture_callback_user_data);
+    } else {
+        LOG_SVC_ERROR("No capture callback registered");
+    }
+    if (node_ts != 0) {
+        wake_scheduler_mark_handled(WAKE_DUTY_CAPTURE, node_ts);
+        wake_scheduler_flush_state();
+    }
+}
+
+/**
+ * @brief Scheduled interval timer callback - fires capture, then re-registers next
  * @note Called from within scheduler_handle_event which holds the scheduler lock,
  *       so we must use _locked variants and skip unregister (REPEAT_ONCE auto-deletes).
  */
@@ -964,18 +1101,44 @@ static void scheduled_interval_timer_callback(void *user_data)
     controller->timer_task_count++;
     LOG_SVC_INFO("Scheduled interval timer triggered (count: %lu)", controller->timer_task_count);
 
-    // Perform capture
-    if (controller->capture_callback) {
-        controller->capture_callback(CAPTURE_TRIGGER_RTC, controller->capture_callback_user_data);
-    }
-
-    // Calculate and register next trigger
     const timer_trigger_config_t *tc = &controller->work_config.timer_trigger;
     RTC_TIME_S now_rtc = rtc_get_time();
     uint32_t now_sec = now_rtc.hour * 3600 + now_rtc.minute * 60 + now_rtc.second;
-    uint32_t next = calculate_next_scheduled_interval_trigger(tc->start_time, tc->interval_sec, now_sec);
 
-    // REPEAT_ONCE job is already auto-deleted by process_wakeup_jobs — no unregister needed.
+    /* Which lattice node did this job fire for? Align now onto the daily
+     * grid, rounding to the NEAREST node (a trigger firing a few seconds
+     * early/late still maps to its own node, never to a neighbour); only
+     * claim a node when now is within the wake tolerance of it. */
+    uint64_t node_ts = 0;
+    if (tc->interval_sec > 0) {
+        uint32_t start_sec, end_sec;
+        interval_capture_window(tc, &start_sec, &end_sec);
+        uint32_t cyc = (now_sec + 86400u - start_sec) % 86400u;
+        uint32_t off = cyc % tc->interval_sec;
+        uint32_t back = off;                    /* distance to the floor node */
+        uint32_t fwd = tc->interval_sec - off;  /* distance to the next node  */
+        /* Normally the job runs at/just after its node (back small). A clock
+         * step-back / re-anchor edge can run it just BEFORE the node (fwd
+         * small) — claiming the floor node there would name the PREVIOUS
+         * node, whose marker usually already exists, and the dedup guard
+         * would skip the imminent capture. Claim whichever node is nearest. */
+        if (back <= WAKE_TOLERANCE_SEC && back <= fwd) {
+            node_ts = node_abs_ts((start_sec + cyc - back + 86400u) % 86400u);
+        } else if (fwd <= WAKE_TOLERANCE_SEC) {
+            node_ts = node_abs_ts((start_sec + cyc + fwd) % 86400u);
+        }
+    }
+
+    // Perform capture (dedup-guarded against the early-wake capture path)
+    guarded_chain_capture(controller, node_ts);
+
+    // Calculate and register next trigger
+    uint32_t start_sec, end_sec;
+    interval_capture_window(tc, &start_sec, &end_sec);
+    uint32_t next = calculate_next_scheduled_interval_trigger(
+        start_sec, end_sec, tc->interval_sec, now_sec);
+
+    // REPEAT_ONCE job is already auto-deleted by process_wakeup_jobs - no unregister needed.
     // Use unique name for the new job to avoid collisions.
     snprintf(controller->timer_task_name, sizeof(controller->timer_task_name),
              "tiv_%lu", (unsigned long)rtc_get_timeStamp() % 100000);
@@ -998,6 +1161,13 @@ static void scheduled_interval_timer_callback(void *user_data)
   * @param timer_config Timer trigger configuration
   * @return AICAM_OK on success
   */
+/* Step-generation snapshot taken when the timer jobs were last (re)registered
+ * — consumed by check_rtc_step_reanchor_timer(). Boot-time U0 sync bumps the
+ * counter BEFORE registration, so a poll-side zero baseline would fire one
+ * spurious re-anchor every boot; anchoring here makes "changed since the jobs
+ * were registered" the exact condition. */
+static uint32_t s_timer_reg_step_gen = 0;
+
  static aicam_result_t apply_timer_trigger_config(system_controller_t *controller,
                                                  const timer_trigger_config_t *timer_config)
  {
@@ -1026,30 +1196,54 @@ static void scheduled_interval_timer_callback(void *user_data)
      
      switch (timer_config->capture_mode) {
          case AICAM_TIMER_CAPTURE_MODE_INTERVAL:
-             if (timer_config->interval_mode == AICAM_TIMER_INTERVAL_MODE_SCHEDULED &&
-                 timer_config->interval_sec > 0) {
-                 // Scheduled interval: continuous 24-hour cycle anchored at start_time
+             if (timer_config->interval_sec == 0 || timer_config->interval_sec >= 86400) {
+                 /* Both interval modes are daily lattices — the interval must
+                  * be a strict sub-day step (1..86399 s) or the grid never
+                  * advances inside the window. */
+                 LOG_SVC_ERROR("Invalid capture interval %lu s (must be 1..86399)",
+                               (unsigned long)timer_config->interval_sec);
+                 return AICAM_ERROR_INVALID_PARAM;
+             }
+             if (timer_config->interval_mode != AICAM_TIMER_INTERVAL_MODE_SCHEDULED &&
+                 timer_config->anchor_time == 0 && rtc_get_timeStamp() > 0) {
+                 /* First enable and no web anchor supplied: stamp "now" as the
+                  * daily grid anchor (seconds-of-day — no date component; the
+                  * lattice restarts at this time every day). Never stamp while
+                  * the RTC is invalid — a garbage anchor would poison the grid;
+                  * the fallback in wake_scheduler keeps now+interval until a
+                  * later apply/save stamps a real one. */
+                 RTC_TIME_S stamp = rtc_get_time();
+                 controller->work_config.timer_trigger.anchor_time =
+                     stamp.hour * 3600 + stamp.minute * 60 + stamp.second;
+                 /* save (not raw json_config_set) — it refreshes
+                  * video_stream_mode from NVS first, because the RTMP/RTSP
+                  * keys are written straight to NVS elsewhere and a full
+                  * write-back from this RAM copy would revert them. */
+                 (void)save_work_mode_config_to_nvs(controller);
+                 LOG_SVC_INFO("Interval grid anchor stamped: %lu sec-of-day",
+                              (unsigned long)controller->work_config.timer_trigger.anchor_time);
+             }
+             /* Both interval modes share ONE job chain: a REPEAT_ONCE
+              * ABSOLUTE job per lattice point that re-registers itself on the
+              * next point (scheduled_interval_timer_callback). The grid is
+              * config-owned (anchor_time / start_time), so flush/PIR/other
+              * wakes and reboots can never re-base it to "wake + interval". */
+             {
                  RTC_TIME_S now_rtc = rtc_get_time();
                  uint32_t now_sec = now_rtc.hour * 3600 + now_rtc.minute * 60 + now_rtc.second;
+                 uint32_t start_sec, end_sec;
+                 interval_capture_window(&controller->work_config.timer_trigger,
+                                         &start_sec, &end_sec);
                  uint32_t next = calculate_next_scheduled_interval_trigger(
-                     timer_config->start_time, timer_config->interval_sec, now_sec);
+                     start_sec, end_sec, timer_config->interval_sec, now_sec);
 
                  uint8_t day_offset = (next <= now_sec) ? 1 : 0;
                  result = system_controller_register_rtc_trigger(controller,
                      WAKEUP_TYPE_ABSOLUTE, controller->timer_task_name,
                      next, day_offset, 0x7F, REPEAT_ONCE,
                      scheduled_interval_timer_callback, controller);
-                 LOG_SVC_INFO("Scheduled interval: first trigger at %lu sec (day_offset=%u)", next, day_offset);
-             } else {
-                 // Normal interval mode (unchanged behavior)
-                 result = system_controller_register_rtc_trigger(controller,
-                                                                WAKEUP_TYPE_INTERVAL,
-                                                                controller->timer_task_name,
-                                                                timer_config->interval_sec,
-                                                                0, 0,
-                                                                REPEAT_INTERVAL,
-                                                                timer_trigger_callback,
-                                                                controller);
+                 LOG_SVC_INFO("Interval lattice: first trigger at %lu sec (day_offset=%u)",
+                              next, day_offset);
              }
              break;
              
@@ -1088,6 +1282,10 @@ static void scheduled_interval_timer_callback(void *user_data)
      if (result == AICAM_OK) {
          controller->timer_trigger_active = AICAM_TRUE;
          controller->timer_task_count = 0;
+         /* Jobs now live on the current clock scale — re-baseline the step
+          * detector. A step landing inside this same call is swallowed, but
+          * its own rtc_trigger_scheduler_check already re-armed the alarms. */
+         s_timer_reg_step_gen = rtc_step_generation();
      }
      
      return result;
@@ -1319,48 +1517,12 @@ aicam_result_t system_controller_get_next_capture_at(
 
     if (!controller->timer_trigger_active) return AICAM_OK;
 
-    const timer_trigger_config_t *tc = &controller->work_config.timer_trigger;
-    if (!tc->enable) return AICAM_OK;
-
-    RTC_TIME_S now_rtc = rtc_get_time();
-    uint64_t now_ts = rtc_get_timeStamp();
-    uint32_t now_sec = now_rtc.hour * 3600 + now_rtc.minute * 60 + now_rtc.second;
-
-    switch (tc->capture_mode) {
-    case AICAM_TIMER_CAPTURE_MODE_INTERVAL:
-        if (tc->interval_mode == AICAM_TIMER_INTERVAL_MODE_SCHEDULED) {
-            uint32_t next = calculate_next_scheduled_interval_trigger(
-                tc->start_time, tc->interval_sec, now_sec);
-            // If next <= now_sec, it means the trigger wraps to tomorrow
-            if (next <= now_sec) {
-                *next_capture_at = now_ts - now_sec + 86400 + next;
-            } else {
-                *next_capture_at = now_ts - now_sec + next;
-            }
-        } else {
-            // Normal interval: next is interval_sec from now
-            *next_capture_at = now_ts + tc->interval_sec;
-        }
-        break;
-    case AICAM_TIMER_CAPTURE_MODE_ABSOLUTE:
-        if (tc->time_node_count > 0) {
-            uint32_t earliest = UINT32_MAX;
-            for (int i = 0; i < tc->time_node_count && i < 10; i++) {
-                if (tc->time_node[i] > now_sec && tc->time_node[i] < earliest) {
-                    earliest = tc->time_node[i];
-                }
-            }
-            if (earliest != UINT32_MAX) {
-                *next_capture_at = now_ts - now_sec + earliest;
-            } else {
-                // All past today — first node tomorrow
-                *next_capture_at = now_ts - now_sec + 86400 + tc->time_node[0];
-            }
-        }
-        break;
-    default:
-        break;
-    }
+    /* Single source of truth: the same mode-aware grid math the due lookup
+     * uses (config-anchored interval lattice, SCHEDULED daily window,
+     * ABSOLUTE nodes). The previous local copy drifted from the actual
+     * schedule — e.g. normal interval reported now+interval while the real
+     * job fires on the anchor grid anchor + k*interval. */
+    *next_capture_at = wake_scheduler_next_capture(rtc_get_timeStamp());
     return AICAM_OK;
 }
 
@@ -1471,24 +1633,78 @@ aicam_result_t system_controller_register_io_trigger(system_controller_t *contro
      system_controller_t *controller = g_system_service_ctx.controller;
      
      // Check wakeup source and handle accordingly
-     if (wakeup_flag & PWR_WAKEUP_FLAG_RTC_TIMING) {
-         LOG_SVC_INFO("Woken by RTC timing");
-         handle_wakeup_event(controller, WAKEUP_SOURCE_RTC);
-     }
-     else if (wakeup_flag & (PWR_WAKEUP_FLAG_RTC_ALARM_A | PWR_WAKEUP_FLAG_RTC_ALARM_B)) {
-         LOG_SVC_INFO("Woken by RTC alarm");
-         
-         // Trigger scheduler check for RTC alarms
+
+     /* RTC wake (timing or alarm): use wake_scheduler to determine whether
+      * a capture, an upload-flush, or both are due now. Pure flush wakes
+      * don't trigger a capture - they just drain pending uploads and sleep. */
+     if (wakeup_flag & (PWR_WAKEUP_FLAG_RTC_TIMING |
+                        PWR_WAKEUP_FLAG_RTC_ALARM_A |
+                        PWR_WAKEUP_FLAG_RTC_ALARM_B)) {
+         LOG_SVC_INFO("Woken by RTC");
+
          if (wakeup_flag & PWR_WAKEUP_FLAG_RTC_ALARM_A) {
-             LOG_SVC_INFO("RTC Alarm A triggered, checking scheduler 1");
              rtc_trigger_scheduler_check(1);
          }
          if (wakeup_flag & PWR_WAKEUP_FLAG_RTC_ALARM_B) {
-             LOG_SVC_INFO("RTC Alarm B triggered, checking scheduler 2");
              rtc_trigger_scheduler_check(2);
          }
-         
-         handle_wakeup_event(controller, WAKEUP_SOURCE_RTC);
+
+         uint64_t now_unix = rtc_get_timeStamp();
+         wake_event_t evs[WAKE_DUTY_MAX];
+         int n = wake_scheduler_due_events(
+             now_unix,
+             now_unix > WAKE_TOLERANCE_SEC ? now_unix - WAKE_TOLERANCE_SEC : 0,
+             now_unix + WAKE_TOLERANCE_SEC,
+             evs, WAKE_DUTY_MAX);
+
+         aicam_bool_t need_capture = AICAM_FALSE;
+         aicam_bool_t need_flush   = AICAM_FALSE;
+         for (int i = 0; i < n; i++) {
+             if (evs[i].duty == WAKE_DUTY_CAPTURE)      need_capture = AICAM_TRUE;
+             if (evs[i].duty == WAKE_DUTY_UPLOAD_FLUSH) need_flush   = AICAM_TRUE;
+             wake_scheduler_mark_handled(evs[i].duty, evs[i].due_unix_sec);
+         }
+         /* Verdict line for field diagnosis: a pure flush wake must show
+          * capture=0 - a 1 there means an unsolicited image was taken. */
+         LOG_SVC_INFO("RTC wake verdict: events=%d capture=%d flush=%d flags=0x%lX",
+                      n, (int)need_capture, (int)need_flush,
+                      (unsigned long)wakeup_flag);
+        /* Single NVS write for the whole cycle, before the (potentially
+         * 30s+) drain below so the marks survive a power cut mid-drain. */
+        wake_scheduler_flush_state();
+
+         if (need_flush) {
+             (void)upload_coordinator_kick();
+         }
+         /* Capture ONLY when the schedule grid actually has a node in the
+          * window. The old "|| n == 0" fallback captured on any RTC wake
+          * that judged nothing due — which is exactly the SCHEDULED mode's
+          * closed-window period (the U0 timer keeps firing every interval
+          * outside [start, end)) and the grid gaps of normal mode, so
+          * end_time was effectively ignored and off-grid photos appeared.
+          * A truly due node is always judged here (config-driven, not
+          * job-driven), so no capture path is lost by dropping it. */
+         if (need_capture) {
+             handle_wakeup_event(controller, WAKEUP_SOURCE_RTC);
+             /* When capture + flush coincide (e.g. 3-min interval landing on the
+              * upload node), the kick above is async and would be abandoned when
+              * the device sleeps after the capture. Drain synchronously so the
+              * flush completes before sleep. Timeout scales with the backlog so
+              * a large backlog isn't cut short (the flush self-limits to the same
+              * budget internally). No task_completed here: the capture
+              * completion path reports it itself. */
+             if (need_flush) {
+                 uint32_t fb = upload_coordinator_get_flush_budget_ms();
+                 (void)upload_coordinator_drain(fb > 30000 ? fb + 2000 : 30000);
+             }
+         } else {
+             /* Pure flush (or nothing due — e.g. timer wake inside a closed
+              * SCHEDULED window): drain any pending uploads and go back to
+              * sleep; no capture. */
+             uint32_t fb = upload_coordinator_get_flush_budget_ms();
+             (void)upload_coordinator_drain(fb > 30000 ? fb + 2000 : 30000);
+             system_service_task_completed();
+         }
      }
     else if (wakeup_flag & PWR_WAKEUP_FLAG_WUFI) {
         LOG_SVC_INFO("Woken by WUFI");
@@ -1554,6 +1770,13 @@ static void pir_value_change_callback(uint32_t pir_value)
     // Check if PIR trigger is enabled
     if (!controller->work_config.pir_trigger.enable) {
         LOG_SVC_DEBUG("PIR value changed but trigger is disabled, ignoring (value: %u)", pir_value);
+        return;
+    }
+
+    // Skip PIR runtime capture when preview is active (if configured)
+    if (controller->work_config.pir_trigger.disable_in_preview &&
+        video_hub_is_initialized() && video_hub_has_subscribers()) {
+        LOG_SVC_DEBUG("PIR trigger skipped: preview is active and disable_in_preview is enabled (value: %u)", pir_value);
         return;
     }
     
@@ -1744,6 +1967,13 @@ static uint32_t configure_u0_wakeup_sources(system_controller_t *controller, uin
             // Step 2: Switch to si91x mqtt client
             mqtt_service_stop();
             mqtt_service_set_api_type(MQTT_API_TYPE_SI91X);
+            // From here on all publishes go through the Si91x embedded MQTT. Its command
+            // buffer (CE_TX) is only 2324B; si91x_mqtt_client_publish rejects payloads
+            // >1800B with MQTT_ERR_SIZE (prevents a memcpy overflow that corrupts the
+            // shared heap -- see the guard in si91x_mqtt_client.c). So PIR-triggered
+            // captures (~50KB base64) during remote wakeup CANNOT be uploaded via Si91x
+            // and are dropped. Architectural direction TBD (queue until MS wakes /
+            // suppress capture during remote wakeup / use Si91x socket transport).
             result = sl_net_netif_romote_wakeup_mode_ctrl(WAKEUP_MODE_WIFI);
             if (result != AICAM_OK) {
                 LOG_SVC_WARN("Failed to enable remote wakeup mode: %d", result);
@@ -1784,7 +2014,7 @@ static uint32_t configure_u0_wakeup_sources(system_controller_t *controller, uin
             }
             
             // Step 4: Enter low power mode
-            result = sl_net_netif_low_power_mode_ctrl(1);
+            result = sl_net_netif_low_power_mode_ctrl(1, NULL);
             if (result != AICAM_OK) {
                 LOG_SVC_WARN("Failed to enable low power mode: %d", result);
                 mqtt_service_stop();
@@ -1932,16 +2162,13 @@ static aicam_result_t configure_pir_sensor(system_controller_t *controller)
     ms_bridging_pir_cfg_t pir_cfg = {0};
     pir_cfg.sensitivity_level = controller->work_config.pir_trigger.sensitivity_level;
     if (pir_cfg.sensitivity_level == 0) {
-        pir_cfg.sensitivity_level = 30;  // Default if not configured
+        pir_cfg.sensitivity_level = 30;  // Default if not configured (web enforces 10-255, 0 only from degenerate configs)
     }
+    // ignore_time_s == 0 (0.5s) and pulse_count == 0 (1 pulse, web stores value-1)
+    // are legal register values selectable from the web UI - no override here.
+    // Defaults are guaranteed by the NVS base (json_config_mgr.c default_config).
     pir_cfg.ignore_time_s = controller->work_config.pir_trigger.ignore_time_s;
-    if (pir_cfg.ignore_time_s == 0 && controller->work_config.pir_trigger.enable) {
-        pir_cfg.ignore_time_s = 7;  // Default if not configured
-    }
     pir_cfg.pulse_count = controller->work_config.pir_trigger.pulse_count;
-    if (pir_cfg.pulse_count == 0) {
-        pir_cfg.pulse_count = 1;  // Default if not configured
-    }
     pir_cfg.window_time_s = controller->work_config.pir_trigger.window_time_s;
     pir_cfg.motion_enable = 1;         // Enable motion detection
     pir_cfg.interrupt_src = 0;          // Interrupt source: 0 = motion detection
@@ -1973,24 +2200,35 @@ static aicam_result_t prepare_for_sleep(void)
     if (!g_system_service_ctx.is_initialized || !g_system_service_ctx.controller) {
         return AICAM_ERROR_NOT_INITIALIZED;
     }
-    
+
     system_controller_t *controller = g_system_service_ctx.controller;
     aicam_result_t result;
 
     LOG_SVC_INFO("Preparing system for sleep mode...");
 
+    /* Wait for any in-progress upload flush to finish BEFORE tearing anything
+     * down. Without this, a sleep triggered mid-flush (e.g. AP 90s timeout, a
+     * button, or task_completed from another path) cuts power while
+     * delete_record_files / move_record are between "remove .json" and "write
+     * tombstone" - leaving .idx entries pointing at gone .json (stale PENDING,
+     * upload retried forever). flush_active is set by do_flush_pass/drain. */
+    (void)system_service_wait_upload_before_sleep(30000);
+
     // Stop web/WebSocket server before any network teardown to avoid MG_EV_CLOSE
     // running while the stack is being deinited (which can cause hang).
+    // NOT_INITIALIZED is benign: on a low-power essential-only wake web_service
+    // init is skipped, so there is nothing to stop.
     result = web_service_stop();
-    if (result != AICAM_OK && result != AICAM_ERROR_UNAVAILABLE) {
+    if (result != AICAM_OK && result != AICAM_ERROR_UNAVAILABLE
+        && result != AICAM_ERROR_NOT_INITIALIZED) {
         LOG_SVC_WARN("Web service stop before sleep: %d", result);
     }
     
     // Update RTC time to U0 chip before sleep
-    int ret = u0_module_update_rtc_time();
-    if (ret != 0) {
-        LOG_SVC_ERROR("Failed to update RTC time to U0: %d", ret);
-    }
+    // int ret = u0_module_update_rtc_time();
+    // if (ret != 0) {
+    //     LOG_SVC_ERROR("Failed to update RTC time to U0: %d", ret);
+    // }
     
     // Configure PIR sensor if PIR wakeup is enabled
     result = configure_pir_sensor(controller);
@@ -2004,7 +2242,11 @@ static aicam_result_t prepare_for_sleep(void)
     if (result != AICAM_OK) {
         LOG_SVC_WARN("Failed to save config before sleep: %d", result);
     }
-    
+
+    /* Persist any pending wake-scheduler state — the dedup markers marked
+     * during this duty cycle. No-op unless dirty. */
+    wake_scheduler_flush_state();
+
     // Set system state to sleep
     system_controller_set_state(controller, SYSTEM_STATE_SLEEP);
     
@@ -2039,20 +2281,58 @@ static aicam_result_t prepare_for_sleep(void)
     
     // Determine sleep duration
     uint32_t sleep_sec = sleep_duration_sec;
+    aicam_bool_t sleep_sec_derived = AICAM_FALSE;
     if (sleep_sec == 0) {
         // Use timer trigger interval if configured
         timer_trigger_config_t *timer_config = &controller->work_config.timer_trigger;
         if (timer_config->enable && timer_config->capture_mode == AICAM_TIMER_CAPTURE_MODE_INTERVAL) {
             sleep_sec = timer_config->interval_sec;
+            sleep_sec_derived = AICAM_TRUE;
         }
     }
-    
+
     // Apply fallback sleep duration if remote wakeup failed
     // Use the shorter of configured sleep and fallback to ensure periodic retry
     if (fallback_sleep_sec > 0) {
         if (sleep_sec == 0 || fallback_sleep_sec < sleep_sec) {
             sleep_sec = fallback_sleep_sec;
+            sleep_sec_derived = AICAM_FALSE;   // deliberate remote-retry cadence
             LOG_SVC_INFO("Using fallback sleep duration: %u seconds", sleep_sec);
+        }
+    }
+
+    /* Align the U0 periodic timer with the next scheduled event (capture
+     * grid node, SCHEDULED window start after end_time closes the day,
+     * upload flush node).
+     *  - derived interval base: SET the duration to the delta. A plain
+     *    min()-cap only shrinks, so through a closed SCHEDULED window
+     *    (next node = tomorrow's window start, delta >> interval_sec) the
+     *    timer would keep waking the device every interval_sec — each wake
+     *    a full cold boot that judges nothing due and goes back to sleep,
+     *    all night. Aligned, the timer fires exactly on the node: never
+     *    early, never late, and it cannot drift (the grid is config-owned).
+     *  - explicit caller duration or remote-retry fallback: only cap DOWN
+     *    so the request never sleeps past the next node; the shorter
+     *    cadence was chosen deliberately and stays.
+     * Deltas are scale-free durations (both endpoints on the same node
+     * scale), so the mixed UTC/local-shifted node scales inside
+     * wake_scheduler cancel out. */
+    if (rtc_get_timeStamp() > 0) {
+        wake_event_t next_ev;
+        uint64_t now_ts = rtc_get_timeStamp();
+        uint64_t t_next = wake_scheduler_next_event(now_ts, 0, &next_ev);
+        if (t_next > now_ts) {
+            uint64_t delta = t_next - now_ts;
+            if (delta < 1) delta = 1;
+            if (sleep_sec_derived) {
+                LOG_SVC_INFO("Sleep aligned to next event: %lu s (duty %d)",
+                             (unsigned long)delta, (int)next_ev.duty);
+                sleep_sec = (uint32_t)delta;
+            } else if (sleep_sec == 0 || delta < (uint64_t)sleep_sec) {
+                LOG_SVC_INFO("Sleep capped to next event: %lu s (duty %d)",
+                             (unsigned long)delta, (int)next_ev.duty);
+                sleep_sec = (uint32_t)delta;
+            }
         }
     }
      
@@ -2061,7 +2341,7 @@ static aicam_result_t prepare_for_sleep(void)
      ms_bridging_alarm_t alarm_b = {0};
      uint64_t next_wakeup_a = 0;
      uint64_t next_wakeup_b = 0;
-     
+
      // Get next wakeup time for Alarm A (scheduler 1)
      if (rtc_get_next_wakeup_time(1, &next_wakeup_a) == 0) {
          // Convert timestamp to local time
@@ -2075,11 +2355,11 @@ static aicam_result_t prepare_for_sleep(void)
              alarm_a.minute = tm_info->tm_min;
              alarm_a.second = tm_info->tm_sec;
              wakeup_flags |= PWR_WAKEUP_FLAG_RTC_ALARM_A;
-             LOG_SVC_INFO("RTC Alarm A configured: %02d:%02d:%02d, weekday=%d", 
-                         alarm_a.hour, alarm_a.minute, alarm_a.second, alarm_a.week_day);
+             LOG_SVC_INFO("RTC Alarm A configured: %02d:%02d:%02d, weekday=%d",
+                          alarm_a.hour, alarm_a.minute, alarm_a.second, alarm_a.week_day);
          }
      }
-     
+
      // Get next wakeup time for Alarm B (scheduler 2)
      if (rtc_get_next_wakeup_time(2, &next_wakeup_b) == 0) {
          // Convert timestamp to local time
@@ -2093,16 +2373,59 @@ static aicam_result_t prepare_for_sleep(void)
              alarm_b.minute = tm_info->tm_min;
              alarm_b.second = tm_info->tm_sec;
              wakeup_flags |= PWR_WAKEUP_FLAG_RTC_ALARM_B;
-             LOG_SVC_INFO("RTC Alarm B configured: %02d:%02d:%02d, weekday=%d", 
-                         alarm_b.hour, alarm_b.minute, alarm_b.second, alarm_b.week_day);
+             LOG_SVC_INFO("RTC Alarm B configured: %02d:%02d:%02d, weekday=%d",
+                          alarm_b.hour, alarm_b.minute, alarm_b.second, alarm_b.week_day);
          }
      }
-     
-     LOG_SVC_INFO("Entering sleep mode: wakeup=0x%08X, power=0x%08X, duration=%u", 
+
+     /* Flush-only alarm override: the RTC scheduler only has capture timer jobs.
+      * Upload-flush nodes (SCHEDULED mode) live in wake_scheduler. Wake for the
+      * next flush node IF it's earlier than the RTC capture alarm, so flush
+      * nodes between captures aren't missed. Flush nodes are fixed
+      * time-of-day (anchored to midnight), so this does NOT drift (unlike the
+      * old wake_scheduler capture override which used now+interval).
+      *
+      * IMPORTANT: wake_scheduler_next_flush returns UTC, but rtc_earliest
+      * (next_wakeup_a/b) is LOCAL (rtc_get_timeStamp + tz). Convert t_flush
+      * to LOCAL (add tz) so both the comparison and localtime() match the
+      * rtc path — otherwise the flush appears one-timezone earlier and the
+      * override fires when it shouldn't. */
+     {
+         uint64_t t_flush = wake_scheduler_next_flush(rtc_get_timeStamp());
+         if (t_flush > 0) {
+             int32_t tz = rtc_get_timezone();
+             uint64_t t_flush_local = t_flush + (uint64_t)((int64_t)tz * 3600);
+             uint64_t rtc_earliest = next_wakeup_a;
+             if (next_wakeup_b > 0 && (rtc_earliest == 0 || next_wakeup_b < rtc_earliest)) {
+                 rtc_earliest = next_wakeup_b;
+             }
+            LOG_SVC_DEBUG("[WAKE] flush alarm: %lu (local: %lu), RTC earliest: %lu",
+                (unsigned long)t_flush, (unsigned long)t_flush_local,
+                (unsigned long)rtc_earliest);
+             if (rtc_earliest == 0 || t_flush_local < rtc_earliest) {
+                 time_t wake_time = (time_t)t_flush_local;
+                 struct tm *tm_info = localtime(&wake_time);
+                 if (tm_info) {
+                     alarm_a.is_valid = 1;
+                     alarm_a.week_day = tm_info->tm_wday == 0 ? 7 : tm_info->tm_wday;
+                     alarm_a.date = 0;
+                     alarm_a.hour = tm_info->tm_hour;
+                     alarm_a.minute = tm_info->tm_min;
+                     alarm_a.second = tm_info->tm_sec;
+                     wakeup_flags |= PWR_WAKEUP_FLAG_RTC_ALARM_A;
+                     LOG_SVC_INFO("[WAKE] flush alarm override: %02d:%02d:%02d earlier than RTC %lu",
+                                 alarm_a.hour, alarm_a.minute, alarm_a.second,
+                                 (unsigned long)rtc_earliest);
+                 }
+             }
+         }
+     }
+
+     LOG_SVC_INFO("Entering sleep mode: wakeup=0x%08lX, power=0x%08lX, duration=%lu",
                   wakeup_flags, switch_bits, sleep_sec);
      
      // Enter sleep mode via U0 module with RTC alarms
-     int ret = u0_module_enter_sleep_mode_ex(wakeup_flags, switch_bits, sleep_sec, 
+     int ret = u0_module_enter_sleep_mode_ex(wakeup_flags, switch_bits, sleep_sec,
                                              alarm_a.is_valid ? &alarm_a : NULL,
                                              alarm_b.is_valid ? &alarm_b : NULL);
      if (ret != 0) {
@@ -2186,13 +2509,18 @@ static aicam_result_t prepare_for_sleep(void)
      g_system_service_ctx.task_completed = false;
      g_system_service_ctx.sleep_pending = false;
      
-     // Sync RTC time from U0 on startup
-     int ret = u0_module_sync_rtc_time();
-     if (ret == 0) {
-         LOG_SVC_INFO("RTC time synchronized from U0");
-     } else {
-         LOG_SVC_WARN("Failed to sync RTC time from U0: %d", ret);
+     int ret = 0;
+#if ENABLE_U0_MODULE
+     //  Sync RTC time from U0 on startup
+     if (rtc_get_wakeup_timeStamp() == 0) {
+        ret = u0_module_sync_rtc_time();
+        if (ret == 0) {
+            LOG_SVC_INFO("RTC time synchronized from U0");
+        } else {
+            LOG_SVC_WARN("Failed to sync RTC time from U0: %d", ret);
+        }
      }
+#endif
      
      // Check and store wakeup flag from U0 (but don't process yet)
      uint32_t wakeup_flag = 0;
@@ -3074,6 +3402,95 @@ aicam_result_t system_service_request_sleep(uint32_t duration_sec)
     return AICAM_OK;
 }
 
+/**
+ * @brief Re-anchor the RTC capture timer when the clock scale changed since
+ *        the jobs were last registered (NTP correction, U0 sync, manual set,
+ *        timezone change). The scheduler walks interval jobs back after a
+ *        backward step, but the SCHEDULED capture mode registers a
+ *        REPEAT_ONCE absolute point that keeps the old clock scale until
+ *        wall time reaches it — only re-registering from config re-derives
+ *        the lattice on the new clock. Runs from the awake poll (~15s),
+ *        which executes during both power modes' awake periods; low-power
+ *        sleep is covered by cold-boot re-registration instead.
+ */
+static void check_rtc_step_reanchor_timer(void)
+{
+    system_controller_t *controller = g_system_service_ctx.controller;
+    /* controller->timer_trigger_active tracks apply success precisely (the
+     * ctx-level flag goes stale across set_work_config reconfiguration). */
+    if (!controller || !controller->is_initialized ||
+        !controller->timer_trigger_active) {
+        return;  /* nothing registered - nothing to re-anchor */
+    }
+
+    if (rtc_step_generation() == s_timer_reg_step_gen) {
+        return;
+    }
+
+    LOG_SVC_INFO("RTC clock stepped - re-anchoring timer trigger from config");
+    (void)system_service_apply_timer_trigger_config();
+}
+
+/**
+ * @brief Poll for a scheduled upload-flush node that's due now, while awake.
+ *        Covers FULL_SPEED mode and LOW_POWER awake periods that span a
+ *        scheduled node without a dedicated wake (the wake path only fires on
+ *        cold-boot wake; a device awake across a node would otherwise miss it).
+ *        Idempotent: mark_handled prevents repeat triggers. Call ~every 15s.
+ */
+aicam_result_t system_service_poll_scheduled_flush(void)
+{
+    if (!g_system_service_ctx.is_initialized) return AICAM_ERROR_NOT_INITIALIZED;
+
+    /* Re-anchor capture jobs first so both duties run on the clock the
+     * flush-node window below is about to evaluate against. */
+    check_rtc_step_reanchor_timer();
+
+    uint64_t now = rtc_get_timeStamp();
+    wake_event_t evs[WAKE_DUTY_MAX];
+    int n = wake_scheduler_due_events(
+        now,
+        now > WAKE_TOLERANCE_SEC ? now - WAKE_TOLERANCE_SEC : 0,
+        now + WAKE_TOLERANCE_SEC, evs, WAKE_DUTY_MAX);
+
+    for (int i = 0; i < n; i++) {
+        if (evs[i].duty == WAKE_DUTY_UPLOAD_FLUSH) {
+            LOG_SVC_INFO("[WAKE] scheduled flush due (awake poll) at=%lu",
+                         (unsigned long)evs[i].due_unix_sec);
+            wake_scheduler_mark_handled(WAKE_DUTY_UPLOAD_FLUSH, evs[i].due_unix_sec);
+            wake_scheduler_flush_state();  /* before the drain below */
+            {
+                uint32_t fb = upload_coordinator_get_flush_budget_ms();
+                (void)upload_coordinator_drain(fb > 30000 ? fb + 2000 : 30000);
+            }
+            return AICAM_OK;
+        }
+    }
+    return AICAM_OK;
+}
+
+/**
+ * @brief Wait for an in-progress upload flush to finish before sleeping.
+ *        Does NOT start a new flush - pending that hasn't started waits for
+ *        the next wake. Only protects an upload already in flight. The timeout
+ *        scales with the pending backlog (via upload_coordinator_get_flush_budget_ms)
+ *        so a small backlog → short wait, large backlog → longer wait, capped.
+ */
+aicam_result_t system_service_wait_upload_before_sleep(uint32_t timeout_ms)
+{
+    uint32_t budget = upload_coordinator_get_flush_budget_ms();
+    if (budget > timeout_ms) timeout_ms = budget;   /* scale up to the flush's need */
+    uint64_t t0 = rtc_get_uptime_ms();
+    while (upload_coordinator_is_flushing() && (rtc_get_uptime_ms() - t0) < timeout_ms) {
+        osDelay(50);
+    }
+    if (upload_coordinator_is_flushing()) {
+        LOG_SVC_WARN("Sleep: upload still in progress after %u ms, sleeping anyway",
+                     timeout_ms);
+    }
+    return AICAM_OK;
+}
+
 /* ==================== Unified Capture Entry ==================== */
 
 aicam_bool_t system_service_capture_in_progress(void)
@@ -3363,6 +3780,7 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
         
         if (ret != AICAM_OK) {
             LOG_SVC_ERROR("[TIMING] Step 1 FAILED (fast capture): %d (duration: %lu ms)", ret, (unsigned long)step_duration);
+            g_capture_in_progress = AICAM_FALSE;
             return ret;
         }
         LOG_SVC_INFO("[TIMING] Step 1 COMPLETED (fast capture): Image captured - %u bytes, frame_id: %lu (duration: %lu ms)", 
@@ -3375,12 +3793,123 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
         
         if (ret != AICAM_OK) {
             LOG_SVC_ERROR("[TIMING] Step 1 FAILED: %d (duration: %lu ms)", ret, (unsigned long)step_duration);
+            g_capture_in_progress = AICAM_FALSE;
             return ret;
         }
-        LOG_SVC_INFO("[TIMING] Step 1 COMPLETED: Image captured - %u bytes, frame_id: %lu (duration: %lu ms)", 
+        LOG_SVC_INFO("[TIMING] Step 1 COMPLETED: Image captured - %u bytes, frame_id: %lu (duration: %lu ms)",
                      jpeg_size, (unsigned long)frame_id, (unsigned long)step_duration);
     }
 
+    /* Route ALL modes through upload_coordinator. It handles:
+     *   INSTANT    → persist + synchronous upload via upload_one_record()
+     *   BATCH      → persist + kick when batch_count reached
+     *   SCHEDULED  → persist + wait for schedule-minute flush
+     *   LOCAL_ONLY → persist into local/, never upload
+     * Previously INSTANT was excluded and fell through to a legacy
+     * sd_write_file() path that created no records and never uploaded. */
+    {
+        capture_upload_config_t cu_cfg;
+        (void)json_config_get_capture_upload_config(&cu_cfg);
+
+        /* Build metadata now so the coordinator can freeze it. */
+        jpegc_params_t jpeg_enc_param = {0};
+        (void)device_service_camera_get_jpeg_params(&jpeg_enc_param);
+
+        mqtt_image_metadata_t metadata = {0};
+        mqtt_service_generate_image_id(metadata.image_id, "cam01");
+        metadata.timestamp = rtc_get_timeStamp();
+        metadata.format    = MQTT_IMAGE_FORMAT_JPEG;
+        metadata.width     = jpeg_enc_param.ImageWidth;
+        metadata.height    = jpeg_enc_param.ImageHeight;
+        metadata.size      = (uint32_t)jpeg_size;
+        metadata.quality   = jpeg_enc_param.ImageQuality;
+        metadata.trigger_type = trigger_type;
+
+        /* AI result -> JSON (for persistence) + mqtt_ai_result_t (for upload) */
+        char *ai_json = NULL;
+        mqtt_ai_result_t mqtt_ai_result = {0};
+        mqtt_ai_result_t *ai_result_ptr = NULL;
+        if (enable_ai && nn_result.is_valid) {
+            cJSON *ai_json_root = nn_create_ai_result_json(&nn_result);
+            if (ai_json_root) {
+                ai_json = cJSON_PrintUnformatted(ai_json_root);
+                cJSON_Delete(ai_json_root);
+            }
+            /* Build MQTT AI result struct for upload */
+            nn_model_info_t model_info = {0};
+            uint32_t inference_time_ms = 0;
+            if (quick_snapshot_is_init()) {
+                (void)quick_snapshot_wait_ai_info(&model_info);
+                (void)quick_snapshot_get_ai_inference_time_ms(&inference_time_ms);
+            } else {
+                (void)ai_service_get_model_info(&model_info);
+            }
+            if (mqtt_service_init_ai_result(&mqtt_ai_result, &nn_result,
+                                            model_info.name, model_info.version,
+                                            inference_time_ms) == AICAM_OK) {
+                ai_result_ptr = &mqtt_ai_result;
+            }
+        }
+
+        /* "Store AI result image" toggle. When disabled, skip the bounding-box
+         * overlay JPEG entirely. Previously only the sleep/wake (quick_capture)
+         * path honored capture_storage_ai; the runtime path generated it
+         * unconditionally, so AI result images kept being saved after the user
+         * turned the switch off. */
+        image_config_t img_cfg = {0};
+        aicam_bool_t store_ai = (json_config_get_device_service_image_config(&img_cfg) == AICAM_OK)
+                                ? img_cfg.capture_storage_ai : AICAM_FALSE;
+
+        /* AI inference JPEG (bounding-box overlay) - get from quick_snapshot
+         * (pre-generated during fast capture) or generate on the fly. */
+        uint8_t *inf_jpeg = NULL;
+        uint32_t inf_jpeg_size = 0;
+        if (store_ai && enable_ai && nn_result.is_valid &&
+            (nn_result.od.nb_detect > 0 || nn_result.mpe.nb_detect > 0)) {
+            if (quick_snapshot_is_init()) {
+                size_t sz = 0;
+                if (quick_snapshot_wait_ai_jpeg(&inf_jpeg, &sz) == AICAM_OK &&
+                    inf_jpeg && sz > 0) {
+                    inf_jpeg_size = (uint32_t)sz;
+                }
+            } else {
+                (void)generate_inference_image(jpeg_buffer, (uint32_t)jpeg_size,
+                                               &nn_result, &inf_jpeg,
+                                               &inf_jpeg_size);
+            }
+        }
+
+        wakeup_source_type_t ws = system_service_get_wakeup_source_type();
+        aicam_result_t coord_ret = upload_coordinator_enqueue_capture(
+            jpeg_buffer, (uint32_t)jpeg_size,
+            inf_jpeg, inf_jpeg_size,
+            ai_json,
+            ai_result_ptr,
+            &metadata, trigger_type, ws);
+
+        /* Free inference JPEG (owned by quick_snapshot/jpegc - use camera free) */
+        if (inf_jpeg) {
+            device_service_camera_free_jpeg_buffer(inf_jpeg);
+        }
+        if (ai_json) cJSON_free(ai_json);
+        if (jpeg_copy && jpeg_buffer == jpeg_copy) {
+            buffer_free(jpeg_buffer);
+        } else {
+            device_service_camera_free_jpeg_buffer(jpeg_buffer);
+        }
+        jpeg_buffer = NULL; jpeg_copy = NULL;
+
+        uint64_t total_duration = rtc_get_uptime_ms() - total_start_time;
+        if (coord_ret == AICAM_OK) {
+            LOG_SVC_INFO("========== Capture enqueued to upload coordinator (mode=%d), total=%lu ms",
+                         cu_cfg.mode, (unsigned long)total_duration);
+        } else {
+            LOG_SVC_ERROR("Capture coordinator enqueue failed: %d (%lu ms)",
+                          coord_ret, (unsigned long)total_duration);
+        }
+        g_capture_in_progress = AICAM_FALSE;
+        return coord_ret;
+    }
 
     //store image to sd card if sd card is connected
     if(store_to_sd && device_service_storage_is_sd_connected()){
@@ -3515,6 +4044,7 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
     // Validate capture result
     if (!jpeg_buffer) {
         LOG_SVC_ERROR("[TIMING] Validation FAILED: jpeg_buffer is NULL");
+        g_capture_in_progress = AICAM_FALSE;
         return AICAM_ERROR;
     }
     if (jpeg_size == 0) {
@@ -3526,6 +4056,7 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
         }
         jpeg_buffer = NULL;
         jpeg_copy = NULL;
+        g_capture_in_progress = AICAM_FALSE;
         return AICAM_ERROR;
     }
 
@@ -3543,6 +4074,7 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
         }
         jpeg_buffer = NULL;
         jpeg_copy = NULL;
+        g_capture_in_progress = AICAM_FALSE;
         return ret;
     }
 
@@ -3607,10 +4139,10 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
     step_start_time = rtc_get_uptime_ms();
 
     if (!mqtt_available) {
-        LOG_SVC_INFO("[TIMING] Step 3.1 SKIPPED: MQTT service not running — skip to webhook/SD");
+        LOG_SVC_INFO("[TIMING] Step 3.1 SKIPPED: MQTT service not running - skip to webhook/SD");
     } else if (g_fast_fail_mqtt_policy) {
         if (!mqtt_service_is_connected()) {
-            LOG_SVC_INFO("[TIMING] Step 3.1 FAST-FAIL: MQTT not connected — skip MQTT, try webhook/SD");
+            LOG_SVC_INFO("[TIMING] Step 3.1 FAST-FAIL: MQTT not connected - skip MQTT, try webhook/SD");
             mqtt_available = AICAM_FALSE;
         }
     } else {
@@ -3618,9 +4150,9 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
         uint32_t current_flags = service_get_ready_flags();
         LOG_SVC_INFO("[TIMING] Step 3.1: Current service flags: 0x%08X, MQTT_NET_CONNECTED: %s",
                      current_flags, (current_flags & MQTT_NET_CONNECTED) ? "YES" : "NO");
-        aicam_result_t result = service_wait_for_ready(MQTT_NET_CONNECTED, AICAM_TRUE, 15000);
+        aicam_result_t result = service_wait_for_ready(MQTT_NET_CONNECTED, AICAM_TRUE, 40000);
         if (result != AICAM_OK) {
-            LOG_SVC_INFO("[TIMING] Step 3.1 FAILED: MQTT network not ready: %d — skip MQTT, try webhook/SD", result);
+            LOG_SVC_INFO("[TIMING] Step 3.1 FAILED: MQTT network not ready: %d - skip MQTT, try webhook/SD", result);
             LOG_SVC_INFO("[TIMING] Step 3.1: Final service flags: 0x%08X", service_get_ready_flags());
             mqtt_available = AICAM_FALSE;
         }
@@ -3757,7 +4289,7 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
                     jpeg_buffer, (uint32_t)jpeg_size, &metadata, ai_result_ptr);
                 LOG_SVC_INFO("[TIMING] Step 4.5: push_capture returned %d", wh_ret);
                 if (wh_ret == AICAM_OK) {
-                    // Ownership transferred to webhook task — skip cleanup in Step 5
+                    // Ownership transferred to webhook task - skip cleanup in Step 5
                     jpeg_buffer = NULL;
                     upload_result = AICAM_OK;
                     webhook_succeeded = AICAM_TRUE;

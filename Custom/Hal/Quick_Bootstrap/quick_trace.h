@@ -1,9 +1,43 @@
 #ifndef __QUICK_TRACE_H__
 #define __QUICK_TRACE_H__
 
-/* Shared compile-time trace/timing switches for Quick_Bootstrap modules.
- * Default OFF to avoid extra runtime overhead in production builds.
+/* Shared logging + optional trace/profiling for the Quick_Bootstrap modules
+ * (quick_snapshot, quick_storage). Logging is plain printf — these modules log
+ * sparsely, so the newlib re-entrancy/garble tradeoff is accepted over a mutex.
  */
+#include <stdint.h>
+#include <stdio.h>
+
+/* ---- logging (always compiled; gated by level) ---- */
+#define QB_LOG_LEVEL_NONE   0
+#define QB_LOG_LEVEL_ERROR  1
+#define QB_LOG_LEVEL_WARN   2
+#define QB_LOG_LEVEL_DEBUG  3
+#ifndef QB_LOG_LEVEL
+#define QB_LOG_LEVEL        QB_LOG_LEVEL_DEBUG
+#endif
+#define QB_LOG_TAG          "[QB] "
+
+#if QB_LOG_LEVEL >= QB_LOG_LEVEL_ERROR
+#define QB_LOGE(fmt, ...)   printf(QB_LOG_TAG fmt "\r\n", ##__VA_ARGS__)
+#else
+#define QB_LOGE(fmt, ...)
+#endif
+
+#if QB_LOG_LEVEL >= QB_LOG_LEVEL_WARN
+#define QB_LOGW(fmt, ...)   printf(QB_LOG_TAG fmt "\r\n", ##__VA_ARGS__)
+#else
+#define QB_LOGW(fmt, ...)
+#endif
+
+#if QB_LOG_LEVEL >= QB_LOG_LEVEL_DEBUG
+#define QB_LOGD(fmt, ...)   printf(QB_LOG_TAG fmt "\r\n", ##__VA_ARGS__)
+#else
+#define QB_LOGD(fmt, ...)
+#endif
+
+/* ---- optional lightweight traces/profiling (compile-time only).
+ * Keep default OFF to avoid extra runtime overhead in production builds. */
 #ifndef QB_TRACE_ENABLE
 #define QB_TRACE_ENABLE     0
 #endif
@@ -12,14 +46,9 @@
 #define QB_TIMELOG_ENABLE   0
 #endif
 
-#include <stdint.h>
-#include <stdio.h>
-
 #if QB_TRACE_ENABLE
-/* Implemented in quick_bootstrap.c; serializes lines across qs_snap / qn_* / qst threads. */
-void quick_log_printf(const char *fmt, ...);
 /* tag can be const string OR runtime pointer */
-#define QT_TRACE(tag, fmt, ...)  quick_log_printf("%s" fmt "\r\n", (tag), ##__VA_ARGS__)
+#define QT_TRACE(tag, fmt, ...)  printf("%s" fmt "\r\n", (tag), ##__VA_ARGS__)
 #else
 #define QT_TRACE(tag, fmt, ...)  do { } while (0)
 #endif

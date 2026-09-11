@@ -225,6 +225,7 @@ int si91x_mqtt_client_init(const ms_mqtt_config_t *config)
         goto si91x_mqtt_client_init_end;
     }
     memset(si91x_mqtt_client->sl_mqtt_client_configuration, 0, sizeof(sl_mqtt_client_configuration_t));
+    si91x_mqtt_client->sl_mqtt_client_configuration->credential_id = SL_NET_NO_CREDENTIAL_ID;
 
     si91x_mqtt_client->sl_mqtt_broker = (sl_mqtt_broker_t *)hal_mem_alloc_large(sizeof(sl_mqtt_broker_t));
     if (si91x_mqtt_client->sl_mqtt_broker == NULL) {
@@ -429,6 +430,11 @@ int si91x_mqtt_client_connnect(void)
     sl_status_t status = SL_STATUS_OK;
 
     SI91X_MQTT_CLIENT_FUNC_START(false);
+    if (sl_net_client_netif_state() != NETIF_STATE_UP && sl_net_netif_get_wakeup_mode() != WAKEUP_MODE_WIFI) {
+        SI91X_MQTT_CLIENT_FUNC_END();
+        LOG_DRV_ERROR("[SI91X MQTT]connect refused: netif not up\r\n");
+        return MQTT_ERR_NETIF;
+    }
     status = sl_mqtt_client_connect(si91x_mqtt_client->sl_mqtt_client, si91x_mqtt_client->sl_mqtt_broker, si91x_mqtt_client->sl_mqtt_client_last_will_message, si91x_mqtt_client->sl_mqtt_client_configuration, 0);
     SI91X_MQTT_CLIENT_FUNC_END();
     if (status != SL_STATUS_IN_PROGRESS) {
@@ -443,6 +449,11 @@ int si91x_mqtt_client_connnect_sync(uint32_t timeout_ms)
     sl_status_t status = SL_STATUS_OK;
 
     SI91X_MQTT_CLIENT_FUNC_START(false);
+    if (sl_net_client_netif_state() != NETIF_STATE_UP && sl_net_netif_get_wakeup_mode() != WAKEUP_MODE_WIFI) {
+        SI91X_MQTT_CLIENT_FUNC_END();
+        LOG_DRV_ERROR("[SI91X MQTT]sync connect refused: netif not up\r\n");
+        return MQTT_ERR_NETIF;
+    }
     status = sl_mqtt_client_connect(si91x_mqtt_client->sl_mqtt_client, si91x_mqtt_client->sl_mqtt_broker, si91x_mqtt_client->sl_mqtt_client_last_will_message, si91x_mqtt_client->sl_mqtt_client_configuration, timeout_ms);
     SI91X_MQTT_CLIENT_FUNC_END();
     if (status != SL_STATUS_OK) {
@@ -454,6 +465,19 @@ int si91x_mqtt_client_connnect_sync(uint32_t timeout_ms)
 
 int si91x_mqtt_client_publish(const char *topic, const char *data, int data_len, int qos, int retain)
 {
+    /* Si91x embedded MQTT commands go through the CE_TX pool (block =
+     * SLI_WIFI_EXTENDED_BLOCK_SIZE = 2324B). sli_wifi_send_command memcpy's the whole
+     * publish_request into this fixed block (data_length & 0xFFF). An oversized payload
+     * overflows it by ~46KB and corrupts the shared heap (incl. common pool metadata), so
+     * the next buffer alloc in the same call dereferences bad metadata -> HardFault.
+     * Confirmed by 3 crash backtraces: remote wakeup switches api_type=SI91X, then an image
+     * publish hits this path. Large payloads (images) must go via MS/socket. Limit sized
+     * with margin at 1800. */
+    if (data_len > 1800) {
+        LOG_DRV_ERROR("[SI91X MQTT]publish %dB > 1800 (CE_TX block 2324B), drop to avoid heap overflow\r\n", data_len);
+        return MQTT_ERR_SIZE;
+    }
+
     sl_status_t status = SL_STATUS_OK;
     sl_mqtt_client_message_t message_to_be_published = {0};
 
@@ -481,6 +505,13 @@ int si91x_mqtt_client_publish(const char *topic, const char *data, int data_len,
 
 int si91x_mqtt_client_publish_sync(const char *topic, const char *data, int data_len, int qos, int retain, uint32_t timeout_ms)
 {
+    /* Same as si91x_mqtt_client_publish -- CE_TX block is 2324B; an oversized
+     * payload overflows and corrupts the shared heap. */
+    if (data_len > 1800) {
+        LOG_DRV_ERROR("[SI91X MQTT]publish_sync %dB > 1800 (CE_TX block 2324B), drop to avoid heap overflow\r\n", data_len);
+        return MQTT_ERR_SIZE;
+    }
+
     sl_status_t status = SL_STATUS_OK;
     sl_mqtt_client_message_t message_to_be_published = {0};
 

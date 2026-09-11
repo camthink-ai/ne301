@@ -61,7 +61,9 @@ int32_t yolov2_pp_nmsFiltering_centroid(od_pp_outBuffer_t *pScratchBuffer,
         }
       }
     }
-    for (int32_t y = 0; y <= pInput_static_param->nb_detect; y++)
+    /* ne301: was "y <= nb_detect" — walked pScratchBuffer[nb_detect], one entry
+     * past the valid range (1-element OOB read/write on the scratch buffer). */
+    for (int32_t y = 0; y < pInput_static_param->nb_detect; y++)
     {
       if ((limit_counter < pInput_static_param->max_boxes_limit) &&
           (pScratchBuffer[y].conf != 0))

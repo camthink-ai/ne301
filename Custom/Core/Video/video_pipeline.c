@@ -22,6 +22,9 @@
 #define VIDEO_SEM_WAIT(sem, timeout) osSemaphoreAcquire(sem, timeout)
 #define VIDEO_SEM_POST(sem) osSemaphoreRelease(sem)
 #define VIDEO_DELAY(ms) osDelay(ms)
+/* Max wall-clock wait for one node thread to observe thread_active=FALSE and
+ * exit. See video_pipeline_stop(). */
+#define VIDEO_NODE_STOP_TIMEOUT_MS 3000U
 static inline osThreadId_t video_thread_create(
     osThreadFunc_t func,
     void *arg,
@@ -596,26 +599,42 @@ aicam_result_t video_pipeline_stop(video_pipeline_t *pipeline)
             node->state = VIDEO_NODE_STATE_STOPPING;
         }
 
-        while(node && !node->thread_exited) {
+        /* ponytail: bounded wait. A node's process() callback (camera capture,
+         * encoder, AI inference) can block indefinitely; without this ceiling the
+         * HTTP task wedges here holding pipeline->mutex forever. If the thread
+         * doesn't exit in time, osThreadTerminate() below force-kills it (best
+         * effort — any RTOS/driver lock it holds stays held, so a later start may
+         * still stall on the same resource; strictly better than hanging stop).
+         * Signed-diff comparison handles uint32 tick wrap-around. */
+        uint32_t stop_deadline = osKernelGetTickCount() + VIDEO_NODE_STOP_TIMEOUT_MS;
+        while (node && !node->thread_exited &&
+               (int32_t)(osKernelGetTickCount() - stop_deadline) < 0) {
             osDelay(100);
         }
-        printf("Thread for node %s exited\r\n", node->config.name);
+        if (node && !node->thread_exited) {
+            LOG_CORE_ERROR("Node %s did not exit within %ums, force-terminating",
+                           node->config.name, VIDEO_NODE_STOP_TIMEOUT_MS);
+        } else if (node) {
+            LOG_CORE_INFO("Thread for node %s exited", node->config.name);
+        }
     }
 
     
-    //delete all threads
+    //delete all threads (force-terminate any stragglers the bounded wait gave up on)
     for (uint32_t i = 0; i < pipeline->node_count; i++) {
         video_node_t *node = pipeline->nodes[i];
-        if (node && node->thread_handle) {
+        if (!node) continue;
+
+        if (node->thread_handle) {
             LOG_CORE_INFO("Deleting thread for node %s", node->config.name);
             osStatus_t status = osThreadTerminate(node->thread_handle);
             if (status == osOK) {
                 LOG_CORE_INFO("Thread for node %s deleted", node->config.name);
-                node->thread_handle = NULL;   
+                node->thread_handle = NULL;
             }
         }
 
-        if(node->stack_memory) {
+        if (node->stack_memory) {
             buffer_free(node->stack_memory);
             node->stack_memory = NULL;
         }

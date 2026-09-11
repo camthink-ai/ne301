@@ -28,7 +28,7 @@ extern "C" {
 #include <stdbool.h>
 
 /* Configuration parameters */
-#define MEM_INTERNAL_SIZE   (184 * 1024)        /* 152KB internal pool */
+#define MEM_INTERNAL_SIZE   (512 * 1024)        /* 512KB internal pool */
 #if defined(BOARD_PSRAM_SIZE) && BOARD_PSRAM_SIZE == 64
 /* External PSRAM pool: keep below APP_EXT (56MB) to leave room for other IN_PSRAM data */
 #define MEM_EXTERNAL_SIZE   (52 * 1024 * 1024)  /* 52MB external pool */

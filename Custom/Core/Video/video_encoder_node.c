@@ -341,9 +341,9 @@ static aicam_result_t video_encoder_encode_frame_zero_copy(video_encoder_node_da
     result = device_ioctl(data->encoder_dev, ENC_CMD_OUTPUT_FRAME, (uint8_t *)&enc_frame, 0);
     if (result != AICAM_OK || enc_frame.data_size == 0) {
         data->stats.encode_errors++;
-        LOG_CORE_WARN("Encode failed: result=%d, data_size=%lu, errors=%lu", 
-                       result, (unsigned long)enc_frame.data_size, 
-                       (unsigned long)data->stats.encode_errors);
+        // LOG_CORE_WARN("Encode failed: result=%d, data_size=%lu, errors=%lu", 
+        //                result, (unsigned long)enc_frame.data_size, 
+        //                (unsigned long)data->stats.encode_errors);
         return AICAM_ERROR;
     }
 

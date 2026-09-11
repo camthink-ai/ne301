@@ -10,6 +10,7 @@ import DeviceInformationSkeleton from './skeleton';
 import SvgIcon from '@/components/svg-icon';
 import { useSystemInfo } from '@/store/systemInfo'
 import systemApis from '@/services/api/system';
+import { getNetLog, clearNetLog, NET_DIAG } from '@/services/request';
 import { toast } from 'sonner';
 import type { DeviceInfo } from '@/services/api/system';
 
@@ -22,6 +23,9 @@ export default function DeviceInformation() {
   const [deviceName, setDeviceName] = useState(deviceInfo?.device_name ?? '')
   const [showPopover, setShowPopover] = useState(true)
   const [isLoading, setIsLoading] = useState(false)
+  const [netLog, setNetLog] = useState<any[]>([])
+  // Refresh on mount: testers navigate here after seeing the error toast
+  useEffect(() => { setNetLog(getNetLog()) }, [])
   const inputRef = useRef<HTMLInputElement>(null)
   const deviceImg = new URL('@/assets/images/camthink_Vision_AI_camera.webp', import.meta.url).href;
   const errorsRef = useRef<{ isValidate: boolean, message: string }>({ isValidate: true, message: '' })
@@ -258,6 +262,33 @@ export default function DeviceInformation() {
           )}
         </CardContent>
       </Card>
+      {NET_DIAG && netLog.length > 0 && (
+        <Card className="w-full sm:w-xl">
+          <CardContent className="flex flex-col gap-2">
+            <div className="flex justify-between items-center">
+              <Label>{i18n._('sys.device_information.net_fail_log')}</Label>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { clearNetLog(); setNetLog([]) }}
+              >
+                {i18n._('common.clear')}
+              </Button>
+            </div>
+            <div className="max-h-64 overflow-y-auto text-xs flex flex-col gap-1.5">
+              {netLog.slice().reverse().map((e, i) => (
+                <div key={i} className="flex flex-col">
+                  <span className="text-text-primary break-all">{e.time} {e.api}</span>
+                  <span className="text-gray-500 break-all">
+                    {e.phase} | {e.code || '--'}{e.status ? ` | http ${e.status}` : ''}{e.elapsedMs != null ? ` | ${e.elapsedMs}ms` : ''}
+                  </span>
+                  <span className="text-gray-400 break-all">{e.message}</span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 } 

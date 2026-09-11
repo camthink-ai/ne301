@@ -152,6 +152,7 @@ int32_t st_yolox_pp_level_decode_and_store(float32_t *pInbuff,
     float32_t grid_height_inv = 1.0f / grid_height;
     int32_t det_count = pInput_static_param->nb_detect;
     od_pp_outBuffer_t *pOutBuff = (od_pp_outBuffer_t *)pOutput->pOutBuff;
+    int32_t det_cap = pInput_static_param->max_boxes_limit; /* ne301: pOutBuff is sized to max_detections */
 
     if ( 1 == pInput_static_param->nb_classes) {
       float32_t computedThreshold = -logf( 1 / pInput_static_param->conf_threshold - 1);
@@ -161,7 +162,7 @@ int32_t st_yolox_pp_level_decode_and_store(float32_t *pInbuff,
         {
           for (int32_t anch = 0; anch < pInput_static_param->nb_anchors; ++anch)
           {
-            if ( pInbuff[el_offset + AI_YOLOV2_PP_OBJECTNESS] >= computedThreshold) {
+            if (( pInbuff[el_offset + AI_YOLOV2_PP_OBJECTNESS] >= computedThreshold) && (det_count < det_cap)) {
 
               /* read and activate objectness */
               float32_t prob = vision_models_sigmoid_f(pInbuff[el_offset + AI_YOLOV2_PP_OBJECTNESS]);
@@ -210,7 +211,7 @@ int32_t st_yolox_pp_level_decode_and_store(float32_t *pInbuff,
                   best_score = expf(best_score) / sumf;
                   best_score *= prob;
 
-                  if (best_score >= pInput_static_param->conf_threshold)
+                  if ((best_score >= pInput_static_param->conf_threshold) && (det_count < det_cap))
                   {
 
                       pOutBuff[det_count].x_center    = (col + vision_models_sigmoid_f(pInbuff[el_offset + AI_YOLOV2_PP_XCENTER]))   * grid_width_inv;
@@ -252,6 +253,7 @@ int32_t st_yolox_pp_level_decode_and_store_is8(int8_t *pInbuff,
 
   int32_t det_count = pInput_static_param->nb_detect;
   od_pp_outBuffer_t *pOutBuff = (od_pp_outBuffer_t *)pOutput->pOutBuff;
+  int32_t det_cap = pInput_static_param->max_boxes_limit; /* ne301: pOutBuff is sized to max_detections */
 
   if ( 1 == pInput_static_param->nb_classes) {
 
@@ -264,7 +266,7 @@ int32_t st_yolox_pp_level_decode_and_store_is8(int8_t *pInbuff,
       {
         for (int32_t anch = 0; anch < pInput_static_param->nb_anchors; ++anch)
         {
-          if ( pInbuff[el_offset + AI_YOLOV2_PP_OBJECTNESS] >= threshold_s8) {
+          if (( pInbuff[el_offset + AI_YOLOV2_PP_OBJECTNESS] >= threshold_s8) && (det_count < det_cap)) {
 
             /* read and activate objectness */
             float32_t dequant;
@@ -331,7 +333,7 @@ int32_t st_yolox_pp_level_decode_and_store_is8(int8_t *pInbuff,
           best_score = expf(dequant) / sumf;
           best_score *= prob;
 
-          if (best_score >= pInput_static_param->conf_threshold)
+          if ((best_score >= pInput_static_param->conf_threshold) && (det_count < det_cap))
           {
             float32_t anchor;
 

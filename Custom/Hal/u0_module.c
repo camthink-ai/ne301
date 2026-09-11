@@ -8,6 +8,7 @@
 #include "common_utils.h"
 #include "version.h"
 #include "u0_module.h"
+#include "drtc.h"
 
 static uint32_t g_key_value = 1, g_pir_value = 0, g_power_status = PWR_DEFAULT_SWITCH_BITS, g_wakeup_flag = 0;
 static uint8_t pir_is_inited = 0;
@@ -168,29 +169,26 @@ int u0_module_update_rtc_time(void)
 
 int u0_module_sync_rtc_time(void)
 {
-    int ret = 0;
-    RTC_TimeTypeDef time = {0};
-    RTC_DateTypeDef date = {0};
     ms_bridging_time_t ms_time = {0};
 
-    ret = ms_bridging_request_get_time(u0_handler, &ms_time);
+    int ret = ms_bridging_request_get_time(u0_handler, &ms_time);
     if (ret != MS_BR_OK) return ret;
 
-    time.Hours = ms_time.hour;
-    time.Minutes = ms_time.minute;
-    time.Seconds = ms_time.second;
-    date.Year = ms_time.year;
-    date.Month = ms_time.month;
-    date.Date = ms_time.day;
-    date.WeekDay = ms_time.week;
-
-    ret = HAL_RTC_SetTime(&hrtc, &time, RTC_FORMAT_BIN);
-    if (ret != HAL_OK) return ret;
-
-    ret = HAL_RTC_SetDate(&hrtc, &date, RTC_FORMAT_BIN);
-    if (ret != HAL_OK) return ret;
-
-    return ret;
+    /* Route through the common step gate (sub-2s guard, scheduler re-check,
+     * step generation) instead of writing the calendar directly: a direct
+     * HAL write bypasses every clock-step protection — it can jump over the
+     * armed alarm second and leaves schedule state on the old clock scale.
+     * ms_time.year shares the RTC register scale (full year - START_YEARS).
+     * Weekday is derived from the date by the timestamp path. */
+    uint64_t ts = time_to_timeStamp((unsigned int)ms_time.year + START_YEARS,
+                                    ms_time.month, ms_time.day,
+                                    ms_time.hour, ms_time.minute, ms_time.second);
+    if (ts == 0) return -1;
+    /* _from_u0: skip the U0 write-back — one bridging transaction total (the
+     * get above); pushing back what we just read is pure boot-window traffic.
+     * false return = sub-2s skip: clock already matches. */
+    (void)rtc_set_timeStamp_from_u0(ts);
+    return 0;
 }
 
 int u0_module_get_power_status(uint32_t *switch_bits)
@@ -378,7 +376,7 @@ int u0_module_enter_sleep_mode_ex(uint32_t wakeup_flag, uint32_t switch_bits, ui
         power_ctrl.alarm_b.is_valid = rtc_alarm_b->is_valid;
         power_ctrl.alarm_b.week_day = rtc_alarm_b->week_day;
         power_ctrl.alarm_b.date = rtc_alarm_b->date;
-        power_ctrl.alarm_a.hour = rtc_alarm_b->hour;
+        power_ctrl.alarm_b.hour = rtc_alarm_b->hour;
         power_ctrl.alarm_b.minute = rtc_alarm_b->minute;
         power_ctrl.alarm_b.second = rtc_alarm_b->second;
     }

@@ -31,6 +31,18 @@ extern "C" {
 #define OTA_EXTENSION_KEY_LEN   32
 #define OTA_EXTENSION_VAL_LEN   32
 
+/* Device model identity, stamped into ota_header_t.device_model (0x1C) by the
+ * packer and compared on every upload/precheck — a package built for another
+ * model (e.g. an NE302 build on an NE301) is hard-rejected before any flash
+ * is touched, on both the normal and the bundle-direct paths. A stamp of 0
+ * means "legacy/unstamped" and is allowed through.
+ * Canonical source: the root Makefile's DEVICE_MODEL, injected here via
+ * COMMON_DEFS (-DOTA_DEVICE_MODEL=...); this #ifndef default only covers
+ * builds that bypass the Makefile. */
+#ifndef OTA_DEVICE_MODEL
+#define OTA_DEVICE_MODEL        0x3010u     /* NE301 */
+#endif
+
 /* Firmware type constants */
 #define OTA_FW_TYPE_UNKNOWN     0x00
 #define OTA_FW_TYPE_FSBL        0x01        /* First Stage Boot Loader */
@@ -40,6 +52,10 @@ extern "C" {
 #define OTA_FW_TYPE_CONFIG      0x05        /* Configuration */
 #define OTA_FW_TYPE_PATCH       0x06        /* Patch */
 #define OTA_FW_TYPE_FULL        0x07        /* Full Package */
+#define OTA_FW_TYPE_WIFI        0x08        /* WiFi (SiWG917) firmware
+                                             * Payload written to flash is the conversion-script
+                                             * output (flash_header_t + .rps); the OTA header is
+                                             * used only for web verification and is NOT written. */
 
 /* Encryption type constants */
 #define OTA_ENCRYPT_NONE        0x00
@@ -68,7 +84,9 @@ typedef struct __attribute__((packed)) {
     uint32_t timestamp;                     /* 0x10: Creation timestamp (Unix time) */
     uint32_t sequence;                      /* 0x14: Sequence number */
     uint32_t total_package_size;            /* 0x18: Total package size (header + firmware) */
-    uint8_t  reserved2[36];                 /* 0x1C-0x3F: Reserved (36 bytes) */
+    uint32_t device_model;                  /* 0x1C: Device model id (OTA_DEVICE_MODEL;
+                                              *   0x3010 = NE301, 0 = unstamped/legacy) */
+    uint8_t  reserved2[32];                 /* 0x20-0x3F: Reserved (32 bytes) */
     
     /* ========== Firmware Information Section (160 bytes) ========== */
     char     fw_name[32];                   /* 0x40-0x5F: Firmware name */
@@ -84,7 +102,12 @@ typedef struct __attribute__((packed)) {
     uint8_t  reserved3[4];                  /* 0xDC-0xDF: Reserved (4 bytes) */
     
     /* ========== Target Information Section (64 bytes) ========== */
-    uint32_t target_addr;                   /* 0xE0: Target flash address */
+    uint32_t part_table_crc;                /* 0xE0: CRC32 (zlib convention) of the partition table this
+                                              *   package was built for — 13 packed records
+                                              *   (id,0,0,base,size) of mem_map.h, byte-identical to
+                                              *   ota_bundle.c's device table hash. 0 = not stamped
+                                              *   (precheck skips the layout check). Was target_addr,
+                                              *   which was never written or read. */
     uint32_t target_size;                   /* 0xE4: Target region size */
     uint32_t target_offset;                 /* 0xE8: Target offset address */
     char     target_partition[16];          /* 0xEC-0xFB: Target partition name */

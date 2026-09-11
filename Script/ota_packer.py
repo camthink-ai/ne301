@@ -27,6 +27,10 @@ from pathlib import Path
 OTA_HEADER_SIZE = 1024
 OTA_MAGIC_NUMBER = 0x4F544155  # "OTAU"
 OTA_HEADER_VERSION = 0x0100    # v1.0
+# Device model id stamped at 0x1C — a device whose OTA_DEVICE_MODEL differs
+# rejects the package. Default for standalone runs; `make pkg` always passes
+# -m from the root Makefile's DEVICE_MODEL (the single source of truth).
+DEVICE_MODEL = 0x3010          # NE301
 OTA_MAX_NAME_LEN = 32
 OTA_MAX_DESC_LEN = 64
 OTA_HASH_SIZE = 32
@@ -42,6 +46,7 @@ FW_TYPE_MAP = {
     'config': 0x05,
     'patch': 0x06,
     'full': 0x07,
+    'wifi': 0x08,
 }
 
 @dataclass
@@ -52,6 +57,23 @@ class FirmwareInfo:
     fw_type: int
     version: tuple = (1, 0, 0, 0)  # (major, minor, patch, build)
     suffix: str = ''  # Optional version suffix
+
+
+def part_table_crc(mem_map_path: str, board_flash: int = 128) -> int:
+    """CRC32 of the partition table, hashed exactly like the device side
+    (ota_bundle.c ota_bundle_part_table_crc): BUNDLE_PART_ID_COUNT packed
+    records '<BBHII' = (part_id, 0, 0, base, size) in bundle part-id order.
+    Stamped at 0xE0 so a single-firmware precheck can detect that the
+    package was built for a different partition layout."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from ota_bundle_packer import parse_mem_map, PART_IDS
+    defines = parse_mem_map(mem_map_path, board_flash)
+    buf = b''.join(
+        struct.pack('<BBHII', pid, 0, 0,
+                    defines[f'{prefix}_BASE'], defines[f'{prefix}_SIZE'])
+        for prefix, pid in PART_IDS
+    )
+    return zlib.crc32(buf) & 0xFFFFFFFF
 
 class OTAPacker:
     """OTA firmware package creator"""
@@ -72,7 +94,8 @@ class OTAPacker:
         """Calculate SHA256 hash"""
         return hashlib.sha256(data).digest()
     
-    def create_header(self, fw_info: FirmwareInfo, fw_data: bytes) -> bytes:
+    def create_header(self, fw_info: FirmwareInfo, fw_data: bytes,
+                      part_crc: int = 0, model_id: int = 0) -> bytes:
         """
         Create OTA Header matching ota_header_t structure
         Total: 1024 bytes
@@ -106,8 +129,12 @@ class OTAPacker:
         total_size = len(fw_data) + OTA_HEADER_SIZE
         struct.pack_into('<I', self.header_data, offset, total_size)
         offset += 4
-        # 0x1C-0x3F: reserved2 (36 bytes) already zero
-        offset += 36
+        # 0x1C: device model id (0 = unstamped/legacy; must match the device's
+        # OTA_DEVICE_MODEL or the upload is rejected)
+        struct.pack_into('<I', self.header_data, offset, model_id)
+        offset += 4
+        # 0x20-0x3F: reserved2 (32 bytes) already zero
+        offset += 32
         
         # ========== Firmware Information Section (160 bytes): 0x40-0xDF ==========
         assert offset == 0x40, f"Offset mismatch at firmware section: {offset:04X} != 0x40"
@@ -168,7 +195,9 @@ class OTAPacker:
         offset += 4
         
         # ========== Target Information Section (64 bytes): 0xE0-0x11F ==========
-        offset += 64  # All zeros for now
+        # 0xE0: partition-table CRC (0 = not stamped); rest stays reserved
+        struct.pack_into('<I', self.header_data, offset, part_crc)
+        offset += 64
         
         # ========== Dependency Information Section (64 bytes): 0x120-0x15F ==========
         offset += 64  # All zeros (reserved)
@@ -190,17 +219,18 @@ class OTAPacker:
         
         return bytes(self.header_data)
     
-    def pack_firmware(self, input_file: str, output_file: str, fw_info: FirmwareInfo) -> bool:
+    def pack_firmware(self, input_file: str, output_file: str, fw_info: FirmwareInfo,
+                      part_crc: int = 0, model_id: int = 0) -> bool:
         """Pack firmware file"""
         try:
             # Read original firmware file
             with open(input_file, 'rb') as f:
                 fw_data = f.read()
-            
+
             print(f"Reading firmware file: {input_file} ({len(fw_data)} bytes)")
-            
+
             # Create header
-            header = self.create_header(fw_info, fw_data)
+            header = self.create_header(fw_info, fw_data, part_crc, model_id)
             
             # Write OTA firmware package (header + firmware data)
             with open(output_file, 'wb') as f:
@@ -230,6 +260,13 @@ def main():
     parser.add_argument('-t', '--type', choices=list(FW_TYPE_MAP.keys()), help='Firmware type (REQUIRED)')
     parser.add_argument('-v', '--version', help='Version number (REQUIRED, format: major.minor.patch.build)')
     parser.add_argument('-s', '--suffix', help='Version suffix (optional, e.g., alpha, beta, rc1)')
+    parser.add_argument('--mem-map', default=os.path.join(os.path.dirname(__file__), '..',
+                        'Custom', 'Common', 'Inc', 'mem_map.h'),
+                        help='mem_map.h to hash into the 0xE0 partition-table CRC')
+    parser.add_argument('--board-flash', type=int, default=128, choices=[64, 128],
+                        help='BOARD_FLASH_SIZE variant for --mem-map parsing (default 128)')
+    parser.add_argument('-m', '--model', type=lambda s: int(s, 0), default=DEVICE_MODEL,
+                        help='device model id stamped at 0x1C (hex; 0x3010 = NE301, 0 = unstamped)')
     parser.add_argument('--clean', action='store_true', help='Remove all generated OTA package files (*_ota.bin)')
     parser.add_argument('--force', action='store_true', help='Force clean without confirmation (use with --clean)')
     
@@ -341,8 +378,15 @@ def main():
             version_display = f"{version_display}_{fw_info.suffix}"
         print(f"  Version: {version_display}")
         print(f"  Output file: {output_file}")
-        
-        if not packer.pack_firmware(args.input, output_file, fw_info):
+        try:
+            part_crc = part_table_crc(os.path.abspath(args.mem_map), args.board_flash)
+            print(f"  Part table CRC: 0x{part_crc:08X} ({args.mem_map})")
+        except RuntimeError as e:
+            print(f"Error: cannot stamp partition-table CRC: {e}")
+            return 1
+        print(f"  Device model: 0x{args.model:04X}")
+
+        if not packer.pack_firmware(args.input, output_file, fw_info, part_crc, args.model):
             return 1
     
     return 0

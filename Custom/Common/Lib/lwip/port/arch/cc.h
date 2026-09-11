@@ -41,13 +41,13 @@ extern "C" {
 #define LWIP_ERRNO_INCLUDE none
 
 #define LWIP_NO_INTTYPES_H 1
-#define X8_F  "02x"
+#define X8_F  "x"
 #define U16_F "u"
 #define U32_F "lu"
 #define S32_F "ld"
-#define X32_F "08lx"
+#define X32_F "lx"
 #define S16_F "d"
-#define X16_F "04x"
+#define X16_F "x"
 #ifdef _WIN64
 #define SZT_F "lu"
 #else

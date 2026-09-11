@@ -21,6 +21,7 @@
 #define APP_MAGIC 0x41505000 //APP
 #define WEB_MAGIC 0x57454200 //WEB
 #define AI_MAGIC  0x41490000 //AI
+#define WIFI_MAGIC 0x57494649 //WIFI
 
 typedef int (*upgrade_flash_read)(uint32_t offset, void *data, size_t size);
 typedef int (*upgrade_flash_write)(uint32_t offset, void *data, size_t size);
@@ -30,9 +31,10 @@ typedef enum {
     FIRMWARE_FSBL = 0,
     FIRMWARE_APP,
     FIRMWARE_WEB,
-    FIRMWARE_DEFAULT_AI,
     FIRMWARE_AI_1,
-    FIRMWARE_RESERVED1,
+    FIRMWARE_AI_2,
+    FIRMWARE_WIFI,      // WiFi (SiWG917) firmware — reuses the former RESERVED1 slot
+                        // index to keep the NVS-persisted active_slot[] layout stable.
     FIRMWARE_RESERVED2,
     FIRMWARE_TYPE_COUNT
 } FirmwareType;
@@ -85,6 +87,8 @@ typedef struct {
     uint32_t current_offset;
     uint32_t total_size;
     uint32_t crc32;
+    uint8_t direct;        /* 1 = direct-address write (bundle layout migration):
+                              no slot switch, no system-state save on finish */
 } upgrade_handle_t;
 
 void save_system_state(void);
@@ -92,6 +96,13 @@ SystemState *get_system_state(void);
 void init_system_state(upgrade_flash_read read, upgrade_flash_write write, upgrade_flash_erase erase);
 uint32_t get_active_partition(FirmwareType type);
 int upgrade_begin(upgrade_handle_t *handle, FirmwareType type, firmware_header_t *header);
+/* Absolute-address variant used by the OTA bundle layout-migration path:
+ * flash_addr is an absolute flash address (e.g. APP1_BASE), 4K-aligned. */
+int upgrade_begin_direct(upgrade_handle_t *handle, FirmwareType type, firmware_header_t *header, uint32_t flash_addr);
+/* Blank the OTA info partition (SystemState). Used just before a direct-mode
+ * FSBL write: blank state is the safe default both old and new firmware can
+ * self-rebuild from (init_system_state rebuilds from slot-A OTA headers). */
+void upgrade_erase_ota_info(void);
 int upgrade_write_chunk(upgrade_handle_t *handle, const void *chunk_data, size_t chunk_size);
 int upgrade_finish(upgrade_handle_t *handle);
 int upgrade_read_begin(upgrade_handle_t *handle, FirmwareType type, int slot_idx);

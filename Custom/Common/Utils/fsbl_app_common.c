@@ -20,7 +20,7 @@ int fsbl_app_read_sys_clk_config(sys_clk_config_t *config)
 {
   if (!g_ops_inited) return -1;
   if (config == NULL) return -2;
-
+  
   if (g_ops.flash_read(SYS_CLK_CONFIG_SAVE_FLASH_BASE, config, sizeof(*config)) != 0) return -3;
   if (g_ops.crc32(config, (sizeof(*config) - sizeof(config->crc32))) != config->crc32) return -4;
   return 0;

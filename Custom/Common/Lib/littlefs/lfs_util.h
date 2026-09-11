@@ -29,7 +29,14 @@
 //
 // #include <stddef.h>
 // extern void *my_malloc(size_t sz);
-// #define LFS_MALLOC(sz) my_malloc(sz)
+
+#include "Hal/mem.h"
+#define LFS_MALLOC(sz) hal_mem_alloc_aligned(sz, 32, MEM_FAST)
+#define LFS_FREE(ptr) hal_mem_free(ptr)
+
+#include "crc.h"
+#define LFS_CRC32(seed, buffer, size) CRC_Accumulate(seed, (uint32_t *)buffer, size)
+
 //
 // And build littlefs with the header by defining LFS_DEFINES.
 // (-DLFS_DEFINES=my_defines.h)
@@ -39,6 +46,10 @@
 #endif
 
 // #define LFS_YES_TRACE
+#define LFS_YES_ERROR
+#define LFS_YES_WARN
+#define LFS_YES_DEBUG
+
 // System includes
 #include <stdint.h>
 #include <stdbool.h>
@@ -51,10 +62,10 @@
 #ifndef LFS_NO_ASSERT
 #include <assert.h>
 #endif
-#if !defined(LFS_NO_DEBUG) || \
-        !defined(LFS_NO_WARN) || \
-        !defined(LFS_NO_ERROR) || \
-        defined(LFS_YES_TRACE)
+#if defined(LFS_YES_DEBUG) || \
+        defined(LFS_YES_WARN) || \
+        defined(LFS_YES_TRACE) || \
+        defined(LFS_YES_ERROR)
 #include <stdio.h>
 #endif
 
@@ -80,7 +91,7 @@ extern "C"
 #endif
 
 #ifndef LFS_DEBUG
-#ifndef LFS_NO_DEBUG
+#ifdef LFS_YES_DEBUG
 #define LFS_DEBUG_(fmt, ...) \
     printf("%s:%d:debug: " fmt "%s\r\n", __FILE__, __LINE__, __VA_ARGS__)
 #define LFS_DEBUG(...) LFS_DEBUG_(__VA_ARGS__, "")
@@ -90,7 +101,7 @@ extern "C"
 #endif
 
 #ifndef LFS_WARN
-#ifndef LFS_NO_WARN
+#ifdef LFS_YES_WARN
 #define LFS_WARN_(fmt, ...) \
     printf("%s:%d:warn: " fmt "%s\r\n", __FILE__, __LINE__, __VA_ARGS__)
 #define LFS_WARN(...) LFS_WARN_(__VA_ARGS__, "")
@@ -100,7 +111,7 @@ extern "C"
 #endif
 
 #ifndef LFS_ERROR
-#ifndef LFS_NO_ERROR
+#ifdef LFS_YES_ERROR
 #define LFS_ERROR_(fmt, ...) \
     printf("%s:%d:error: " fmt "%s\r\n", __FILE__, __LINE__, __VA_ARGS__)
 #define LFS_ERROR(...) LFS_ERROR_(__VA_ARGS__, "")
@@ -111,7 +122,7 @@ extern "C"
 
 // Runtime assertions
 #ifndef LFS_ASSERT
-#ifndef LFS_NO_ASSERT
+#ifdef LFS_YES_ASSERT
 #define LFS_ASSERT(test) assert(test)
 #else
 #define LFS_ASSERT(test)

@@ -87,6 +87,7 @@ typedef struct {
     uint8_t *enc_output_buffer;
     uint32_t enc_output_buffer_size;
     uint32_t enc_output_buffer_capacity;
+    bool enc_output_buffer_handed_out; /*!< OUTPUT_ENC_BUFFER gave the pointer to a caller (caller owns it) */
 
     uint8_t *dec_input_buffer;
     uint32_t dec_input_buffer_size;

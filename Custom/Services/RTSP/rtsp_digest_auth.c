@@ -215,7 +215,7 @@ aicam_bool_t rtsp_digest_verify(const char *auth_header, const char *method,
     }
     const char *params = auth_header + 7;
 
-    /* Static buffers — safe because RTSP is single-threaded */
+    /* Static buffers - safe because RTSP is single-threaded */
     static char recv_username[128];
     static char recv_realm[128];
     static char recv_nonce[128];

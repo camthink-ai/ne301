@@ -50,19 +50,26 @@ export default function Player({ videoUrl, videoRendererInstance }: PlayerProps)
     }
   }, [isShowStreamStats]);
   useEffect(() => {
+    // Re-check after every await: if the effect is cleaned up (navigate
+    // away / videoUrl change) while `startVideoStreamReq` is in flight, the
+    // continuation must not create a player nobody will destroy - its
+    // workers and auto-reconnect would outlive the page until tab close.
+    let cancelled = false;
     const initializePlayer = async () => {
       // Show loading during the initial connection phase
       setLoading(true);
       await startVideoStreamReq();
-      if (!videoUrl) return;
+      if (cancelled || !videoUrl) return;
       const video = videoRef.current; // HTMLVideoElement | null
       if (!video) return;
-      videoRendererInstance.current = new H264Player(() => { });
-      videoRendererInstance.current?.initPlayer(video);
-      videoRendererInstance.current?.start(videoUrl);
+      const player = new H264Player(() => { });
+      videoRendererInstance.current = player;
+      player.initPlayer(video);
+      player.start(videoUrl);
     };
     initializePlayer();
     return () => {
+      cancelled = true;
       videoRendererInstance.current?.destroy();
       videoRendererInstance.current = null;
       stopVideoStreamReq();
