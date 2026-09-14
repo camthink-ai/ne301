@@ -87,6 +87,11 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
   const { configTriggerConfigReq, getTriggerConfigReq } = deviceTool;
   const [intervalCaptureTime, setIntervalCaptureTime] = useState(10);
   const [intervalCaptureTimeUnit, setIntervalCaptureTimeUnit] = useState('hour');
+  // Raw text while editing the interval field; null = not editing (show the
+  // committed value). Parse + clamp happen once on blur — clamping inside
+  // onChange rewrites the field mid-typing (clear → forced "1", then typing
+  // "30" shows "130"), making values unreachable.
+  const [intervalDraft, setIntervalDraft] = useState<string | null>(null);
   const [scheduledStartTime, setScheduledStartTime] = useState('08:00');
   const [scheduledEndTime, setScheduledEndTime] = useState('23:59');
   // Daily grid anchor "HH:MM" for normal interval mode — a time-of-day, no
@@ -204,31 +209,19 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
     // start/end/anchor must still re-populate the inputs
   }, [triggerConfig.timer_trigger]);
 
-  // Interval is a daily-lattice step — it must stay under 24h (hour ≤ 23,
+  // Interval is a daily-lattice step — integers only (decimals are rounded at
+  // commit, never mid-typing), and it must stay under 24h (hour ≤ 23,
   // minute ≤ 1439)
   const intervalMax = intervalCaptureTimeUnit === 'hour' ? 23 : 1439;
-  const clampInterval = (value: number) => Math.max(1, Math.min(intervalMax, Number.isNaN(value) ? 1 : value));
+  const clampInterval = (value: number) => {
+    const rounded = Math.round(Number.isNaN(value) ? 1 : value);
+    return Math.max(1, Math.min(intervalMax, rounded));
+  };
 
   const handleIntervalCaptureTimeChange = (e: Event) => {
-    const target = e.target as HTMLInputElement;
-    const inputValue = target.value;
-    // Handle empty string
-    if (inputValue === '') {
-      setIntervalCaptureTime(1);
-      return;
-    }
-    const value = Number(inputValue);
-    // Limit minimum value to 1, cannot be negative or 0
-    if (Number.isNaN(value)) {
-      setIntervalCaptureTime(1);
-    } else {
-      const clampedValue = clampInterval(value);
-      setIntervalCaptureTime(clampedValue);
-      // If value is clamped, immediately update input display
-      if (value !== clampedValue) {
-        target.value = clampedValue.toString();
-      }
-    }
+    // Keep any intermediate text (including "") as the draft; parse + clamp
+    // once on blur
+    setIntervalDraft((e.target as HTMLInputElement).value);
   };
   const handleIntervalCaptureTimeUnitChange = (value: string) => {
     setIntervalCaptureTimeUnit(value);
@@ -518,13 +511,21 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
             min={1}
             max={intervalMax}
             className="w-20"
-            value={intervalCaptureTime}
+            value={intervalDraft ?? intervalCaptureTime}
             onChange={handleIntervalCaptureTimeChange}
             onBlur={e => {
-              const value = Number((e.target as HTMLInputElement).value);
-              const clampedValue = clampInterval(value);
+              const clampedValue = clampInterval(
+                Number((e.target as HTMLInputElement).value)
+              );
               setIntervalCaptureTime(clampedValue);
-              (e.target as HTMLInputElement).value = clampedValue.toString();
+              setIntervalDraft(null);
+            }}
+            onKeyDown={e => {
+              // Enter commits (blurs) like clicking away
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                (e.target as HTMLInputElement).blur();
+              }
             }}
           />
           <Select
