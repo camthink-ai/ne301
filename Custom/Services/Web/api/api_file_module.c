@@ -683,7 +683,9 @@ aicam_result_t file_download_handler(http_handler_context_t *ctx)
     ctx->conn->fn_data = dc;
     ctx->conn->fn      = file_download_event_handler;
 
-    // Tell router not to send additional response
+    // Tell router not to send additional response: the streaming callback
+    // owns the connection (headers already sent above)
+    ctx->response.sent = AICAM_TRUE;
     return AICAM_ERROR_NOT_SENT_AGAIN;
 }
 
@@ -1009,6 +1011,9 @@ aicam_result_t file_preview_handler(http_handler_context_t *ctx)
         ctx->conn->fn_data = dc;
         ctx->conn->fn      = file_download_event_handler;
 
+        // The streaming callback owns the connection (headers already sent
+        // above): keep the dispatcher from sending on top of the stream.
+        ctx->response.sent = AICAM_TRUE;
         return AICAM_ERROR_NOT_SENT_AGAIN;
     }
 

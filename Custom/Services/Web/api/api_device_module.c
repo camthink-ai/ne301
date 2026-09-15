@@ -1876,7 +1876,9 @@ aicam_result_t device_pref_stream_tab_handler(http_handler_context_t *ctx) {
     }
     json_config_nvs_write_string(NVS_KEY_PREF_STREAM_TAB, tab);
     cJSON_Delete(req);
-    return api_response_success(ctx, "{}", "Preference saved");
+    /* "{}" is a rodata literal — use the borrowed variant so the dispatcher
+     * does not free() non-heap storage */
+    return api_response_success_static(ctx, "{}", "Preference saved");
 }
 
 /**
