@@ -53,7 +53,15 @@
       "POE_STATUS_GATEWAY_UNREACHABLE":"Gateway Unreachable",
       "POE_STATUS_DNS_ERROR":"DNS Resolution Error",
       "POE_STATUS_ERROR":"Generic Error",
-      "API_BUSINESS_ERROR_MODEL_RELOAD_FAILED":"Model Reload Failed, Please Confirm the Model Format"
+      "API_BUSINESS_ERROR_MODEL_RELOAD_FAILED":"Model Reload Failed, Please Confirm the Model Format",
+      "ISP_NOT_INITIALIZED":"ISP Not Initialized",
+      "ISP_INVALID_PARAM":"Invalid ISP Parameter",
+      "ISP_PARAM_OUT_OF_RANGE":"ISP Parameter Out of Range",
+      "ISP_DEPENDENCY_ERROR":"ISP Parameter Dependency Conflict",
+      "ISP_HAL_ERROR":"ISP Hardware Error",
+      "ISP_SENSOR_ERROR":"Image Sensor Error",
+      "ISP_ALGO_ERROR":"ISP Algorithm Error",
+      "ISP_BUSY":"ISP Busy"
     },
     "basic": {
       "login_success": "Login Success ! Welcome back!"

@@ -1820,7 +1820,11 @@ aicam_result_t ota_export_firmware_handler(http_handler_context_t *ctx)
     ctx->conn->fn_data = export_ctx;
     
     LOG_SVC_INFO("Firmware export started: %s, %u bytes", export_filename, (unsigned int)export_ctx->remaining_size);
-    
+
+    // The streaming callback owns the connection from here (response headers
+    // already sent above): mark the response sent so the dispatcher does not
+    // append a JSON envelope onto the firmware stream.
+    ctx->response.sent = AICAM_TRUE;
     return AICAM_ERROR_NOT_SENT_AGAIN;
 }
 

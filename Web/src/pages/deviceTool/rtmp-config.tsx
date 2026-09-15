@@ -400,7 +400,7 @@ export default function RtmpConfig() {
                     </Label>
                     <Input
                       variant="ghost"
-                      placeholder={i18n._('common.please_enter')}
+                      placeholder="rtmp://YOUR_SERVER_IP:1935/live"
                       type="text"
                       value={rtmpConfig.config.url}
                       onChange={e => setRtmpConfig({

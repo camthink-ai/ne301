@@ -215,6 +215,15 @@ export default function CaptureConfig() {
               </Select>
             </div>
 
+            {/* flash write-speed warning — measured ~0.13 MB/s through littlefs
+             * (see .test/NE301_NOR_Flash_Perf_Report.md), so multi-MB captures
+             * can take 30s+ to persist. Amber hint like the record-cap warning. */}
+            {(storage === 'flash' || storage === 'auto') && (
+              <div className="rounded bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+                {i18n._('sys.capture_settings.storage_flash_slow_hint')}
+              </div>
+            )}
+
             {/* flash record-cap warning — amber alert box below storage selector */}
             {(storage === 'flash' || storage === 'auto') && cfg?.flash_max_records > 0 && (
               <div className="rounded bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">

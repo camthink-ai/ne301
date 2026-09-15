@@ -113,7 +113,6 @@ const deviceTool = {
   // Get AI status
   getAiStatusReq: () => request.get('/api/v1/ai/status'),
   toggleAiReq: (data: { ai_enabled: boolean }) => request.post('/api/v1/ai/toggle', data),
-  getTriggerMethodReq: () => request.get('/api/v1/trigger-method/status'),
 
   // AI parameters
   getAiParamsReq: () => request.get('/api/v1/ai/params'),

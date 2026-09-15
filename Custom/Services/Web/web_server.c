@@ -396,18 +396,25 @@ static aicam_result_t api_response_set(http_handler_context_t* ctx,
     // Set business error code (default to 0 for success)
     ctx->response.error_code = error_code;
     
-    // Set message (default to "success" if NULL)
-    ctx->response.message = (char*)(message ? message : "success");
+    // Set message (default to "success" if NULL).
+    // Must be copied: handlers may pass stack buffers (e.g. local result
+    // structs) that are already dead when http_send_response serializes.
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "%s",
+             message ? message : "success");
     
     // Set data
     ctx->response.data = (char*)data;
+    // api_response_* default: data is heap from the cJSON allocator, owned by
+    // the response and freed by the dispatcher after send.
+    ctx->response.data_borrowed = AICAM_FALSE;
+    ctx->response.prepared = AICAM_TRUE;
 
     return AICAM_OK;
 }
 
 
-aicam_result_t api_response_success(http_handler_context_t* ctx, 
-                                   const char* data, 
+aicam_result_t api_response_success(http_handler_context_t* ctx,
+                                   const char* data,
                                    const char* message)
 {
     if (!ctx) {
@@ -416,7 +423,24 @@ aicam_result_t api_response_success(http_handler_context_t* ctx,
 
     return api_response_set(ctx, data, message, 200, 0);
 }
- 
+
+aicam_result_t api_response_success_static(http_handler_context_t* ctx,
+                                   const char* data,
+                                   const char* message)
+{
+    if (!ctx) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    aicam_result_t result = api_response_success(ctx, data, message);
+    if (result == AICAM_OK) {
+        /* Borrowed storage (string literal / static / caller-owned):
+         * the dispatcher must not free it. */
+        ctx->response.data_borrowed = AICAM_TRUE;
+    }
+    return result;
+}
+
 aicam_result_t api_response_error(http_handler_context_t* ctx,
                                   api_error_code_t error_code,
                                   const char* message)
@@ -426,6 +450,18 @@ aicam_result_t api_response_error(http_handler_context_t* ctx,
     }
 
     return api_response_set(ctx, NULL, message, 200, error_code);
+}
+
+aicam_result_t api_response_error_data(http_handler_context_t* ctx,
+                                  api_error_code_t error_code,
+                                  const char* message,
+                                  const char* data)
+{
+    if (!ctx) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    return api_response_set(ctx, data, message, 200, error_code);
 }
 
 
@@ -604,10 +640,22 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
      if (g_web_server.api_router.base_path && strncmp(hm->uri.buf, g_web_server.api_router.base_path, strlen(g_web_server.api_router.base_path)) == 0) {
          LOG_SVC_INFO("[WEB] handle api request\r\n");
          result = web_server_handle_api_request(&ctx);
-         if (result == AICAM_OK) {
-            /* send response */
-            LOG_SVC_INFO("[WEB] send response\r\n");
-            http_send_response(&ctx);
+         /* The composed envelope is authoritative, not the handler's return
+          * code: prepare-then-return-error handlers used to be dropped here,
+          * leaving the client with zero bytes until its timeout. Handlers
+          * that already sent (response.sent) keep ownership of the reply.
+          * If the handler failed without composing anything at all, fall
+          * back to a generic error envelope so the client still gets an
+          * answer. */
+         if (!ctx.response.sent) {
+             if (result != AICAM_OK &&
+                 !ctx.response.prepared &&
+                 ctx.response.message[0] == '\0' &&
+                 ctx.response.data == NULL) {
+                 api_response_error(&ctx, API_ERROR_INTERNAL_ERROR, "Request handler failed");
+             }
+             LOG_SVC_INFO("[WEB] send response\r\n");
+             http_send_response(&ctx);
          }
      } else {
          /* Handle static resource request (sends the response internally) */
@@ -619,7 +667,7 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
      }
  
      /* Clean up resources */
-     if(ctx.response.data) {
+     if(ctx.response.data && !ctx.response.data_borrowed) {
          buffer_free(ctx.response.data);
      }
      
@@ -792,6 +840,10 @@ aicam_result_t http_send_response(http_handler_context_t* ctx) {
         return AICAM_ERROR_INVALID_PARAM;
     }
 
+    /* Mark sent first: handlers that call this directly (OTA pre-check)
+     * suppress the dispatcher's send, and a failed send is not retried. */
+    ctx->response.sent = AICAM_TRUE;
+
     // Create JSON root
     cJSON *root = cJSON_CreateObject();
     if (!root) {
@@ -808,8 +860,8 @@ aicam_result_t http_send_response(http_handler_context_t* ctx) {
         cJSON_AddStringToObject(root, "error_code", api_business_error_code_to_string(ctx->response.error_code));
     }
 
-    // Add message only when not NULL/empty
-    if (ctx->response.message && ctx->response.message[0] != '\0') {
+    // Add message only when not empty
+    if (ctx->response.message[0] != '\0') {
         cJSON_AddStringToObject(root, "message", ctx->response.message);
     }
 

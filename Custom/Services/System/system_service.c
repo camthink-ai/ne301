@@ -3437,6 +3437,15 @@ static void check_rtc_step_reanchor_timer(void)
  *        scheduled node without a dedicated wake (the wake path only fires on
  *        cold-boot wake; a device awake across a node would otherwise miss it).
  *        Idempotent: mark_handled prevents repeat triggers. Call ~every 15s.
+ *
+ *        Arrived-only: due_events also returns a still-future node from the
+ *        forward tolerance half (early-wake semantics meant for the WAKE path,
+ *        where a U0/RTC alarm fires up to WAKE_TOLERANCE_SEC ahead of the node).
+ *        The poll ignores those — it re-runs every 15s anyway, so waiting for
+ *        arrival costs at most one poll period, while firing early would drain
+ *        ahead of the node and stamp flush_handled_at with a future timestamp.
+ *        A device that sleeps before the node still gets it via the RTC wake
+ *        armed by wake_scheduler_next_flush.
  */
 aicam_result_t system_service_poll_scheduled_flush(void)
 {
@@ -3454,7 +3463,11 @@ aicam_result_t system_service_poll_scheduled_flush(void)
         now + WAKE_TOLERANCE_SEC, evs, WAKE_DUTY_MAX);
 
     for (int i = 0; i < n; i++) {
-        if (evs[i].duty == WAKE_DUTY_UPLOAD_FLUSH) {
+        /* Arrived nodes only (see header note): no due <= now gate here would
+         * fire every node up to WAKE_TOLERANCE_SEC early on the first poll
+         * that sees it enter the forward window half. */
+        if (evs[i].duty == WAKE_DUTY_UPLOAD_FLUSH
+            && evs[i].due_unix_sec <= now) {
             LOG_SVC_INFO("[WAKE] scheduled flush due (awake poll) at=%lu",
                          (unsigned long)evs[i].due_unix_sec);
             wake_scheduler_mark_handled(WAKE_DUTY_UPLOAD_FLUSH, evs[i].due_unix_sec);

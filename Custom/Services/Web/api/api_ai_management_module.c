@@ -270,12 +270,11 @@ static aicam_result_t ai_management_set_thresholds_handler(http_handler_context_
     if (!request) {
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid JSON");
     }
-    
-    aicam_result_t result = AICAM_OK;
+
     cJSON* response_data = cJSON_CreateObject();
     cJSON* errors = cJSON_CreateArray();
     cJSON* updated = cJSON_CreateArray();
-    
+
     // Update NMS threshold if provided
     cJSON* nms_item = cJSON_GetObjectItem(request, "nms_threshold");
     if (nms_item && cJSON_IsNumber(nms_item)) {
@@ -366,24 +365,34 @@ static aicam_result_t ai_management_set_thresholds_handler(http_handler_context_
     
     cJSON_Delete(request);
     
-    // Determine response message
+    // Determine response message; a total failure must not look like success
+    // (the web client resolves on data.success alone and would report the
+    // values as saved)
     const char* message;
+    aicam_bool_t total_failure = AICAM_FALSE;
     if (cJSON_GetArraySize(errors) > 0) {
         if (cJSON_GetArraySize(updated) > 0) {
             message = "AI threshold configuration partially updated";
         } else {
             message = "Failed to update AI threshold configuration";
-            result = AICAM_ERROR;
+            total_failure = AICAM_TRUE;
         }
     } else {
         message = "AI threshold configuration updated successfully";
     }
-    
-    api_response_success(ctx, cJSON_Print(response_data), message);
-    
+
+    char *json_string = cJSON_Print(response_data);
     cJSON_Delete(response_data);
-    
-    return result;
+
+    if (!json_string) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
+    }
+
+    if (total_failure) {
+        /* Error envelope, but keep the per-field detail (errors/current values) */
+        return api_response_error_data(ctx, API_ERROR_INVALID_REQUEST, message, json_string);
+    }
+    return api_response_success(ctx, json_string, message);
 }
 
 /* ==================== Module Definition ==================== */

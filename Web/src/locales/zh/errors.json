@@ -53,7 +53,15 @@
       "POE_STATUS_GATEWAY_UNREACHABLE":"网关不可达",
       "POE_STATUS_DNS_ERROR":"DNS解析错误",
       "POE_STATUS_ERROR":"通用错误",
-      "API_BUSINESS_ERROR_MODEL_RELOAD_FAILED":"模型加载失败，请确认模型格式"
+      "API_BUSINESS_ERROR_MODEL_RELOAD_FAILED":"模型加载失败，请确认模型格式",
+      "ISP_NOT_INITIALIZED":"ISP 未初始化",
+      "ISP_INVALID_PARAM":"ISP 参数错误",
+      "ISP_PARAM_OUT_OF_RANGE":"ISP 参数超出范围",
+      "ISP_DEPENDENCY_ERROR":"ISP 参数依赖冲突",
+      "ISP_HAL_ERROR":"ISP 硬件错误",
+      "ISP_SENSOR_ERROR":"图像传感器错误",
+      "ISP_ALGO_ERROR":"ISP 算法错误",
+      "ISP_BUSY":"ISP 忙碌"
     },
     "basic": {
       "login_success": "登录成功！欢迎回来！"
