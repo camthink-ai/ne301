@@ -3601,18 +3601,29 @@ aicam_result_t communication_switch_type_sync(communication_type_t type,
             }
 
             if (connect_result == AICAM_OK && g_communication_service.halow_initialized) {
+                network_service_config_t net_cfg;
+                aicam_bool_t halow_provisioned =
+                    (json_config_get_network_service_config(&net_cfg) == AICAM_OK &&
+                     net_cfg.halow_ssid[0] != '\0');
+
+                if (!halow_provisioned) {
+                    /* Never provisioned (no DPP, no saved SSID): mirror the WiFi
+                     * switch — keep the type selected for configuration instead of
+                     * attempting a netif up the driver rejects (ssid=''). */
+                    result->success = AICAM_TRUE;
+                    result->switch_time_ms = rtc_get_uptime_ms() - start_time;
+                    LOG_SVC_INFO("HaLow has no saved SSID; selected for configuration");
+                    return AICAM_OK;
+                }
+
                 connect_result = apply_halow_config_from_json();
 
                 if (connect_result == AICAM_OK) {
-                    network_service_config_t net_cfg;
                     if (scan_before_connect &&
-                        json_config_get_network_service_config(&net_cfg) == AICAM_OK &&
-                        net_cfg.halow_ssid[0] != '\0') {
-                        if (!halow_scan_contains_ssid(net_cfg.halow_ssid, 0U)) {
-                            snprintf(result->error_message, sizeof(result->error_message),
-                                     "HaLow SSID \"%s\" not found in scan", net_cfg.halow_ssid);
-                            connect_result = AICAM_ERROR;
-                        }
+                        !halow_scan_contains_ssid(net_cfg.halow_ssid, 0U)) {
+                        snprintf(result->error_message, sizeof(result->error_message),
+                                 "HaLow SSID \"%s\" not found in scan", net_cfg.halow_ssid);
+                        connect_result = AICAM_ERROR;
                     }
                 }
 
