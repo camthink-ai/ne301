@@ -1,10 +1,10 @@
 {
   "base_path": "/api/v1",
-  "total_endpoints": 142,
+  "total_endpoints": 176,
   "modules": {
     "ai_management": {
       "source": "Custom/Services/Web/api/api_ai_management_module.c",
-      "source_sha256": "7a01183c3b14be2e",
+      "source_sha256": "835b997bd3f82087",
       "routes": [
         {
           "method": "GET",
@@ -62,9 +62,57 @@
         }
       ]
     },
+    "capture": {
+      "source": "Custom/Services/Web/api/api_capture_module.c",
+      "source_sha256": "bfd8a1abd02bdc85",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/capture/upload-config",
+          "handler": "upload_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/capture/upload-config",
+          "handler": "upload_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/capture/queue",
+          "handler": "queue_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/capture/records",
+          "handler": "records_handler",
+          "require_auth": true
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/v1/capture/records",
+          "handler": "records_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/capture/records/retry",
+          "handler": "records_retry_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/capture/records/delete",
+          "handler": "records_delete_batch_handler",
+          "require_auth": true
+        }
+      ]
+    },
     "device": {
       "source": "Custom/Services/Web/api/api_device_module.c",
-      "source_sha256": "ca84da4e3822bff9",
+      "source_sha256": "52113c35a1485a9a",
       "routes": [
         {
           "method": "GET",
@@ -80,6 +128,12 @@
         },
         {
           "method": "GET",
+          "path": "/api/v1/device/version-check",
+          "handler": "version_check_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
           "path": "/api/v1/device/storage",
           "handler": "device_storage_handler",
           "require_auth": true
@@ -91,6 +145,12 @@
           "require_auth": true
         },
         {
+          "method": "POST",
+          "path": "/api/v1/device/storage/format",
+          "handler": "device_storage_format_handler",
+          "require_auth": true
+        },
+        {
           "method": "GET",
           "path": "/api/v1/device/image/config",
           "handler": "device_image_config_handler",
@@ -124,12 +184,6 @@
           "method": "POST",
           "path": "/api/v1/device/light/config",
           "handler": "device_light_config_handler",
-          "require_auth": true
-        },
-        {
-          "method": "POST",
-          "path": "/api/v1/device/light/control",
-          "handler": "device_light_control_handler",
           "require_auth": true
         },
         {
@@ -206,9 +260,63 @@
         }
       ]
     },
+    "file": {
+      "source": "Custom/Services/Web/api/api_file_module.c",
+      "source_sha256": "cd241dabfb4616aa",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/files/list",
+          "handler": "file_list_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/files/download",
+          "handler": "file_download_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/files/upload",
+          "handler": "file_upload_handler",
+          "require_auth": true
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/v1/files",
+          "handler": "file_delete_handler",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/files/rename",
+          "handler": "file_rename_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/files/preview",
+          "handler": "file_preview_handler",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/files/edit",
+          "handler": "file_edit_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/files/create",
+          "handler": "file_create_handler",
+          "require_auth": true
+        }
+      ]
+    },
     "isp": {
       "source": "Custom/Services/Web/api/api_isp_module.c",
-      "source_sha256": "bafa92c9942d4967",
+      "source_sha256": "5ab0cd9d1ba41c8d",
       "routes": [
         {
           "method": "GET",
@@ -496,7 +604,7 @@
     },
     "network": {
       "source": "Custom/Services/Web/api/api_network_module.c",
-      "source_sha256": "e3dcaca6bd01fa07",
+      "source_sha256": "ed28303daab361d5",
       "routes": [
         {
           "method": "GET",
@@ -508,6 +616,12 @@
           "method": "GET",
           "path": "/api/v1/system/network/wifi/sta",
           "handler": "network_wifi_sta_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/wifi/info",
+          "handler": "network_wifi_info_handler",
           "require_auth": true
         },
         {
@@ -538,6 +652,90 @@
           "method": "POST",
           "path": "/api/v1/system/network/wifi/delete",
           "handler": "network_delete_known_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/wifi/region",
+          "handler": "network_wifi_region_get_handler",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/system/network/wifi/region",
+          "handler": "network_wifi_region_set_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/halow/sta",
+          "handler": "network_halow_sta_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/halow/info",
+          "handler": "network_halow_info_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/halow/region",
+          "handler": "network_halow_region_get_handler",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/system/network/halow/region",
+          "handler": "network_halow_region_set_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/halow/scan",
+          "handler": "network_halow_scan_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/halow",
+          "handler": "network_halow_connect_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/halow/disconnect",
+          "handler": "network_halow_disconnect_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/halow/delete",
+          "handler": "network_halow_delete_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/halow/ip",
+          "handler": "network_halow_ip_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/network/halow/ip",
+          "handler": "network_halow_ip_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/system/network/halow/radio",
+          "handler": "network_halow_radio_handler",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/system/network/halow/radio",
+          "handler": "network_halow_radio_handler",
           "require_auth": true
         },
         {
@@ -706,7 +904,7 @@
     },
     "ota": {
       "source": "Custom/Services/Web/api/api_ota_module.c",
-      "source_sha256": "7bb3b663ef2d5a87",
+      "source_sha256": "f9170eaa9d91c2db",
       "routes": [
         {
           "method": "POST",
@@ -731,12 +929,30 @@
           "path": "/api/v1/system/ota/export",
           "handler": "ota_export_firmware_handler",
           "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/ota/bundle/precheck",
+          "handler": "ota_bundle_precheck_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/ota/bundle/begin",
+          "handler": "ota_bundle_begin_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/system/ota/bundle/finish",
+          "handler": "ota_bundle_finish_handler",
+          "require_auth": true
         }
       ]
     },
     "preview": {
       "source": "Custom/Services/Web/api/api_preview_module.c",
-      "source_sha256": "7c345732b66f2eb2",
+      "source_sha256": "688703e541c6fa4a",
       "routes": [
         {
           "method": "GET",
@@ -760,7 +976,7 @@
     },
     "rtmp": {
       "source": "Custom/Services/Web/api/api_rtmp_module.c",
-      "source_sha256": "0fc505a66307fbdf",
+      "source_sha256": "339723c43ada66cb",
       "routes": [
         {
           "method": "GET",
@@ -796,7 +1012,7 @@
     },
     "rtsp": {
       "source": "Custom/Services/Web/api/api_rtsp_module.c",
-      "source_sha256": "d1499fbbfea7a1d1",
+      "source_sha256": "d628e00a80da84c4",
       "routes": [
         {
           "method": "GET",
@@ -832,7 +1048,7 @@
     },
     "webhook": {
       "source": "Custom/Services/Web/api/api_webhook_module.c",
-      "source_sha256": "937a3ebaa7f8ff31",
+      "source_sha256": "f833f020f0925b87",
       "routes": [
         {
           "method": "GET",
@@ -874,7 +1090,7 @@
     },
     "work_mode": {
       "source": "Custom/Services/Web/api/api_work_mode_module.c",
-      "source_sha256": "210c8214fc142aed",
+      "source_sha256": "b04024e72809568d",
       "routes": [
         {
           "method": "GET",
