@@ -593,8 +593,8 @@ static aicam_result_t video_ai_process_frame(video_ai_node_data_t *data,
 
     uint8_t *input_frame_buffer = NULL;
     uint32_t frame_id = 0;
-    camera_buffer_with_frame_id_t camera_buffer_with_frame_id;
-    int result = device_ioctl(camera_dev, CAM_CMD_GET_PIPE2_BUFFER_WITH_FRAME_ID, 
+    camera_buffer_with_frame_id_t camera_buffer_with_frame_id = {0};
+    int result = device_ioctl(camera_dev, CAM_CMD_GET_PIPE2_BUFFER_WITH_FRAME_ID,
                             (uint8_t *)&camera_buffer_with_frame_id, 0);
 
 
@@ -617,6 +617,12 @@ static aicam_result_t video_ai_process_frame(video_ai_node_data_t *data,
     else
     {
         LOG_CORE_ERROR("Failed to get pipe2 buffer for AI processing, size: %d", camera_buffer_with_frame_id.size);
+        // Camera pipe not producing (stopped/deinit'ed): yield so the node thread
+        // cannot busy-spin against a dead camera, and anchor the pacing tick so
+        // retries keep the configured inference cadence instead of bypassing it
+        // (the gate at the top of this function only sleeps after an anchor).
+        data->last_inference_tick = osKernelGetTickCount();
+        osDelay(5);
         *output_frame = NULL;
         return AICAM_ERROR;
     }
