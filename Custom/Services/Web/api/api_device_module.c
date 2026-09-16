@@ -1347,12 +1347,15 @@ aicam_result_t system_logs_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only GET method is allowed");
     }
     
-    // Read logs from the log file
+    /* aicam.log lives on the internal-flash LittleFS (the log writer is bound
+     * to it via flash_lfs_*). Don't use file_fopen() here: it follows the
+     * "current" FS instance, which an inserted SD card switches away from
+     * flash — reads would then look for the log on the SD card. */
     const char* log_filename = "aicam.log"; // Default log file name
-    void* log_file = file_fopen(log_filename, "r");
+    void* log_file = flash_lfs_fopen(log_filename, "r");
     if (!log_file) {
         // If main log file doesn't exist, try rotated files
-        log_file = file_fopen("aicam.log.1", "r");
+        log_file = flash_lfs_fopen("aicam.log.1", "r");
         if (!log_file) {
             cJSON* response_json = cJSON_CreateObject();
             if (!response_json) {
@@ -1373,32 +1376,32 @@ aicam_result_t system_logs_handler(http_handler_context_t *ctx) {
     int bytes_read;
     
     // First pass: calculate total size
-    while ((bytes_read = file_fread(log_file, buffer, sizeof(buffer))) > 0) {
+    while ((bytes_read = flash_lfs_fread(log_file, buffer, sizeof(buffer))) > 0) {
         log_size += bytes_read;
     }
-    
+
     if (log_size == 0) {
-        file_fclose(log_file);
+        flash_lfs_fclose(log_file);
         return api_response_error(ctx, API_ERROR_NOT_FOUND, "Log file is empty");
     }
-    
+
     // Allocate memory for log content
     log_content = buffer_calloc(1, log_size + 1);
     if (!log_content) {
-        file_fclose(log_file);
+        flash_lfs_fclose(log_file);
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to allocate memory for log content");
     }
-    
+
     // Second pass: read content
-    file_fseek(log_file, 0, SEEK_SET);
+    flash_lfs_fseek(log_file, 0, SEEK_SET);
     size_t total_read = 0;
-    while ((bytes_read = file_fread(log_file, buffer, sizeof(buffer))) > 0) {
+    while ((bytes_read = flash_lfs_fread(log_file, buffer, sizeof(buffer))) > 0) {
         memcpy(log_content + total_read, buffer, bytes_read);
         total_read += bytes_read;
     }
     log_content[log_size] = '\0';
-    
-    file_fclose(log_file);
+
+    flash_lfs_fclose(log_file);
     
     // Create simple response JSON
     cJSON* response_json = cJSON_CreateObject();
@@ -1476,45 +1479,45 @@ aicam_result_t system_logs_export_handler(http_handler_context_t *ctx) {
     for (int i = 0; i < total_files; i++) {
         const char* filename = log_files[i];
         
-        // Try to open the log file
-        void* log_file = file_fopen(filename, "r");
+        // Try to open the log file (flash-bound, see system_logs_handler)
+        void* log_file = flash_lfs_fopen(filename, "r");
         if (!log_file) {
             // File doesn't exist, skip it
             continue;
         }
-        
+
         // Get file size
         size_t file_size = 0;
         char buffer[1024];
         int bytes_read;
-        
+
         // First pass: calculate file size
-        while ((bytes_read = file_fread(log_file, buffer, sizeof(buffer))) > 0) {
+        while ((bytes_read = flash_lfs_fread(log_file, buffer, sizeof(buffer))) > 0) {
             file_size += bytes_read;
         }
-        
+
         if (file_size == 0) {
-            file_fclose(log_file);
+            flash_lfs_fclose(log_file);
             continue;
         }
-        
+
         // Allocate memory for file content
         char* file_content = buffer_calloc(1, file_size + 1);
         if (!file_content) {
-            file_fclose(log_file);
+            flash_lfs_fclose(log_file);
             continue;
         }
-        
+
         // Second pass: read content
-        file_fseek(log_file, 0, SEEK_SET);
+        flash_lfs_fseek(log_file, 0, SEEK_SET);
         size_t total_read = 0;
-        while ((bytes_read = file_fread(log_file, buffer, sizeof(buffer))) > 0) {
+        while ((bytes_read = flash_lfs_fread(log_file, buffer, sizeof(buffer))) > 0) {
             memcpy(file_content + total_read, buffer, bytes_read);
             total_read += bytes_read;
         }
         file_content[file_size] = '\0';
-        
-        file_fclose(log_file);
+
+        flash_lfs_fclose(log_file);
         
         // Create log file entry
         cJSON* log_file_entry = cJSON_CreateObject();
