@@ -183,6 +183,20 @@ to: appliedTo,
       const res: any = await fileManagement.download(fsType, path);
       const blob = res instanceof Blob ? res : res?.data;
       if (!(blob instanceof Blob)) throw new Error('no blob');
+      /* Backend error envelopes arrive as blobs too (responseType blob);
+       * a JSON blob is never a valid payload for an image download —
+       * reject it before creating the object URL, or the error text gets
+       * saved under a .jpg name. Surface the envelope's message. */
+      if (blob.type && blob.type.includes('json')) {
+        let message = '';
+        try {
+          const j = JSON.parse(await blob.text());
+          message = j?.message || '';
+        } catch { /* unparseable — generic toast below */ }
+        console.error('record image download error envelope:', message);
+        toast.error(message || (i18n._('sys.capture_settings.download_failed') ?? 'Download failed'));
+        return;
+      }
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
