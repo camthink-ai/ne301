@@ -144,6 +144,7 @@
       "preview_disconnected": "Preview disconnected, please check the latest page.",
       "photo_capture_success": "Photo capture successfully",
       "url": "URL",
+      "url_placeholder": "e.g. rtmp://IP:1935/live",
       "stream_duration_sec": "Connection Duration",
       "media_stream_settings": "Stream Settings",
       "url_illegal": "URL format error",

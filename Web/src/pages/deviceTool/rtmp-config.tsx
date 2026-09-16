@@ -400,7 +400,7 @@ export default function RtmpConfig() {
                     </Label>
                     <Input
                       variant="ghost"
-                      placeholder="rtmp://YOUR_SERVER_IP:1935/live"
+                      placeholder={i18n._('sys.device_tool.url_placeholder')}
                       type="text"
                       value={rtmpConfig.config.url}
                       onChange={e => setRtmpConfig({

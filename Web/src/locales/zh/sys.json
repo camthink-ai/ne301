@@ -143,6 +143,7 @@
       "preview_disconnected": "预览已断开，请前往最新页面查看。",
       "photo_capture_success": "抓拍成功",
       "url": "URL",
+      "url_placeholder": "例如 rtmp://IP:1935/live",
       "stream_duration_sec": "连接时长",
       "media_stream_settings": "媒体流设置",
       "url_illegal": "URL格式错误",
