@@ -24,6 +24,7 @@
 #include "cmsis_os2.h"
 #include "common_utils.h"
 #include "upgrade_manager.h"
+#include "factory_test.h"
 #include "communication_service.h"
 #include "web_server.h"
 #include "system_service.h"
@@ -421,23 +422,32 @@ static void update_camera_module_info(device_info_config_t *info)
  */
 void device_service_update_device_mac_address()
 {
+    char mac_str[18];
+    uint8_t factory_mac[6];
 
-    netif_info_t netif_info;
-    aicam_result_t result = nm_get_netif_info(NETIF_NAME_WIFI_AP, &netif_info);
-    if (result == AICAM_OK) {
-        // printf("IF_MAC: "NETIF_MAC_STR_FMT"\r\n", NETIF_MAC_PARAMETER(netif_info.if_mac));
-        snprintf(g_device_service.device_info.mac_address, sizeof(g_device_service.device_info.mac_address), 
-                NETIF_MAC_STR_FMT,
-                NETIF_MAC_PARAMETER(netif_info.if_mac));
-        
-        //save mac address to json_config_mgr, it will generate device name if it's still the default
-        aicam_result_t result = json_config_update_device_mac_address(g_device_service.device_info.mac_address);
-        if (result != AICAM_OK) {
-            LOG_SVC_ERROR("Failed to update device MAC address: %d", result);
-        }
+    /* Factory-burned MAC is authoritative when present: use it directly and
+     * never take the AP-interface address over it (netif_init_manager also
+     * programs it onto the AP interface at init, so both stay in sync). */
+    if (factory_mac_get_burned(factory_mac) == 0) {
+        snprintf(mac_str, sizeof(mac_str), NETIF_MAC_STR_FMT,
+                 NETIF_MAC_PARAMETER(factory_mac));
+    } else {
+        netif_info_t netif_info;
+        aicam_result_t result = nm_get_netif_info(NETIF_NAME_WIFI_AP, &netif_info);
+        if (result != AICAM_OK)
+            return;
+        snprintf(mac_str, sizeof(mac_str), NETIF_MAC_STR_FMT,
+                 NETIF_MAC_PARAMETER(netif_info.if_mac));
     }
 
-    
+    snprintf(g_device_service.device_info.mac_address,
+             sizeof(g_device_service.device_info.mac_address), "%s", mac_str);
+
+    // save mac address to json_config_mgr, it will generate device name if it's still the default
+    aicam_result_t result = json_config_update_device_mac_address(g_device_service.device_info.mac_address);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to update device MAC address: %d", result);
+    }
 }
 
 /**

@@ -1713,6 +1713,12 @@ aicam_result_t device_config_export_handler(http_handler_context_t *ctx) {
     // Parse the serialized config and add as "config" object
     cJSON* config_obj = cJSON_Parse(json_buffer);
     if (config_obj) {
+        /* Work frequency (sys clock profile) lives in the FSBL config area,
+         * not in json_config — attach it so an export restores it too.
+         * Omitted when nothing valid is stored (merge keeps current). */
+        sys_clk_config_t sysclk_cfg = {0};
+        if (fsbl_app_read_sys_clk_config(&sysclk_cfg) == 0)
+            cJSON_AddNumberToObject(config_obj, "sys_clk_profile", (double)sysclk_cfg.sys_clk_profile);
         cJSON_AddItemToObject(response_json, "config", config_obj);
     } else {
         // Fallback: add as raw string if parsing fails
@@ -1779,6 +1785,32 @@ aicam_result_t device_config_import_handler(http_handler_context_t *ctx) {
         cJSON_Delete(request_json);
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Missing 'config' or 'config_raw' field");
     }
+
+    /* Work frequency rides along in the config JSON but is applied through
+     * the FSBL config area (same write path as the dedicated web setter).
+     * An absent key keeps the device's current profile (merge semantics). */
+    int sys_clk_profile = -1;   /* -1 = not present in the file */
+    {
+        cJSON* cfg_root = cJSON_Parse(config_json_str);
+        if (cfg_root) {
+            cJSON* prof_item = cJSON_GetObjectItem(cfg_root, "sys_clk_profile");
+            if (cJSON_IsNumber(prof_item)) {
+                uint32_t profile = (uint32_t)cJSON_GetNumberValue(prof_item);
+                if (profile != FSBL_APP_SYSCLK_PROFILE_HSE_200MHZ &&
+                    profile != FSBL_APP_SYSCLK_PROFILE_HSE_400MHZ &&
+                    profile != FSBL_APP_SYSCLK_PROFILE_HSI_800MHZ &&
+                    profile != FSBL_APP_SYSCLK_PROFILE_HSE_800MHZ) {
+                    cJSON_Delete(cfg_root);
+                    cJSON_Delete(request_json);
+                    if (should_free_config_str) cJSON_free(config_json_str);
+                    return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
+                                              "sys_clk_profile must be 1 (HSE 200), 2 (HSE 400), 3 (HSI 800), or 4 (HSE 800)");
+                }
+                sys_clk_profile = (int)profile;
+            }
+            cJSON_Delete(cfg_root);
+        }
+    }
     
     // Parse configuration from JSON string
     aicam_global_config_t new_config;
@@ -1803,6 +1835,11 @@ aicam_result_t device_config_import_handler(http_handler_context_t *ctx) {
     
     // Update timestamp and recalculate checksum
     new_config.timestamp = rtc_get_timeStamp();
+    /* Pin the schema version AFTER validation: the file's marker was
+     * already gate-checked (> CURRENT rejected); the merged struct is
+     * this firmware's schema, so importing an older file must not
+     * downgrade the persisted version marker. */
+    new_config.config_version = JSON_CONFIG_VERSION_CURRENT;
     uint32_t new_checksum;
     json_config_calculate_checksum(&new_config, &new_checksum);
     new_config.checksum = new_checksum;
@@ -1811,6 +1848,17 @@ aicam_result_t device_config_import_handler(http_handler_context_t *ctx) {
     result = json_config_set_config(&new_config);
     if (result != AICAM_OK) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to apply configuration");
+    }
+
+    /* Apply the work frequency only after the config import succeeded: FSBL
+     * picks it up on the next boot, same as the dedicated web setter. */
+    if (sys_clk_profile > 0) {
+        sys_clk_config_t sysclk_cfg = {0};
+        sysclk_cfg.sys_clk_profile = (uint32_t)sys_clk_profile;
+        if (fsbl_app_write_sys_clk_config(&sysclk_cfg) != 0) {
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR,
+                                      "Config imported but failed to save sys_clk_profile");
+        }
     }
     
     // Create success response
@@ -1823,6 +1871,8 @@ aicam_result_t device_config_import_handler(http_handler_context_t *ctx) {
     cJSON_AddNumberToObject(response_json, "config_version", new_config.config_version);
     cJSON_AddNumberToObject(response_json, "timestamp", (double)new_config.timestamp);
     cJSON_AddNumberToObject(response_json, "checksum", new_config.checksum);
+    if (sys_clk_profile > 0)
+        cJSON_AddNumberToObject(response_json, "sys_clk_profile", sys_clk_profile);
     cJSON_AddBoolToObject(response_json, "saved_to_file", result == AICAM_OK);
     
     // Send response

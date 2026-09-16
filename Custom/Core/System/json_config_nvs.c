@@ -1639,8 +1639,19 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
 
     // Load basic configuration information
     result = json_config_nvs_read_uint32(NVS_KEY_CONFIG_VERSION, &temp_uint32);
-    if (result == AICAM_OK)
+    if (result == AICAM_OK) {
         config->config_version = temp_uint32;
+        /* Forward-migrate a stored old version: the schema is backward
+         * compatible (imports of older-version files are still accepted),
+         * so the marker is simply raised to CURRENT — otherwise a device
+         * last saved by an older build keeps exporting the old version.
+         * Persist so the migration survives the next boot. */
+        if (config->config_version < JSON_CONFIG_VERSION_CURRENT) {
+            config->config_version = JSON_CONFIG_VERSION_CURRENT;
+            json_config_nvs_write_uint32(NVS_KEY_CONFIG_VERSION, config->config_version);
+            LOG_CORE_INFO("Config version migrated to %d", config->config_version);
+        }
+    }
     else if (is_first_boot)
         json_config_nvs_write_uint32(NVS_KEY_CONFIG_VERSION, config->config_version);
 

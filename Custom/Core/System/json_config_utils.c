@@ -166,6 +166,31 @@
  }
  
  
+/* Hex digit check shared by the MAC-tail helpers. */
+static aicam_bool_t char_is_hex(char c)
+{
+    return ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f')) ? AICAM_TRUE : AICAM_FALSE;
+}
+
+/* Extract the last 3 MAC bytes as 6 uppercase hex chars ("AA:BB:CC" ->
+ * "AABBCC"). Returns false when the MAC string is too short or contains a
+ * non-hex byte in the tail. */
+static aicam_bool_t extract_mac_tail_upper(const char *mac_address, char tail[7])
+{
+    int mac_len = (int)strlen(mac_address);
+    if (mac_len < 17) return AICAM_FALSE;
+    int idx = 0;
+    for (int i = mac_len - 8; i < mac_len && idx < 6; i++) {
+        char c = mac_address[i];
+        if (c == ':') continue;
+        if (c >= 'a' && c <= 'f') c = c - 'a' + 'A';
+        if (char_is_hex(c) != AICAM_TRUE) return AICAM_FALSE;
+        tail[idx++] = c;
+    }
+    tail[idx] = '\0';
+    return (idx == 6) ? AICAM_TRUE : AICAM_FALSE;
+}
+
  /**
   * @brief Generate device name from MAC address
   * @param device_name Output buffer for device name
@@ -180,29 +205,10 @@
          snprintf(device_name, name_size, "AICAM-000000");
          return;
      }
-     
-     // Extract last 6 characters (3 bytes) from MAC address
-     // MAC format: "XX:XX:XX:XX:XX:XX" -> extract "XXXXXX" from last 3 bytes
-     int mac_len = strlen(mac_address);
-     
-     if (mac_len >= 17) { // Standard MAC address length
-         // Extract last 6 hex characters (ignoring colons)
-         char mac_suffix[7] = {0};
-         int suffix_idx = 0;
-         
-         // Start from the last 8 characters to get last 3 bytes
-         // MAC: 00:11:22:AA:BB:CC
-         // Index: 01234567890123456
-         // mac_len = 17. Start at (17-8) = 9. ("AA:BB:CC")
-         for (int i = mac_len - 8; i < mac_len && suffix_idx < 6; i++) {
-             if (mac_address[i] != ':') {
-                 // Convert to uppercase
-                 mac_suffix[suffix_idx] = (mac_address[i] >= 'a' && mac_address[i] <= 'f') ? 
-                                         (mac_address[i] - 'a' + 'A') : mac_address[i];
-                 suffix_idx++;
-             }
-         }
-         
+
+     /* Extract last 6 characters (3 bytes) from MAC address */
+     char mac_suffix[7] = {0};
+     if (extract_mac_tail_upper(mac_address, mac_suffix) == AICAM_TRUE) {
          snprintf(device_name, name_size, "NE301-%s", mac_suffix);
      } else {
          // Fallback if MAC format is unexpected

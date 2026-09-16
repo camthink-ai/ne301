@@ -113,27 +113,26 @@ static void parse_ai_debug(cJSON *json, ai_debug_config_t *cfg)
 
 static void parse_power_mode(cJSON *json, power_mode_config_t *cfg)
 {
-    json_get_uint32(json, "current_mode", &cfg->current_mode);
-    json_get_uint32(json, "default_mode", &cfg->default_mode);
+    /* current_mode IS persisted config: the switch API saves it to NVS and
+     * boot runs in it, so it round-trips. last_activity_time /
+     * mode_switch_count are runtime state of the SOURCE device — exported
+     * for documentation, never imported; the activity stamp is re-stamped
+     * locally so an imported mode cannot immediately time out on a foreign
+     * timestamp. */
+    /* Mode domain is 0..1 (see power_mode_config_t); the config layer keeps
+     * clear of the service-layer enum, so clamp on the literal bound and
+     * keep the device's value on anything out of domain — the system
+     * controller rejects >= MAX with INVALID_PARAM at boot otherwise. */
+    uint32_t mode = cfg->current_mode;
+    json_get_uint32(json, "current_mode", &mode);
+    if (mode <= 1u)
+        cfg->current_mode = mode;
+    mode = cfg->default_mode;
+    json_get_uint32(json, "default_mode", &mode);
+    if (mode <= 1u)
+        cfg->default_mode = mode;
     json_get_uint32(json, "low_power_timeout_ms", &cfg->low_power_timeout_ms);
-    json_get_uint64(json, "last_activity_time", &cfg->last_activity_time);
-    json_get_uint32(json, "mode_switch_count", &cfg->mode_switch_count);
-}
-
-static void parse_device_info(cJSON *json, device_info_config_t *cfg)
-{
-    json_get_string(json, "device_name", cfg->device_name, sizeof(cfg->device_name));
-    json_get_string(json, "mac_address", cfg->mac_address, sizeof(cfg->mac_address));
-    json_get_string(json, "serial_number", cfg->serial_number, sizeof(cfg->serial_number));
-    json_get_string(json, "hardware_version", cfg->hardware_version, sizeof(cfg->hardware_version));
-    json_get_string(json, "software_version", cfg->software_version, sizeof(cfg->software_version));
-    json_get_string(json, "camera_module", cfg->camera_module, sizeof(cfg->camera_module));
-    json_get_string(json, "extension_modules", cfg->extension_modules, sizeof(cfg->extension_modules));
-    json_get_string(json, "storage_card_info", cfg->storage_card_info, sizeof(cfg->storage_card_info));
-    json_get_float(json, "storage_usage_percent", &cfg->storage_usage_percent);
-    json_get_string(json, "power_supply_type", cfg->power_supply_type, sizeof(cfg->power_supply_type));
-    json_get_float(json, "battery_percent", &cfg->battery_percent);
-    json_get_string(json, "communication_type", cfg->communication_type, sizeof(cfg->communication_type));
+    cfg->last_activity_time = rtc_get_timestamp_ms();
 }
 
 static void parse_auth_mgr(cJSON *json, auth_mgr_config_t *cfg)
@@ -274,8 +273,10 @@ static void parse_device_service(cJSON *json, device_service_config_t *cfg)
     cJSON *light_cfg = cJSON_GetObjectItem(json, "light_config");
     if (cJSON_IsObject(light_cfg))
     {
-        json_get_bool(light_cfg, "connected", &cfg->light_config.connected);
-        uint32_t temp_uint32;
+        /* "connected" is the light-hardware-present probe result of the
+         * SOURCE device — runtime state, not config; export-only (the
+         * local service re-detects it). */
+        uint32_t temp_uint32 = cfg->light_config.mode;
         json_get_uint32(light_cfg, "mode", &temp_uint32);
         cfg->light_config.mode = (light_mode_t)temp_uint32;
         json_get_uint32(light_cfg, "start_hour", &cfg->light_config.start_hour);
@@ -310,21 +311,27 @@ static void parse_network_service(cJSON *json, network_service_config_t *cfg)
     if (cJSON_IsArray(networks)) {
         int count = cJSON_GetArraySize(networks);
         if (count > 16) count = 16;
-        
+
+        /* Only the credentials (ssid/bssid/password/security) are config.
+         * rssi/channel/connected/is_known/last_connected_time are scan
+         * cache of the SOURCE device — exported for documentation, never
+         * imported: a foreign last_connected_time would skew the local
+         * auto-join preference until the next scan. */
         for (int i = 0; i < count; i++) {
             cJSON *net = cJSON_GetArrayItem(networks, i);
             if (cJSON_IsObject(net)) {
                 json_get_string(net, "ssid", cfg->known_networks[i].ssid, sizeof(cfg->known_networks[i].ssid));
                 json_get_string(net, "bssid", cfg->known_networks[i].bssid, sizeof(cfg->known_networks[i].bssid));
                 json_get_string(net, "password", cfg->known_networks[i].password, sizeof(cfg->known_networks[i].password));
-                json_get_int32(net, "rssi", &cfg->known_networks[i].rssi);
-                json_get_uint32(net, "channel", &cfg->known_networks[i].channel);
-                json_get_uint32(net, "security", (uint32_t*)&cfg->known_networks[i].security);
-                json_get_bool(net, "connected", &cfg->known_networks[i].connected);
-                json_get_bool(net, "is_known", &cfg->known_networks[i].is_known);
-                json_get_uint32(net, "last_connected_time", &cfg->known_networks[i].last_connected_time);
+                uint32_t security = cfg->known_networks[i].security;
+                json_get_uint32(net, "security", &security);
+                cfg->known_networks[i].security = (wireless_security_t)security;
             }
         }
+        /* Entries deleted from the array (stale count left behind) must
+         * not resurrect base-config networks past the file's list. */
+        if (cfg->known_network_count > (uint32_t)count)
+            cfg->known_network_count = (uint32_t)count;
     }
     
     // Parse communication type settings
@@ -338,11 +345,11 @@ static void parse_network_service(cJSON *json, network_service_config_t *cfg)
         json_get_string(cellular, "username", cfg->cellular.username, sizeof(cfg->cellular.username));
         json_get_string(cellular, "password", cfg->cellular.password, sizeof(cfg->cellular.password));
         json_get_string(cellular, "pin_code", cfg->cellular.pin_code, sizeof(cfg->cellular.pin_code));
-        uint32_t auth = 0;
+        uint32_t auth = cfg->cellular.authentication;
         json_get_uint32(cellular, "authentication", &auth);
         cfg->cellular.authentication = (uint8_t)auth;
         json_get_bool(cellular, "enable_roaming", &cfg->cellular.enable_roaming);
-        uint32_t oper = 0;
+        uint32_t oper = cfg->cellular.operator;
         json_get_uint32(cellular, "operator", &oper);
         cfg->cellular.operator = (uint8_t)oper;
     }
@@ -350,7 +357,7 @@ static void parse_network_service(cJSON *json, network_service_config_t *cfg)
     // Parse PoE/Ethernet configuration
     cJSON *poe = cJSON_GetObjectItem(json, "poe");
     if (cJSON_IsObject(poe)) {
-        uint32_t temp = 0;
+        uint32_t temp = cfg->poe.ip_mode;
         json_get_uint32(poe, "ip_mode", &temp);
         cfg->poe.ip_mode = (poe_ip_mode_t)temp;
         
@@ -454,7 +461,14 @@ static void parse_network_service(cJSON *json, network_service_config_t *cfg)
 
 static void json_save_cert_data(cJSON *obj, const char *key, const char *cert_path, uint16_t cert_len)
 {
-    if (cert_path[0] == '\0')
+    if (cert_path[0] == '\0' || cert_len == 0)
+    {
+        return;
+    }
+    /* Only overwrite the flash cert when the JSON actually carries it. A
+     * missing key must leave the existing file untouched — the calloc'd
+     * buffer below would otherwise write zeros over a live certificate. */
+    if (!cJSON_IsString(cJSON_GetObjectItem(obj, key)))
     {
         return;
     }
@@ -482,15 +496,20 @@ static void parse_mqtt_service(cJSON *json, mqtt_service_config_t *cfg)
     cJSON *base_cfg = cJSON_GetObjectItem(json, "base_config");
     if (cJSON_IsObject(base_cfg))
     {
+        /* Every narrowed field seeds its temp from the current value so an
+         * absent key keeps the base config instead of inheriting the stale
+         * value of the previously parsed field (or stack garbage). */
         uint32_t temp_uint32;
 
         // Basic connection
         json_get_uint8(base_cfg, "protocol_ver", &cfg->base_config.protocol_ver);
         json_get_string(base_cfg, "hostname", cfg->base_config.hostname, sizeof(cfg->base_config.hostname));
+        temp_uint32 = cfg->base_config.port;
         json_get_uint32(base_cfg, "port", &temp_uint32);
         cfg->base_config.port = (uint16_t)temp_uint32;
         json_get_string(base_cfg, "client_id", cfg->base_config.client_id, sizeof(cfg->base_config.client_id));
         json_get_uint8(base_cfg, "clean_session", &cfg->base_config.clean_session);
+        temp_uint32 = cfg->base_config.keepalive;
         json_get_uint32(base_cfg, "keepalive", &temp_uint32);
         cfg->base_config.keepalive = (uint16_t)temp_uint32;
 
@@ -501,6 +520,7 @@ static void parse_mqtt_service(cJSON *json, mqtt_service_config_t *cfg)
         // SSL/TLS - CA certificate
         json_get_string(base_cfg, "ca_cert_path", cfg->base_config.ca_cert_path, sizeof(cfg->base_config.ca_cert_path));
         // Note: ca_cert_data is binary, typically not parsed from JSON
+        temp_uint32 = cfg->base_config.ca_cert_len;
         json_get_uint32(base_cfg, "ca_cert_len", &temp_uint32);
         cfg->base_config.ca_cert_len = (uint16_t)temp_uint32;
         // data save to flash
@@ -508,6 +528,7 @@ static void parse_mqtt_service(cJSON *json, mqtt_service_config_t *cfg)
 
         // SSL/TLS - Client certificate
         json_get_string(base_cfg, "client_cert_path", cfg->base_config.client_cert_path, sizeof(cfg->base_config.client_cert_path));
+        temp_uint32 = cfg->base_config.client_cert_len;
         json_get_uint32(base_cfg, "client_cert_len", &temp_uint32);
         cfg->base_config.client_cert_len = (uint16_t)temp_uint32;
         // data save to flash
@@ -515,6 +536,7 @@ static void parse_mqtt_service(cJSON *json, mqtt_service_config_t *cfg)
 
         // SSL/TLS - Client key
         json_get_string(base_cfg, "client_key_path", cfg->base_config.client_key_path, sizeof(cfg->base_config.client_key_path));
+        temp_uint32 = cfg->base_config.client_key_len;
         json_get_uint32(base_cfg, "client_key_len", &temp_uint32);
         cfg->base_config.client_key_len = (uint16_t)temp_uint32;
         // data save to flash
@@ -525,12 +547,14 @@ static void parse_mqtt_service(cJSON *json, mqtt_service_config_t *cfg)
         // Last Will and Testament
         json_get_string(base_cfg, "lwt_topic", cfg->base_config.lwt_topic, sizeof(cfg->base_config.lwt_topic));
         json_get_string(base_cfg, "lwt_message", cfg->base_config.lwt_message, sizeof(cfg->base_config.lwt_message));
+        temp_uint32 = cfg->base_config.lwt_msg_len;
         json_get_uint32(base_cfg, "lwt_msg_len", &temp_uint32);
         cfg->base_config.lwt_msg_len = (uint16_t)temp_uint32;
         json_get_uint8(base_cfg, "lwt_qos", &cfg->base_config.lwt_qos);
         json_get_uint8(base_cfg, "lwt_retain", &cfg->base_config.lwt_retain);
 
         // Task parameters
+        temp_uint32 = cfg->base_config.task_priority;
         json_get_uint32(base_cfg, "task_priority", &temp_uint32);
         cfg->base_config.task_priority = (uint16_t)temp_uint32;
         json_get_uint32(base_cfg, "task_stack_size", &cfg->base_config.task_stack_size);
@@ -538,18 +562,25 @@ static void parse_mqtt_service(cJSON *json, mqtt_service_config_t *cfg)
         // Network parameters
         json_get_uint8(base_cfg, "disable_auto_reconnect", &cfg->base_config.disable_auto_reconnect);
         json_get_uint8(base_cfg, "outbox_limit", &cfg->base_config.outbox_limit);
+        temp_uint32 = cfg->base_config.outbox_resend_interval_ms;
         json_get_uint32(base_cfg, "outbox_resend_interval_ms", &temp_uint32);
         cfg->base_config.outbox_resend_interval_ms = (uint16_t)temp_uint32;
+        temp_uint32 = cfg->base_config.outbox_expired_timeout_ms;
         json_get_uint32(base_cfg, "outbox_expired_timeout_ms", &temp_uint32);
         cfg->base_config.outbox_expired_timeout_ms = (uint16_t)temp_uint32;
+        temp_uint32 = cfg->base_config.reconnect_interval_ms;
         json_get_uint32(base_cfg, "reconnect_interval_ms", &temp_uint32);
         cfg->base_config.reconnect_interval_ms = (uint16_t)temp_uint32;
+        temp_uint32 = cfg->base_config.timeout_ms;
         json_get_uint32(base_cfg, "timeout_ms", &temp_uint32);
         cfg->base_config.timeout_ms = (uint16_t)temp_uint32;
+        temp_uint32 = cfg->base_config.buffer_size;
         json_get_uint32(base_cfg, "buffer_size", &temp_uint32);
         cfg->base_config.buffer_size = temp_uint32;
+        temp_uint32 = cfg->base_config.tx_buf_size;
         json_get_uint32(base_cfg, "tx_buf_size", &temp_uint32);
         cfg->base_config.tx_buf_size = temp_uint32;
+        temp_uint32 = cfg->base_config.rx_buf_size;
         json_get_uint32(base_cfg, "rx_buf_size", &temp_uint32);
         cfg->base_config.rx_buf_size = temp_uint32;
     }
@@ -595,7 +626,22 @@ static void parse_work_mode(cJSON *json, work_mode_config_t *cfg)
     if (cJSON_IsObject(vid_mode))
     {
         json_get_bool(vid_mode, "enable", &cfg->video_stream_mode.enable);
-        json_get_string(vid_mode, "rtsp_server_url", cfg->video_stream_mode.rtsp_server_url, sizeof(cfg->video_stream_mode.rtsp_server_url));
+        /* rtsp_server_url: dead "reserved" field — deliberately not imported
+         * (an old export carrying the key is simply ignored). */
+
+        /* RTMP push configuration */
+        json_get_bool(vid_mode, "rtmp_enable", &cfg->video_stream_mode.rtmp_enable);
+        json_get_string(vid_mode, "rtmp_url", cfg->video_stream_mode.rtmp_url, sizeof(cfg->video_stream_mode.rtmp_url));
+        json_get_string(vid_mode, "rtmp_stream_key", cfg->video_stream_mode.rtmp_stream_key, sizeof(cfg->video_stream_mode.rtmp_stream_key));
+
+        /* RTSP server configuration */
+        json_get_bool(vid_mode, "rtsp_enable", &cfg->video_stream_mode.rtsp_enable);
+        uint32_t rtsp_port = cfg->video_stream_mode.rtsp_port;
+        json_get_uint32(vid_mode, "rtsp_port", &rtsp_port);
+        cfg->video_stream_mode.rtsp_port = (uint16_t)rtsp_port;
+        json_get_string(vid_mode, "rtsp_auth_mode", cfg->video_stream_mode.rtsp_auth_mode, sizeof(cfg->video_stream_mode.rtsp_auth_mode));
+        json_get_string(vid_mode, "rtsp_username", cfg->video_stream_mode.rtsp_username, sizeof(cfg->video_stream_mode.rtsp_username));
+        json_get_string(vid_mode, "rtsp_password", cfg->video_stream_mode.rtsp_password, sizeof(cfg->video_stream_mode.rtsp_password));
     }
 
     cJSON *pir = cJSON_GetObjectItem(json, "pir_trigger");
@@ -616,14 +662,22 @@ static void parse_work_mode(cJSON *json, work_mode_config_t *cfg)
     if (cJSON_IsObject(timer))
     {
         json_get_bool(timer, "enable", &cfg->timer_trigger.enable);
-        uint32_t temp_uint32;
+        uint32_t temp_uint32 = cfg->timer_trigger.capture_mode;
         json_get_uint32(timer, "capture_mode", &temp_uint32);
         cfg->timer_trigger.capture_mode = (aicam_timer_capture_mode_t)temp_uint32;
         json_get_uint32(timer, "interval_sec", &cfg->timer_trigger.interval_sec);
-        json_get_uint32(timer, "time_node_count", &cfg->timer_trigger.time_node_count);
+        /* Clamp: array is [10]; a hand-edited count above that would make
+         * the scheduler over-read, and entries deleted from the array
+         * (stale count left behind) must not resurrect base nodes. */
+        uint32_t node_cnt = cfg->timer_trigger.time_node_count;
+        json_get_uint32(timer, "time_node_count", &node_cnt);
+        if (node_cnt > 10)
+            node_cnt = 10;
+        cfg->timer_trigger.time_node_count = node_cnt;
 
         cJSON *nodes = cJSON_GetObjectItem(timer, "time_node");
         int node_count = cJSON_GetArraySize(nodes);
+        if (node_count > 10) node_count = 10;
         for (int i = 0; i < node_count && i < 10; i++)
         {
             cJSON *node = cJSON_GetArrayItem(nodes, i);
@@ -632,6 +686,8 @@ static void parse_work_mode(cJSON *json, work_mode_config_t *cfg)
                 cfg->timer_trigger.time_node[i] = (uint32_t)node->valueint;
             }
         }
+        if (cJSON_IsArray(nodes) && cfg->timer_trigger.time_node_count > (uint32_t)node_count)
+            cfg->timer_trigger.time_node_count = (uint32_t)node_count;
 
         cJSON *weekdays = cJSON_GetObjectItem(timer, "weekdays");
         int wday_count = cJSON_GetArraySize(weekdays);
@@ -643,6 +699,27 @@ static void parse_work_mode(cJSON *json, work_mode_config_t *cfg)
                 cfg->timer_trigger.weekdays[i] = (uint8_t)wday->valueint;
             }
         }
+
+        /* Daily-interval lattice (seconds since midnight). Out-of-domain
+         * values are ignored so a hand-edited file cannot poison the grid;
+         * anchor_time 0 is the "not yet stamped" sentinel and round-trips
+         * as-is (apply re-stamps it with the current time-of-day). */
+        uint32_t interval_mode = cfg->timer_trigger.interval_mode;
+        json_get_uint32(timer, "interval_mode", &interval_mode);
+        if (interval_mode <= AICAM_TIMER_INTERVAL_MODE_SCHEDULED)
+        {
+            cfg->timer_trigger.interval_mode = (aicam_timer_interval_mode_t)interval_mode;
+        }
+        uint32_t tod;
+        tod = cfg->timer_trigger.start_time;
+        json_get_uint32(timer, "start_time", &tod);
+        if (tod < 86400u) cfg->timer_trigger.start_time = tod;
+        tod = cfg->timer_trigger.end_time;
+        json_get_uint32(timer, "end_time", &tod);
+        if (tod < 86400u) cfg->timer_trigger.end_time = tod;
+        tod = cfg->timer_trigger.anchor_time;
+        json_get_uint32(timer, "anchor_time", &tod);
+        if (tod < 86400u) cfg->timer_trigger.anchor_time = tod;
     }
 
     cJSON *io_triggers = cJSON_GetObjectItem(json, "io_trigger");
@@ -656,9 +733,10 @@ static void parse_work_mode(cJSON *json, work_mode_config_t *cfg)
             json_get_bool(io, "enable", &cfg->io_trigger[i].enable);
             json_get_bool(io, "input_enable", &cfg->io_trigger[i].input_enable);
             json_get_bool(io, "output_enable", &cfg->io_trigger[i].output_enable);
-            uint32_t temp_uint32;
+            uint32_t temp_uint32 = cfg->io_trigger[i].input_trigger_type;
             json_get_uint32(io, "input_trigger_type", &temp_uint32);
             cfg->io_trigger[i].input_trigger_type = (aicam_trigger_type_t)temp_uint32;
+            temp_uint32 = cfg->io_trigger[i].output_trigger_type;
             json_get_uint32(io, "output_trigger_type", &temp_uint32);
             cfg->io_trigger[i].output_trigger_type = (aicam_trigger_type_t)temp_uint32;
         }
@@ -669,6 +747,71 @@ static void parse_work_mode(cJSON *json, work_mode_config_t *cfg)
     {
         json_get_bool(remote, "enable", &cfg->remote_trigger.enable);
     }
+}
+
+static void parse_webhook_config(cJSON *json, webhook_config_t *cfg)
+{
+    json_get_bool(json, "enable", &cfg->enable);
+    json_get_string(json, "url", cfg->url, sizeof(cfg->url));
+    json_get_string(json, "auth_type", cfg->auth_type, sizeof(cfg->auth_type));
+    json_get_string(json, "secret", cfg->secret, sizeof(cfg->secret));
+    /* The custom CA certificate is a LittleFS file, not a config field — it
+     * never round-trips through this JSON; re-upload it on the target. */
+}
+
+static void parse_capture_upload_config(cJSON *json, capture_upload_config_t *cfg)
+{
+    uint32_t temp;
+
+    json_get_uint32(json, "version", &cfg->version);
+
+    temp = cfg->mode;
+    json_get_uint32(json, "mode", &temp);
+    cfg->mode = (capture_mode_t)temp;
+    temp = cfg->storage;
+    json_get_uint32(json, "storage", &temp);
+    cfg->storage = (capture_storage_t)temp;
+    temp = cfg->policy;
+    json_get_uint32(json, "policy", &temp);
+    cfg->policy = (storage_policy_t)temp;
+    temp = cfg->upload_protocol;
+    json_get_uint32(json, "upload_protocol", &temp);
+    cfg->upload_protocol = (upload_proto_t)temp;
+
+    json_get_bool(json, "retry_enable", &cfg->retry_enable);
+    json_get_uint8(json, "retry_max_attempts", &cfg->retry_max_attempts);
+
+    temp = cfg->batch_count;
+    json_get_uint32(json, "batch_count", &temp);
+    cfg->batch_count = (uint16_t)temp;
+
+    uint8_t sched_cnt = cfg->schedule_node_count;
+    json_get_uint8(json, "schedule_node_count", &sched_cnt);
+    cfg->schedule_node_count = sched_cnt;
+    cJSON *mins = cJSON_GetObjectItem(json, "schedule_minutes");
+    int min_count = cJSON_GetArraySize(mins);
+    if (min_count > CAPTURE_SCHEDULE_MAX_NODES) min_count = CAPTURE_SCHEDULE_MAX_NODES;
+    for (int i = 0; i < min_count && i < CAPTURE_SCHEDULE_MAX_NODES; i++)
+    {
+        cJSON *min = cJSON_GetArrayItem(mins, i);
+        if (cJSON_IsNumber(min))
+        {
+            cfg->schedule_minutes[i] = (uint16_t)min->valueint;
+        }
+    }
+    /* Entries deleted from the array (stale count left behind) must not
+     * resurrect base slots past the file's list. */
+    if (cJSON_IsArray(mins) && cfg->schedule_node_count > (uint8_t)min_count)
+        cfg->schedule_node_count = (uint8_t)min_count;
+
+    json_get_uint32(json, "keep_sent_hours", &cfg->keep_sent_hours);
+    json_get_uint32(json, "max_pending_records", &cfg->max_pending_records);
+    json_get_uint32(json, "flash_max_records", &cfg->flash_max_records);
+    json_get_uint32(json, "upload_comm_type", &cfg->upload_comm_type);
+
+    /* Same normalization the web-API setter applies, so a hand-edited file
+     * lands on sane values instead of poisoning the upload pipeline. */
+    json_config_capture_upload_normalize(cfg);
 }
 
 /* ==================== JSON Serialization Helpers (static) ==================== */
@@ -1152,7 +1295,16 @@ static cJSON *serialize_work_mode(const work_mode_config_t *cfg)
 
     cJSON *vid_mode = cJSON_CreateObject();
     cJSON_AddBoolToObject(vid_mode, "enable", cfg->video_stream_mode.enable);
-    cJSON_AddStringToObject(vid_mode, "rtsp_server_url", cfg->video_stream_mode.rtsp_server_url);
+    /* rtsp_server_url is a dead "reserved" field (no service or frontend
+     * consumes it — the device itself is the RTSP server); not exported. */
+    cJSON_AddBoolToObject(vid_mode, "rtmp_enable", cfg->video_stream_mode.rtmp_enable);
+    cJSON_AddStringToObject(vid_mode, "rtmp_url", cfg->video_stream_mode.rtmp_url);
+    cJSON_AddStringToObject(vid_mode, "rtmp_stream_key", cfg->video_stream_mode.rtmp_stream_key);
+    cJSON_AddBoolToObject(vid_mode, "rtsp_enable", cfg->video_stream_mode.rtsp_enable);
+    cJSON_AddNumberToObject(vid_mode, "rtsp_port", cfg->video_stream_mode.rtsp_port);
+    cJSON_AddStringToObject(vid_mode, "rtsp_auth_mode", cfg->video_stream_mode.rtsp_auth_mode);
+    cJSON_AddStringToObject(vid_mode, "rtsp_username", cfg->video_stream_mode.rtsp_username);
+    cJSON_AddStringToObject(vid_mode, "rtsp_password", cfg->video_stream_mode.rtsp_password);
     cJSON_AddItemToObject(json, "video_stream_mode", vid_mode);
 
     cJSON *pir = cJSON_CreateObject();
@@ -1186,6 +1338,12 @@ static cJSON *serialize_work_mode(const work_mode_config_t *cfg)
         cJSON_AddItemToArray(weekdays, cJSON_CreateNumber(cfg->timer_trigger.weekdays[i]));
     }
     cJSON_AddItemToObject(timer, "weekdays", weekdays);
+
+    /* Daily-interval lattice: 0 = not yet stamped sentinel (apply stamps it) */
+    cJSON_AddNumberToObject(timer, "interval_mode", cfg->timer_trigger.interval_mode);
+    cJSON_AddNumberToObject(timer, "start_time", cfg->timer_trigger.start_time);
+    cJSON_AddNumberToObject(timer, "end_time", cfg->timer_trigger.end_time);
+    cJSON_AddNumberToObject(timer, "anchor_time", cfg->timer_trigger.anchor_time);
     cJSON_AddItemToObject(json, "timer_trigger", timer);
 
     cJSON *io_triggers = cJSON_CreateArray();
@@ -1209,16 +1367,58 @@ static cJSON *serialize_work_mode(const work_mode_config_t *cfg)
     return json;
 }
 
+static cJSON *serialize_webhook_config(const webhook_config_t *cfg)
+{
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddBoolToObject(json, "enable", cfg->enable);
+    cJSON_AddStringToObject(json, "url", cfg->url);
+    cJSON_AddStringToObject(json, "auth_type", cfg->auth_type);
+    cJSON_AddStringToObject(json, "secret", cfg->secret);
+    return json;
+}
+
+static cJSON *serialize_capture_upload_config(const capture_upload_config_t *cfg)
+{
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddNumberToObject(json, "version", cfg->version);
+    cJSON_AddNumberToObject(json, "mode", cfg->mode);
+    cJSON_AddNumberToObject(json, "storage", cfg->storage);
+    cJSON_AddNumberToObject(json, "policy", cfg->policy);
+    cJSON_AddNumberToObject(json, "upload_protocol", cfg->upload_protocol);
+    cJSON_AddBoolToObject(json, "retry_enable", cfg->retry_enable);
+    cJSON_AddNumberToObject(json, "retry_max_attempts", cfg->retry_max_attempts);
+    cJSON_AddNumberToObject(json, "batch_count", cfg->batch_count);
+    cJSON_AddNumberToObject(json, "schedule_node_count", cfg->schedule_node_count);
+
+    cJSON *mins = cJSON_CreateArray();
+    /* Only the live nodes — slots past schedule_node_count are stale. */
+    for (uint8_t i = 0; i < cfg->schedule_node_count; i++)
+    {
+        cJSON_AddItemToArray(mins, cJSON_CreateNumber(cfg->schedule_minutes[i]));
+    }
+    cJSON_AddItemToObject(json, "schedule_minutes", mins);
+
+    cJSON_AddNumberToObject(json, "keep_sent_hours", cfg->keep_sent_hours);
+    cJSON_AddNumberToObject(json, "max_pending_records", cfg->max_pending_records);
+    cJSON_AddNumberToObject(json, "flash_max_records", cfg->flash_max_records);
+    cJSON_AddNumberToObject(json, "upload_comm_type", cfg->upload_comm_type);
+    return json;
+}
+
 /* ==================== Public API (JSON) Implementation ==================== */
 
 /**
  * @brief Parse configuration from JSON string using cJSON
+ *
+ * Merge semantics: *config must be pre-filled by the caller with the base
+ * (the device's current config). Only keys the JSON actually contains are
+ * overlaid — anything the file omits (or the user deleted from an exported
+ * file) keeps the base value. device_info is deliberately NOT parsed: those
+ * fields are device-bound or runtime-derived (MAC/SN/HW version/...), so
+ * they are export-only documentation and never imported.
  */
 aicam_result_t json_config_parse_json_object(const char *json_str, aicam_global_config_t *config)
 {
-    // First, load default configuration as a base
-    memcpy(config, &default_config, sizeof(aicam_global_config_t));
-
     cJSON *root = cJSON_Parse(json_str);
     if (root == NULL)
     {
@@ -1255,9 +1455,7 @@ aicam_result_t json_config_parse_json_object(const char *json_str, aicam_global_
     if (cJSON_IsObject(pwr_cfg))
         parse_power_mode(pwr_cfg, &config->power_mode_config);
 
-    cJSON *dev_info = cJSON_GetObjectItem(root, "device_info");
-    if (cJSON_IsObject(dev_info))
-        parse_device_info(dev_info, &config->device_info);
+    /* device_info: export-only (device-bound), never imported */
 
     cJSON *dev_svc = cJSON_GetObjectItem(root, "device_service");
     if (cJSON_IsObject(dev_svc))
@@ -1274,6 +1472,14 @@ aicam_result_t json_config_parse_json_object(const char *json_str, aicam_global_
     cJSON *work_mode = cJSON_GetObjectItem(root, "work_mode_config");
     if (cJSON_IsObject(work_mode))
         parse_work_mode(work_mode, &config->work_mode_config);
+
+    cJSON *webhook = cJSON_GetObjectItem(root, "webhook_config");
+    if (cJSON_IsObject(webhook))
+        parse_webhook_config(webhook, &config->webhook_config);
+
+    cJSON *capup = cJSON_GetObjectItem(root, "capture_upload_config");
+    if (cJSON_IsObject(capup))
+        parse_capture_upload_config(capup, &config->capture_upload);
 
     cJSON *auth_mgr = cJSON_GetObjectItem(root, "auth_mgr");
     if (cJSON_IsObject(auth_mgr))
@@ -1315,6 +1521,8 @@ aicam_result_t json_config_serialize_json_object(const aicam_global_config_t *co
     cJSON_AddItemToObject(root, "network_service", serialize_network_service(&config->network_service));
     cJSON_AddItemToObject(root, "mqtt_service", serialize_mqtt_service(&config->mqtt_service));
     cJSON_AddItemToObject(root, "work_mode_config", serialize_work_mode(&config->work_mode_config));
+    cJSON_AddItemToObject(root, "webhook_config", serialize_webhook_config(&config->webhook_config));
+    cJSON_AddItemToObject(root, "capture_upload_config", serialize_capture_upload_config(&config->capture_upload));
     cJSON_AddItemToObject(root, "auth_mgr", serialize_auth_mgr(&config->auth_mgr));
 
     // Print to string buffer

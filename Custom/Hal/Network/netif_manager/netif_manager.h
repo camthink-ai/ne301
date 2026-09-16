@@ -330,7 +330,12 @@ typedef struct {
     halow_wireless_config_t halow_cfg;      // HaLow extended config (only for hw netif)
 #endif
 
-    uint8_t diy_mac[6];                     // Custom MAC address (all zeros means use default MAC address)
+    uint8_t diy_mac[6];                     // Custom MAC address (all zeros means use default MAC address).
+                                            // NOTE: currently IGNORED by the SI91x WiFi AP/STA netifs — their MAC
+                                            // comes from the boot config (factory burn) and the FW's STA+1 AP
+                                            // derivation; a per-interface sl_wifi_set_mac_address is rejected by
+                                            // the FW once the concurrent profile exists (raw status 0x21). To be
+                                            // revisited if vendor FW enables per-interface MAC programming.
     netif_ip_mode_t ip_mode;                // IP mode
     uint8_t ip_addr[4];                     // IP address
     uint8_t netmask[4];                     // Netmask address

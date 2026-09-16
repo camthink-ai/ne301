@@ -6260,21 +6260,29 @@ static void on_wifi_ap_ready(const char *if_name, aicam_result_t result)
         netif_config_t ap_config = {0};
         aicam_result_t config_result = json_config_get_network_service_config(network_config);
         if (config_result == AICAM_OK) {
+            aicam_result_t if_cfg_result = communication_get_interface_config(NETIF_NAME_WIFI_AP, &ap_config);
+            if (if_cfg_result != AICAM_OK) {
+                LOG_SVC_WARN("Failed to get AP interface config: %d", if_cfg_result);
+            }
             LOG_SVC_INFO("Configuring AP with SSID: %s", network_config->ssid);
             if (strcmp(network_config->ssid, "AICAM-AP") == 0 || strlen(network_config->ssid) == 0) {
-                LOG_SVC_INFO("Default AP SSID, use current config");
-                communication_get_interface_config(NETIF_NAME_WIFI_AP, &ap_config);
-                strncpy(network_config->ssid, ap_config.wireless_cfg.ssid, sizeof(network_config->ssid) - 1);
-                strncpy(network_config->password, ap_config.wireless_cfg.pw, sizeof(network_config->password) - 1);
-                aicam_result_t result = json_config_set_network_service_config(network_config);
-                LOG_SVC_INFO("ssid: %s, password: %s", network_config->ssid, network_config->password);
-                if (result != AICAM_OK) {
-                    LOG_SVC_WARN("Failed to set network service configuration: %d", result);
-                } else {
-                    LOG_SVC_INFO("Network service configuration set successfully");
+                /* Echo the live AP config back into the service config only
+                 * when it was actually fetched — on failure ap_config is all
+                 * zeros and persisting it would store an empty SSID; the AP
+                 * keeps running its generated default instead. */
+                if (if_cfg_result == AICAM_OK) {
+                    LOG_SVC_INFO("Default AP SSID, use current config");
+                    strncpy(network_config->ssid, ap_config.wireless_cfg.ssid, sizeof(network_config->ssid) - 1);
+                    strncpy(network_config->password, ap_config.wireless_cfg.pw, sizeof(network_config->password) - 1);
+                    aicam_result_t result = json_config_set_network_service_config(network_config);
+                    LOG_SVC_INFO("ssid: %s, password: %s", network_config->ssid, network_config->password);
+                    if (result != AICAM_OK) {
+                        LOG_SVC_WARN("Failed to set network service configuration: %d", result);
+                    } else {
+                        LOG_SVC_INFO("Network service configuration set successfully");
+                    }
                 }
             } else {
-                nm_get_netif_cfg(NETIF_NAME_WIFI_AP, &ap_config);
                 strncpy(ap_config.wireless_cfg.ssid, network_config->ssid, sizeof(ap_config.wireless_cfg.ssid) - 1);
                 strncpy(ap_config.wireless_cfg.pw, network_config->password, sizeof(ap_config.wireless_cfg.pw) - 1);
                 ap_config.wireless_cfg.security = (strlen(network_config->password) > 0) ? WIRELESS_WPA_WPA2_MIXED : WIRELESS_OPEN;
