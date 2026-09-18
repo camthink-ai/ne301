@@ -6,6 +6,7 @@
 
 #include "api_business_error.h"
 #include "web_server.h"
+#include "api_isp_module.h"
 #include <string.h>
 
 /* ==================== Error Code String Mapping ==================== */
@@ -70,6 +71,17 @@ static const error_code_map_t g_error_code_map[] = {
     { API_BUSINESS_ERROR_OTA_HEADER_VALIDATION_FAILED, "OTA_HEADER_VALIDATION_FAILED" },
     { API_BUSINESS_ERROR_RESOURCE_NOT_FOUND, "RESOURCE_NOT_FOUND" },
     { API_BUSINESS_ERROR_RESOURCE_BUSY, "RESOURCE_BUSY" },
+
+    /* ISP Error Codes (api_isp_error_code_t) - 2001+ */
+    { API_ISP_ERROR_NOT_INITIALIZED, "ISP_NOT_INITIALIZED" },
+    { API_ISP_ERROR_INVALID_PARAM, "ISP_INVALID_PARAM" },
+    { API_ISP_ERROR_PARAM_OUT_OF_RANGE, "ISP_PARAM_OUT_OF_RANGE" },
+    { API_ISP_ERROR_DEPENDENCY_ERROR, "ISP_DEPENDENCY_ERROR" },
+    { API_ISP_ERROR_HAL_ERROR, "ISP_HAL_ERROR" },
+    { API_ISP_ERROR_SENSOR_ERROR, "ISP_SENSOR_ERROR" },
+    { API_ISP_ERROR_ALGO_ERROR, "ISP_ALGO_ERROR" },
+    { API_ISP_ERROR_BUSY, "ISP_BUSY" },
+
     { API_BUSINESS_ERROR_UNKNOWN, "UNKNOWN" }
 };
 

@@ -91,6 +91,11 @@ int sl_net_update_strorage_scan_result(uint32_t timeout_ms);
 /// @brief Configure WiFi region code. Only effective when both WiFi netifs are DEINIT
 ///        (applied at the next init). Strings: "us","eu","jp","world","kr","cn".
 int sl_net_wifi_set_region_code(const char *country_code);
+/// @brief Canonicalize a region string against the supported table (case-insensitive).
+/// @param country_code Input string (imported file / API payload, any case)
+/// @param buf Output buffer receiving the canonical lowercase table entry
+/// @return SL_STATUS_OK / SL_STATUS_INVALID_PARAMETER (not a supported region)
+int sl_net_wifi_region_canonicalize(const char *country_code, char *buf, size_t len);
 /// @brief Get the currently active WiFi region string.
 int sl_net_wifi_get_region_code(char *buf, size_t len);
 uint32_t sl_net_wifi_get_supported_region_count(void);

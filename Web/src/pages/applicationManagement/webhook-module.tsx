@@ -244,7 +244,7 @@ export default function WebhookModule() {
             </div>
             <Separator />
             <div className="flex flex-col gap-1">
-              <div className="flex gap-2 justify-between">
+              <div className="flex flex-col sm:flex-row gap-2 sm:justify-between">
                 <Label className="shrink-0">
                   {i18n._('sys.application_management.webhook_url')}
                 </Label>

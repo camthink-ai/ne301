@@ -718,7 +718,13 @@ typedef struct {
  #define JSON_CONFIG_MAX_KEY_LENGTH       128             // Maximum key name length
  #define JSON_CONFIG_MAX_VALUE_LENGTH     512             // Maximum value length
  
- #define JSON_CONFIG_VERSION_CURRENT      1
+/* Config schema version. v2 (v4.3.1): timer daily-lattice fields, RTMP/RTSP
+ * stream settings, webhook + capture-upload sections, sys-clock (work
+ * frequency) round-trip on config export/import, import merge-onto-
+ * current semantics (absent keys keep device values; device_info and
+ * runtime-state fields export-only). Older files (v1) still import — the
+ * version gate only rejects files NEWER than this firmware. */
+#define JSON_CONFIG_VERSION_CURRENT      2
  #define JSON_CONFIG_MAGIC_NUMBER         0x41494341      // "AICA"
  
  /* ==================== JSON Configuration Manager Status and Options ==================== */

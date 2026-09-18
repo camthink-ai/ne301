@@ -32,7 +32,7 @@ export default function DevicePassword({ setCurrentPage }: { setCurrentPage: (pa
         ap_sleep_time: '600'
     });
 
-    const [isWifiPasswordVisible, setIsWifiPasswordVisible] = useState(false);
+    // const [isWifiPasswordVisible, setIsWifiPasswordVisible] = useState(false);
     const [loginPassword, setLoginPassword] = useState('');
     const [errorWifiPassword, setErrorWifiPassword] = useState({ valid: true, message: '' });
     const [errorLoginPassword, setErrorLoginPassword] = useState({ valid: true, message: '' });
@@ -105,10 +105,10 @@ export default function DevicePassword({ setCurrentPage }: { setCurrentPage: (pa
         }   
         return { valid: true, message: '' };
     }
-    const handleWifiPasswordVisible = (e: MouseEvent) => {
-        e.preventDefault();
-        setIsWifiPasswordVisible(!isWifiPasswordVisible);
-    };
+    // const handleWifiPasswordVisible = (e: MouseEvent) => {
+    //     e.preventDefault();
+    //     setIsWifiPasswordVisible(!isWifiPasswordVisible);
+    // };
 
     const [isPasswordVisible, setIsPasswordVisible] = useState(false);
 
@@ -296,8 +296,8 @@ export default function DevicePassword({ setCurrentPage }: { setCurrentPage: (pa
                             <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.wifi_name')}</Label>
                             <Input variant="ghost" value={wifiParams.ssid} onChange={(e) => setWifiParams({ ...wifiParams, ssid: (e.target as HTMLInputElement).value })} placeholder={i18n._('common.please_enter')} className="text-sm text-text-primary" />
                         </div>
-                        <Separator />
-                        <div className="flex justify-between">
+                        {/* <Separator /> */}
+                        {/* <div className="flex justify-between">
                             <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.wifi_password')}</Label>
                             <div className="flex flex-col gap-2">
                                 <div className="relative flex justify-end flex-1">
@@ -324,7 +324,7 @@ export default function DevicePassword({ setCurrentPage }: { setCurrentPage: (pa
                                     <p className="text-sm text-red-500 mt-1 self-end">{errorWifiPassword.message}</p>
                                 )}
                             </div>
-                        </div>
+                        </div> */}
                         <Separator />
                         <div className="flex justify-between">
                             <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.sleep_time')}</Label>

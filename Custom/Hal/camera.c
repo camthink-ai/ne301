@@ -1896,6 +1896,18 @@ static int camera_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsig
                 }
             }
             break;
+
+        case CAM_CMD_GET_STATE:
+            /* Snapshot of camera/pipe run states so callers can detect a device
+               that was stopped behind their back (e.g. OTA stopped the camera
+               mid-burn and the cleanup path never ran). */
+            if (ubuf == NULL || arg != sizeof(camera_state_t)) {
+                ret = AICAM_ERROR_INVALID_PARAM;
+                break;
+            }
+            memcpy(ubuf, &camera->state, sizeof(camera_state_t));
+            ret = AICAM_OK;
+            break;
         default:
             ret = AICAM_ERROR_NOT_SUPPORTED;
             break;

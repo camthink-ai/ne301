@@ -86,6 +86,11 @@ export default function CaptureRecords() {
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [batchDeleteCount, setBatchDeleteCount] = useState(0);
 
+  /* Image downloads in flight — key `${id}_${type}`; disables the button while
+   * the blob streams over a (possibly slow) uplink. Download has no size cap,
+   * unlike preview. */
+  const [downloading, setDownloading] = useState<Set<string>>(new Set());
+
   /* Time filter — input values (not yet applied) */
   const [filterFrom, setFilterFrom] = useState('');
   const [filterTo, setFilterTo] = useState('');
@@ -166,6 +171,50 @@ to: appliedTo,
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(null);
     setPreviewLoading(false);
+  };
+
+  const downloadImage = async (r: RecordInfo, type: 'p' | 'i') => {
+    const key = `${r.id}_${type}`;
+    if (downloading.has(key)) return;
+    setDownloading(prev => new Set(prev).add(key));
+    try {
+      const ts = tsFromId(r.id) || r.timestamp;
+      const path = `/captures/data/${dateDir(ts)}/${hourDir(ts)}/${r.id}_${type}.jpg`;
+      const res: any = await fileManagement.download(fsType, path);
+      const blob = res instanceof Blob ? res : res?.data;
+      if (!(blob instanceof Blob)) throw new Error('no blob');
+      /* Backend error envelopes arrive as blobs too (responseType blob);
+       * a JSON blob is never a valid payload for an image download —
+       * reject it before creating the object URL, or the error text gets
+       * saved under a .jpg name. Surface the envelope's message. */
+      if (blob.type && blob.type.includes('json')) {
+        let message = '';
+        try {
+          const j = JSON.parse(await blob.text());
+          message = j?.message || '';
+        } catch { /* unparseable — generic toast below */ }
+        console.error('record image download error envelope:', message);
+        toast.error(message || (i18n._('sys.capture_settings.download_failed') ?? 'Download failed'));
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${r.id}_${type}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error(e);
+      toast.error(i18n._('sys.capture_settings.download_failed') ?? 'Download failed');
+    } finally {
+      setDownloading(prev => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
   };
 
   const switchTab = (t: RecordState) => { setTab(t); setOffset(0); };
@@ -449,8 +498,9 @@ to: appliedTo,
             </span>
           </div>
 
-          {/* Row 2: action buttons */}
-          <div className="flex gap-2 mt-1 ml-6">
+          {/* Row 2: action buttons — wraps on narrow screens now that downloads
+           * add up to four image buttons per record. */}
+          <div className="flex flex-wrap gap-2 mt-1 ml-6">
             {r.size > PREVIEW_IMAGE_MAX_SIZE ? (
               <span className="text-xs text-gray-400 self-center">
                 🚫 {i18n._('sys.capture_settings.preview_too_large')}
@@ -463,6 +513,28 @@ to: appliedTo,
             {r.has_inference && (
               <Button variant="outline" size="sm" onClick={() => previewImage(r, 'i')}>
                 {i18n._('sys.capture_settings.preview_inference')}
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={downloading.has(`${r.id}_p`)}
+              onClick={() => downloadImage(r, 'p')}
+            >
+              {downloading.has(`${r.id}_p`)
+                ? i18n._('sys.capture_settings.download_in_progress')
+                : i18n._('sys.capture_settings.download_primary')}
+            </Button>
+            {r.has_inference && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={downloading.has(`${r.id}_i`)}
+                onClick={() => downloadImage(r, 'i')}
+              >
+                {downloading.has(`${r.id}_i`)
+                  ? i18n._('sys.capture_settings.download_in_progress')
+                  : i18n._('sys.capture_settings.download_inference')}
               </Button>
             )}
             {tab === 'failed' && (

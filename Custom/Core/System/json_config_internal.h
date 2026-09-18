@@ -434,6 +434,11 @@ aicam_result_t json_config_load_capture_upload_from_nvs(capture_upload_config_t 
  /* --- From json_config_json.c --- */
  aicam_result_t json_config_parse_json_object(const char *json_str, aicam_global_config_t *config);
  aicam_result_t json_config_serialize_json_object(const aicam_global_config_t *config, char *json_buffer, size_t buffer_size);
+
+/* --- From json_config_mgr.c (shared with the JSON import path) --- */
+/* Clamp/normalize capture-upload fields in place; used by the web-API setter
+ * and by config-file import so both land on the same safe values. */
+ void json_config_capture_upload_normalize(capture_upload_config_t *norm);
  
  /* --- From json_config_utils.c --- */
  uint32_t json_config_crc32(const void *data, size_t length);

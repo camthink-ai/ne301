@@ -593,8 +593,8 @@ static aicam_result_t video_ai_process_frame(video_ai_node_data_t *data,
 
     uint8_t *input_frame_buffer = NULL;
     uint32_t frame_id = 0;
-    camera_buffer_with_frame_id_t camera_buffer_with_frame_id;
-    int result = device_ioctl(camera_dev, CAM_CMD_GET_PIPE2_BUFFER_WITH_FRAME_ID, 
+    camera_buffer_with_frame_id_t camera_buffer_with_frame_id = {0};
+    int result = device_ioctl(camera_dev, CAM_CMD_GET_PIPE2_BUFFER_WITH_FRAME_ID,
                             (uint8_t *)&camera_buffer_with_frame_id, 0);
 
 
@@ -614,9 +614,36 @@ static aicam_result_t video_ai_process_frame(video_ai_node_data_t *data,
         *output_frame = NULL;
         return AICAM_OK;
     }
+    else if (result == AICAM_ERROR_NOT_SUPPORTED)
+    {
+        /* Camera pipes are stopped (e.g. an interrupted OTA upload stopped the
+         * device and its cleanup path never ran). That is a persistent state
+         * problem, not a per-frame failure: anchor the pacing tick + yield so
+         * the node thread cannot busy-spin, log rate-limited (once per 5 s),
+         * and report OK-no-frame instead of erroring so the pipeline error log
+         * is not flooded at the retry rate. ai_pipeline_start() normally
+         * restarts the camera before this state can be observed. */
+        static uint32_t pipe_stopped_log_tick = 0;
+        uint32_t now = osKernelGetTickCount();
+        if (pipe_stopped_log_tick == 0 || (now - pipe_stopped_log_tick) >= 5000U) {
+            pipe_stopped_log_tick = now;
+            LOG_CORE_ERROR("Camera pipe2 stopped, AI inference idle until camera restart");
+        }
+        data->last_inference_tick = now;
+        osDelay(5);
+        *output_frame = NULL;
+        data->stats.frames_skipped++;
+        return AICAM_OK;
+    }
     else
     {
         LOG_CORE_ERROR("Failed to get pipe2 buffer for AI processing, size: %d", camera_buffer_with_frame_id.size);
+        // Camera pipe not producing (stopped/deinit'ed): yield so the node thread
+        // cannot busy-spin against a dead camera, and anchor the pacing tick so
+        // retries keep the configured inference cadence instead of bypassing it
+        // (the gate at the top of this function only sleeps after an anchor).
+        data->last_inference_tick = osKernelGetTickCount();
+        osDelay(5);
         *output_frame = NULL;
         return AICAM_ERROR;
     }

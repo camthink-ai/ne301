@@ -10,21 +10,22 @@ title: 设备管理 端点参考
 
 源文件: [`Custom/Services/Web/api/api_device_module.c`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/api_device_module.c)
 
-共 **23** 个端点。鉴权列 ✅ 表示需要携带[认证凭据](../authentication.md)。
+共 **24** 个端点。鉴权列 ✅ 表示需要携带[认证凭据](../authentication.md)。
 
 | 方法 | 路径 | 鉴权 | 处理函数 |
 |------|------|:----:|----------|
 | `GET` | `/api/v1/device/info` | ✅ | `device_info_handler` |
 | `GET` | `/api/v1/device/firmware-versions` | ✅ | `firmware_versions_handler` |
+| `GET` | `/api/v1/device/version-check` | ✅ | `version_check_handler` |
 | `GET` | `/api/v1/device/storage` | ✅ | `device_storage_handler` |
 | `POST` | `/api/v1/device/storage/config` | ✅ | `device_storage_config_handler` |
+| `POST` | `/api/v1/device/storage/format` | ✅ | `device_storage_format_handler` |
 | `GET` | `/api/v1/device/image/config` | ✅ | `device_image_config_handler` |
 | `POST` | `/api/v1/device/image/config` | ✅ | `device_image_config_handler` |
 | `GET` | `/api/v1/device/sys-clk/config` | ✅ | `device_sys_clk_config_handler` |
 | `POST` | `/api/v1/device/sys-clk/config` | ✅ | `device_sys_clk_config_handler` |
 | `GET` | `/api/v1/device/light/config` | ✅ | `device_light_config_handler` |
 | `POST` | `/api/v1/device/light/config` | ✅ | `device_light_config_handler` |
-| `POST` | `/api/v1/device/light/control` | ✅ | `device_light_control_handler` |
 | `GET` | `/api/v1/device/camera/config` | ✅ | `device_camera_config_handler` |
 | `POST` | `/api/v1/device/camera/config` | ✅ | `device_camera_config_handler` |
 | `POST` | `/api/v1/system/time` | ✅ | `system_time_handler` |

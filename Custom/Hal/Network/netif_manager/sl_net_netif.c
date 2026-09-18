@@ -23,6 +23,7 @@
 #include "Log/debug.h"
 #include "dhcpserver.h"
 #include "sl_net_netif.h"
+#include "factory_test.h"
 
 #define IS_TCP_IP_DUAL_MODE         1
 #define IS_ENABLE_NWP_DEBUG_PRINTS  0
@@ -139,6 +140,35 @@ static sl_wifi_device_configuration_t device_configuration = {
 #endif
                    .config_feature_bit_map = SL_SI91X_FEAT_SLEEP_GPIO_SEL_BITMAP }
 };
+
+/* Factory-burned MAC: applied through sl_wifi_init's boot config — the only
+ * FW-sanctioned window (sl_si91x_driver init, right after firmware load and
+ * before the radio/opermode configuration). A sl_wifi_set_mac_address issued
+ * after the concurrent-mode profile exists is rejected with raw status 0x21
+ * and poisons subsequent MAC queries (STA netif_add died with 0x10021).
+ * Storage must outlive sl_net_init: the driver dereferences the pointer
+ * during init. */
+static sl_mac_address_t factory_wifi_mac = { 0 };
+
+/// @brief Point device_configuration at the factory MAC before the first
+///        sl_net_init (idempotent; no-op when nothing valid is burned).
+static void sl_net_apply_factory_mac(void)
+{
+    /* "applied" latches BEFORE the NVS read on purpose: if the first init
+     * window could not see the burned MAC (e.g. storage not ready yet),
+     * the radio boots on its default MAC and a retry from the second
+     * interface's init must NOT flip the pointer either — sl_net_init has
+     * already run, so the late value would only change the identity
+     * derivation while the initialized radio keeps the default address
+     * (identity on one MAC, interfaces on the other). All-or-nothing per
+     * boot. */
+    static bool applied = false;
+    if (applied || device_configuration.mac_address != NULL) return;
+    applied = true;
+    if (factory_mac_get_burned(factory_wifi_mac.octet) == 0)
+        device_configuration.mac_address = &factory_wifi_mac;
+}
+
 #if IS_SELF_DHCP_SERVER
 /// Defined below (line ~399); needed early by sl_net_fw_dhcps_compat_check().
 extern struct netif client_netif;
@@ -413,6 +443,21 @@ struct netif client_netif = {
 struct netif ap_netif = {
     .name = {NETIF_NAME_WIFI_AP[0], NETIF_NAME_WIFI_AP[1]},
 };
+
+/// @brief Identity MAC for user-visible derivation (default SSID etc.): the
+///        burned factory MAC when present; otherwise the AP interface MAC.
+///        The FW applies the boot-config MAC to the base (STA) address and
+///        derives the concurrent AP as base+1, so ap_netif.hwaddr is NOT the
+///        burned value. Uses the factory_wifi_mac RAM copy loaded once before
+///        the first sl_net_init (sl_net_apply_factory_mac) — no NVS traffic
+///        here; the pointer target doubles as the "burned and loaded" flag.
+static void sl_net_identity_mac(uint8_t out[6])
+{
+    if (device_configuration.mac_address == &factory_wifi_mac)
+        memcpy(out, factory_wifi_mac.octet, 6);
+    else
+        memcpy(out, ap_netif.hwaddr, 6);
+}
 
 #define SL_NET_EVENT_FIRMWARE_ERROR         (1 << 24)
 #define SL_NET_EVENT_STA_DISCONNECTED       (1 << 23)
@@ -1267,6 +1312,10 @@ int sl_net_client_netif_init(void)
     wl0 = netif_get_by_index(client_netif.num + 1);
     if (wl0 != NULL && wl0 == &client_netif) return SL_STATUS_INVALID_STATE;
 
+    // Factory-burned MAC rides the boot config (applied once by whichever
+    // interface runs sl_net_init first).
+    sl_net_apply_factory_mac();
+
     // do {
         status = sl_net_init(SL_NET_WIFI_CLIENT_INTERFACE, &device_configuration, NULL, NULL);
     // } while (status != SL_STATUS_OK && init_try_times++ < 3);
@@ -1428,25 +1477,26 @@ int sl_net_client_netif_config(netif_config_t *netif_cfg)
     if (netif_cfg == NULL) return SL_STATUS_INVALID_PARAMETER;
     if (netif_is_link_up(&client_netif) || netif_is_up(&client_netif)) return SL_STATUS_INVALID_STATE;
     
-    if (NETIF_MAC_IS_UNICAST(netif_cfg->diy_mac)) {
-        if (netif_get_by_index(client_netif.num + 1) == &client_netif) {
-            status = sl_wifi_get_mac_address(SL_WIFI_CLIENT_INTERFACE, &mac_addr);
-            if (status != SL_STATUS_OK) {
-                LOG_DRV_ERROR(NETIF_NAME_STR_FMT ": Get MAC address failed(status = 0x%lX)!\r\n", NETIF_NAME_PARAMETER((&client_netif)), status);
-                return ERR_IF;
-            }
-            if (memcmp(netif_cfg->diy_mac, mac_addr.octet, sizeof(mac_addr.octet))) {
-                memcpy(mac_addr.octet, netif_cfg->diy_mac, sizeof(mac_addr.octet));
-                status = sl_wifi_set_mac_address(SL_WIFI_CLIENT_INTERFACE, &mac_addr);
-                if (status != SL_STATUS_OK) {
-                    LOG_DRV_ERROR(NETIF_NAME_STR_FMT ": Set MAC address failed(status = 0x%lX)!\r\n", NETIF_NAME_PARAMETER((&client_netif)), status);
-                    return ERR_IF;
-                }
-            }
-        }
-        memcpy(client_netif.hwaddr, netif_cfg->diy_mac, sizeof(netif_cfg->diy_mac));
-        LOG_DRV_DEBUG(NETIF_NAME_STR_FMT ": MAC Address: " NETIF_MAC_STR_FMT "\r\n", NETIF_NAME_PARAMETER((&client_netif)), NETIF_MAC_PARAMETER(netif_cfg->diy_mac));
-    }
+    // no need to set MAC address for client interface, because the MAC address is already set in the boot configuration and will be used by the client interface when it is initialized.
+    // if (NETIF_MAC_IS_UNICAST(netif_cfg->diy_mac)) {
+    //     if (netif_get_by_index(client_netif.num + 1) == &client_netif) {
+    //         status = sl_wifi_get_mac_address(SL_WIFI_CLIENT_INTERFACE, &mac_addr);
+    //         if (status != SL_STATUS_OK) {
+    //             LOG_DRV_ERROR(NETIF_NAME_STR_FMT ": Get MAC address failed(status = 0x%lX)!\r\n", NETIF_NAME_PARAMETER((&client_netif)), status);
+    //             return ERR_IF;
+    //         }
+    //         if (memcmp(netif_cfg->diy_mac, mac_addr.octet, sizeof(mac_addr.octet))) {
+    //             memcpy(mac_addr.octet, netif_cfg->diy_mac, sizeof(mac_addr.octet));
+    //             status = sl_wifi_set_mac_address(SL_WIFI_CLIENT_INTERFACE, &mac_addr);
+    //             if (status != SL_STATUS_OK) {
+    //                 LOG_DRV_ERROR(NETIF_NAME_STR_FMT ": Set MAC address failed(status = 0x%lX)!\r\n", NETIF_NAME_PARAMETER((&client_netif)), status);
+    //                 return ERR_IF;
+    //             }
+    //         }
+    //     }
+    //     memcpy(client_netif.hwaddr, netif_cfg->diy_mac, sizeof(netif_cfg->diy_mac));
+    //     LOG_DRV_DEBUG(NETIF_NAME_STR_FMT ": MAC Address: " NETIF_MAC_STR_FMT "\r\n", NETIF_NAME_PARAMETER((&client_netif)), NETIF_MAC_PARAMETER(netif_cfg->diy_mac));
+    // }
 
     if (netif_cfg->host_name != NULL) {
         wifi_client_profile.ip.host_name = netif_cfg->host_name;
@@ -1850,7 +1900,9 @@ sl_status_t sl_net_wifi_ap_up(sl_net_interface_t interface, sl_net_profile_id_t 
     }
 
     if (wifi_ap_profile.config.ssid.length < 1) {
-        snprintf((char *)wifi_ap_profile.config.ssid.value, sizeof(wifi_ap_profile.config.ssid.value), "NE301_%02X%02X%02X", ap_netif.hwaddr[3], ap_netif.hwaddr[4], ap_netif.hwaddr[5]);
+        uint8_t id_mac[6];
+        sl_net_identity_mac(id_mac);
+        snprintf((char *)wifi_ap_profile.config.ssid.value, sizeof(wifi_ap_profile.config.ssid.value), "NE301_%02X%02X%02X", id_mac[3], id_mac[4], id_mac[5]);
         wifi_ap_profile.config.ssid.length = strlen((char *)wifi_ap_profile.config.ssid.value);
         LOG_DRV_INFO("Use default ap name: %s\r\n", wifi_ap_profile.config.ssid.value);
     }
@@ -2165,6 +2217,15 @@ int sl_net_ap_netif_init(void)
     ap0 = netif_get_by_index(ap_netif.num + 1);
     if (ap0 != NULL && ap0 == &ap_netif) return SL_STATUS_INVALID_STATE;
 
+    /* Factory-burned MAC: program it via the boot config inside the
+     * FW-sanctioned init window. The FW applies it to the base (STA) address
+     * and derives the concurrent AP as base+1 — the AP netif must adopt the
+     * FW-reported address (ethernetif_init), or host frames carry a source
+     * MAC the FW's AP TX path silently drops. User-visible identity (default
+     * SSID / device info / MQTT) derives from the factory MAC itself via
+     * sl_net_identity_mac(), not from ap_netif.hwaddr. */
+    sl_net_apply_factory_mac();
+
     // do {
         status = sl_net_init(SL_NET_WIFI_AP_INTERFACE, &device_configuration, NULL, NULL);
     // } while (status != SL_STATUS_OK && init_try_times++ < 3);
@@ -2312,25 +2373,26 @@ int sl_net_ap_netif_config(netif_config_t *netif_cfg)
     if (netif_cfg == NULL) return SL_STATUS_INVALID_PARAMETER;
     if (netif_is_link_up(&ap_netif) || netif_is_up(&ap_netif)) return SL_STATUS_INVALID_STATE;
     
-    if (NETIF_MAC_IS_UNICAST(netif_cfg->diy_mac)) {
-        if (netif_get_by_index(ap_netif.num + 1) == &ap_netif) {
-            status = sl_wifi_get_mac_address(SL_WIFI_AP_INTERFACE, &mac_addr);
-            if (status != SL_STATUS_OK) {
-                LOG_DRV_ERROR(NETIF_NAME_STR_FMT ": Get MAC address failed(status = 0x%lX)!\r\n", NETIF_NAME_PARAMETER((&ap_netif)), status);
-                return ERR_IF;
-            }
-            if (memcmp(netif_cfg->diy_mac, mac_addr.octet, sizeof(mac_addr.octet))) {
-                memcpy(mac_addr.octet, netif_cfg->diy_mac, sizeof(mac_addr.octet));
-                status = sl_wifi_set_mac_address(SL_WIFI_AP_INTERFACE, &mac_addr);
-                if (status != SL_STATUS_OK) {
-                    LOG_DRV_ERROR(NETIF_NAME_STR_FMT ": Set MAC address failed(status = 0x%lX)!\r\n", NETIF_NAME_PARAMETER((&ap_netif)), status);
-                    return ERR_IF;
-                }
-            }
-        }
-        memcpy(ap_netif.hwaddr, netif_cfg->diy_mac, sizeof(netif_cfg->diy_mac));
-        LOG_DRV_DEBUG(NETIF_NAME_STR_FMT ": MAC Address: " NETIF_MAC_STR_FMT "\r\n", NETIF_NAME_PARAMETER((&ap_netif)), NETIF_MAC_PARAMETER(netif_cfg->diy_mac));
-    }
+    // not allow to set MAC address for AP interface, because the AP interface MAC address is derived from the STA interface MAC address, and the STA interface MAC address is set by the boot config in the firmware.
+    // if (NETIF_MAC_IS_UNICAST(netif_cfg->diy_mac)) {
+    //     if (netif_get_by_index(ap_netif.num + 1) == &ap_netif) {
+    //         status = sl_wifi_get_mac_address(SL_WIFI_AP_INTERFACE, &mac_addr);
+    //         if (status != SL_STATUS_OK) {
+    //             LOG_DRV_ERROR(NETIF_NAME_STR_FMT ": Get MAC address failed(status = 0x%lX)!\r\n", NETIF_NAME_PARAMETER((&ap_netif)), status);
+    //             return ERR_IF;
+    //         }
+    //         if (memcmp(netif_cfg->diy_mac, mac_addr.octet, sizeof(mac_addr.octet))) {
+    //             memcpy(mac_addr.octet, netif_cfg->diy_mac, sizeof(mac_addr.octet));
+    //             status = sl_wifi_set_mac_address(SL_WIFI_AP_INTERFACE, &mac_addr);
+    //             if (status != SL_STATUS_OK) {
+    //                 LOG_DRV_ERROR(NETIF_NAME_STR_FMT ": Set MAC address failed(status = 0x%lX)!\r\n", NETIF_NAME_PARAMETER((&ap_netif)), status);
+    //                 return ERR_IF;
+    //             }
+    //         }
+    //     }
+    //     memcpy(ap_netif.hwaddr, netif_cfg->diy_mac, sizeof(netif_cfg->diy_mac));
+    //     LOG_DRV_DEBUG(NETIF_NAME_STR_FMT ": MAC Address: " NETIF_MAC_STR_FMT "\r\n", NETIF_NAME_PARAMETER((&ap_netif)), NETIF_MAC_PARAMETER(netif_cfg->diy_mac));
+    // }
 
     if (netif_cfg->host_name != NULL) {
         wifi_ap_profile.ip.host_name = netif_cfg->host_name;
@@ -2343,16 +2405,18 @@ int sl_net_ap_netif_config(netif_config_t *netif_cfg)
     wifi_ap_profile.config.maximum_clients = netif_cfg->wireless_cfg.max_client_num;
     wifi_ap_profile.config.ssid.length = strlen(netif_cfg->wireless_cfg.ssid);
     memcpy(wifi_ap_profile.config.ssid.value, netif_cfg->wireless_cfg.ssid, wifi_ap_profile.config.ssid.length);
-    wifi_ap_credential.data_length = strlen(netif_cfg->wireless_cfg.pw);
-    if (wifi_ap_credential.data_length < 8) {
+    // wifi_ap_credential.data_length = strlen(netif_cfg->wireless_cfg.pw);
+    // currently, the AP interface does not support password setting, so the security mode is set to open. The password setting function will be supported in the future.
+    // if (wifi_ap_credential.data_length < 8) {
         wifi_ap_profile.config.security = SL_WIFI_OPEN;
         wifi_ap_profile.config.credential_id = SL_WIFI_NO_CREDENTIAL_ID;
-    } else {
-        memcpy(wifi_ap_credential.data, netif_cfg->wireless_cfg.pw, wifi_ap_credential.data_length);
-        wifi_ap_profile.config.security = (sl_wifi_security_t)netif_cfg->wireless_cfg.security;
-        wifi_ap_profile.config.credential_id = SL_NET_DEFAULT_WIFI_AP_CREDENTIAL_ID;
-    }
-    wifi_ap_profile.config.encryption = (sl_wifi_encryption_t)netif_cfg->wireless_cfg.encryption;
+    // } else {
+    //     memcpy(wifi_ap_credential.data, netif_cfg->wireless_cfg.pw, wifi_ap_credential.data_length);
+    //     wifi_ap_profile.config.security = (sl_wifi_security_t)netif_cfg->wireless_cfg.security;
+    //     wifi_ap_profile.config.credential_id = SL_NET_DEFAULT_WIFI_AP_CREDENTIAL_ID;
+    // }
+    // wifi_ap_profile.config.encryption = (sl_wifi_encryption_t)netif_cfg->wireless_cfg.encryption;
+    wifi_ap_profile.config.encryption = WIRELESS_DEFAULT_ENCRYPTION;
     wifi_ap_profile.config.channel.channel = netif_cfg->wireless_cfg.channel;
     
     if (netif_cfg->ip_mode == NETIF_IP_MODE_STATIC) wifi_ap_profile.ip.mode = SL_IP_MANAGEMENT_STATIC_IP;
@@ -2422,7 +2486,9 @@ int sl_net_ap_netif_info(netif_info_t *netif_info)
 
     memset(netif_info->wireless_cfg.ssid, 0x00, sizeof(netif_info->wireless_cfg.ssid));
     if (netif_info->state != NETIF_STATE_DEINIT && wifi_ap_profile.config.ssid.length < 1) {
-        snprintf((char *)wifi_ap_profile.config.ssid.value, sizeof(wifi_ap_profile.config.ssid.value), "NE301_%02X%02X%02X", ap_netif.hwaddr[3], ap_netif.hwaddr[4], ap_netif.hwaddr[5]);
+        uint8_t id_mac[6];
+        sl_net_identity_mac(id_mac);
+        snprintf((char *)wifi_ap_profile.config.ssid.value, sizeof(wifi_ap_profile.config.ssid.value), "NE301_%02X%02X%02X", id_mac[3], id_mac[4], id_mac[5]);
         wifi_ap_profile.config.ssid.length = strlen((char *)wifi_ap_profile.config.ssid.value);
         LOG_DRV_INFO("Use default ap name: %s\r\n", wifi_ap_profile.config.ssid.value);
     }
@@ -2612,6 +2678,26 @@ static sl_wifi_region_code_t sl_net_wifi_region_lookup(const char *country_code)
         if (s[j] == '\0' && country_code[j] == '\0') return s_wifi_region_table[i].code;
     }
     return SL_WIFI_IGNORE_REGION;
+}
+
+/// @brief Canonicalize a region string against the supported table (case-insensitive).
+///        Stored wifi_country_code values must be the canonical lowercase form:
+///        the pending/active comparison and the web UI match on exact strings,
+///        so a raw imported "CN" would otherwise show as forever-pending even
+///        though the (case-insensitive) apply succeeded.
+int sl_net_wifi_region_canonicalize(const char *country_code, char *buf, size_t len)
+{
+    sl_wifi_region_code_t code = sl_net_wifi_region_lookup(country_code);
+    uint32_t i;
+    if (code == SL_WIFI_IGNORE_REGION || buf == NULL || len == 0) return SL_STATUS_INVALID_PARAMETER;
+    for (i = 0; i < SL_NET_WIFI_REGION_TABLE_SIZE; i++) {
+        if (s_wifi_region_table[i].code == code) {
+            strncpy(buf, s_wifi_region_table[i].str, len - 1);
+            buf[len - 1] = '\0';
+            return SL_STATUS_OK;
+        }
+    }
+    return SL_STATUS_INVALID_PARAMETER;
 }
 
 /// @brief Configure WiFi region (country) code. Only effective at the next sl_wifi_init,

@@ -19,6 +19,7 @@
 #include "json_config_mgr.h"
 #include "video_camera_node.h"
 #include "device_service.h"
+#include "camera.h"
 #include "Services/Video/video_stream_hub.h"
 #include "mqtt_service.h"
 #include "drtc.h"
@@ -393,7 +394,46 @@ aicam_result_t ai_pipeline_start(void)
         LOG_SVC_WARN("AI pipelines already running");
         return AICAM_OK;
     }
-    
+
+    /* Self-heal a camera device that was stopped behind our back: an
+     * interrupted OTA upload stops the camera (XSPI bus contention) and if its
+     * cleanup path never runs (client Wi-Fi drop -> no TCP close -> no
+     * MG_EV_CLOSE), the device stays stopped. The camera node's start does NOT
+     * bring the device up (device_start is deliberately not called there), so
+     * the pipelines would run against a dead camera: encoder starves, AI node
+     * loops on pipe2 fetch failures. Restart the device before starting.
+     *
+     * Why pipe2_state is NOT part of the detection condition: camera_stop()
+     * stops ALL ctrl-enabled pipes atomically and the ctrl bits are frozen
+     * while the camera runs (SET_PIPE_CTRL answers BUSY), so "camera running,
+     * pipe2 alone stopped" cannot occur — camera down here implies both
+     * enabled pipes are down. pipe2_state == STOP with the camera running
+     * means PIPE2 simply is not enabled in the ctrl bits (e.g. a quick
+     * snapshot reconfigured PIPE1-only while stopped), which a bare restart
+     * would not fix; instead re-assert BOTH pipe bits before restarting, since
+     * reaching here means the AI pipeline (the pipe2 consumer) is about to
+     * run. */
+    {
+        device_t *camera_dev = device_find_pattern(CAMERA_DEVICE_NAME, DEV_TYPE_VIDEO);
+        camera_state_t cam_state = {0};
+        if (camera_dev != NULL &&
+            device_ioctl(camera_dev, CAM_CMD_GET_STATE,
+                         (uint8_t *)&cam_state, sizeof(cam_state)) == AICAM_OK &&
+            (cam_state.camera_state != CAMERA_START || cam_state.pipe1_state != PIPE_START)) {
+            LOG_SVC_WARN("Camera device not running (cam=%d pipe1=%d pipe2=%d), restarting before pipelines",
+                         (int)cam_state.camera_state, (int)cam_state.pipe1_state, (int)cam_state.pipe2_state);
+            if (cam_state.camera_state != CAMERA_START) {
+                uint8_t pipe_ctrl = CAMERA_CTRL_PIPE1_BIT | CAMERA_CTRL_PIPE2_BIT;
+                (void)device_ioctl(camera_dev, CAM_CMD_SET_PIPE_CTRL, &pipe_ctrl, 0);
+            }
+            aicam_result_t cam_result = device_service_camera_start();
+            if (cam_result != AICAM_OK) {
+                LOG_SVC_ERROR("Failed to restart camera device: %d", cam_result);
+                return cam_result;
+            }
+        }
+    }
+
     // Start camera pipeline
     aicam_result_t result = video_pipeline_start(g_ai_service.camera_pipeline);
     if (result != AICAM_OK) {

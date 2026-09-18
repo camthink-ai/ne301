@@ -8,6 +8,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/tooltip';
 import { Button } from '@/components/ui/button';
 import TimePicker from '@/components/time-picker';
+import { NumberField } from '@/components/number-field';
 import {
   Select,
   SelectContent,
@@ -87,6 +88,11 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
   const { configTriggerConfigReq, getTriggerConfigReq } = deviceTool;
   const [intervalCaptureTime, setIntervalCaptureTime] = useState(10);
   const [intervalCaptureTimeUnit, setIntervalCaptureTimeUnit] = useState('hour');
+  // Raw text while editing the interval field; null = not editing (show the
+  // committed value). Parse + clamp happen once on blur — clamping inside
+  // onChange rewrites the field mid-typing (clear → forced "1", then typing
+  // "30" shows "130"), making values unreachable.
+  const [intervalDraft, setIntervalDraft] = useState<string | null>(null);
   const [scheduledStartTime, setScheduledStartTime] = useState('08:00');
   const [scheduledEndTime, setScheduledEndTime] = useState('23:59');
   // Daily grid anchor "HH:MM" for normal interval mode — a time-of-day, no
@@ -204,31 +210,19 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
     // start/end/anchor must still re-populate the inputs
   }, [triggerConfig.timer_trigger]);
 
-  // Interval is a daily-lattice step — it must stay under 24h (hour ≤ 23,
+  // Interval is a daily-lattice step — integers only (decimals are rounded at
+  // commit, never mid-typing), and it must stay under 24h (hour ≤ 23,
   // minute ≤ 1439)
   const intervalMax = intervalCaptureTimeUnit === 'hour' ? 23 : 1439;
-  const clampInterval = (value: number) => Math.max(1, Math.min(intervalMax, Number.isNaN(value) ? 1 : value));
+  const clampInterval = (value: number) => {
+    const rounded = Math.round(Number.isNaN(value) ? 1 : value);
+    return Math.max(1, Math.min(intervalMax, rounded));
+  };
 
   const handleIntervalCaptureTimeChange = (e: Event) => {
-    const target = e.target as HTMLInputElement;
-    const inputValue = target.value;
-    // Handle empty string
-    if (inputValue === '') {
-      setIntervalCaptureTime(1);
-      return;
-    }
-    const value = Number(inputValue);
-    // Limit minimum value to 1, cannot be negative or 0
-    if (Number.isNaN(value)) {
-      setIntervalCaptureTime(1);
-    } else {
-      const clampedValue = clampInterval(value);
-      setIntervalCaptureTime(clampedValue);
-      // If value is clamped, immediately update input display
-      if (value !== clampedValue) {
-        target.value = clampedValue.toString();
-      }
-    }
+    // Keep any intermediate text (including "") as the draft; parse + clamp
+    // once on blur
+    setIntervalDraft((e.target as HTMLInputElement).value);
   };
   const handleIntervalCaptureTimeUnitChange = (value: string) => {
     setIntervalCaptureTimeUnit(value);
@@ -309,15 +303,19 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
         ...triggerConfig.timer_trigger,
         interval_sec: formateTime,
         interval_mode: triggerConfig.timer_trigger.interval_mode || 'normal',
-        start_time: isScheduled ? scheduledStartTime : '00:00',
       };
       if (isScheduled) {
+        // Only the scheduled editors are authoritative for the window.
         // Daily window end, closed [start, end]: 00:00 = ends at midnight;
         // must differ from start (a full day is any start T with end T-1min,
         // guarded below)
+        tt.start_time = scheduledStartTime;
         tt.end_time = scheduledEndTime;
-      }
-      if (!isScheduled) {
+      } else {
+        // Normal mode runs on `anchor` — start/end belong to the scheduled
+        // window, so never overwrite them here: echo the stored values (the
+        // spread above carries the GET's) or the configured window would be
+        // silently reset to 00:00 and lost when switching back.
         // Daily grid anchor "HH:MM" (a time-of-day, no date component)
         tt.anchor = anchorInput;
       }
@@ -356,28 +354,6 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
     } catch (error) {
       console.error('setImageTrigger', error);
       throw error;
-    }
-  };
-
-  const handlePirTriggerSensitivityLevelBlur = (e: Event) => {
-    // 10-255
-    const target = e.target as HTMLInputElement;
-    const value = Number(target.value);
-    if (value < 10) {
-      setTriggerConfig({
-        ...triggerConfig,
-        pir_trigger: { ...triggerConfig.pir_trigger, sensitivity_level: 10 },
-      });
-    } else if (value > 255) {
-      setTriggerConfig({
-        ...triggerConfig,
-        pir_trigger: { ...triggerConfig.pir_trigger, sensitivity_level: 255 },
-      });
-    } else {
-      setTriggerConfig({
-        ...triggerConfig,
-        pir_trigger: { ...triggerConfig.pir_trigger, sensitivity_level: value },
-      });
     }
   };
 
@@ -518,13 +494,21 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
             min={1}
             max={intervalMax}
             className="w-20"
-            value={intervalCaptureTime}
+            value={intervalDraft ?? intervalCaptureTime}
             onChange={handleIntervalCaptureTimeChange}
             onBlur={e => {
-              const value = Number((e.target as HTMLInputElement).value);
-              const clampedValue = clampInterval(value);
+              const clampedValue = clampInterval(
+                Number((e.target as HTMLInputElement).value)
+              );
               setIntervalCaptureTime(clampedValue);
-              (e.target as HTMLInputElement).value = clampedValue.toString();
+              setIntervalDraft(null);
+            }}
+            onKeyDown={e => {
+              // Enter commits (blurs) like clicking away
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                (e.target as HTMLInputElement).blur();
+              }
             }}
           />
           <Select
@@ -768,15 +752,21 @@ export default function TriggerConfig({ childeRef }: TriggerConfigProps) {
                           </TooltipContent>
                         </Tooltip>
                       </div>
-                      <Input
-                        type="number"
-                        min={1}
-                        max={255}
+                      {/* Draft-based number input: the 1s now-tick re-renders
+                          every second, so a blur-only controlled input would
+                          snap back to the committed value mid-typing */}
+                      <NumberField
                         className="w-20"
-                        value={
-                          triggerConfig.pir_trigger?.sensitivity_level || 10
-                        }
-                        onBlur={e => handlePirTriggerSensitivityLevelBlur(e)}
+                        min={10}
+                        max={255}
+                        value={triggerConfig.pir_trigger?.sensitivity_level ?? 10}
+                        onCommit={v => setTriggerConfig({
+                            ...triggerConfig,
+                            pir_trigger: {
+                              ...triggerConfig.pir_trigger,
+                              sensitivity_level: v,
+                            },
+                          })}
                       />
                     </div>
                     <div className="flex justify-between gap-2 flex-1 pr-0">
