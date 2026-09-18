@@ -118,6 +118,30 @@ aicam_result_t json_config_save_work_mode_config_to_nvs(const work_mode_config_t
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save RTMP stream key to NVS");
 
+    /* RTSP server configuration (part of video_stream_mode). The dedicated
+     * RTSP APIs write these keys via json_config_set_video_stream_mode, but
+     * the config-file import lands in this full save — without these writes
+     * imported RTSP settings are silently dropped from NVS. */
+    result = json_config_nvs_write_bool(NVS_KEY_RTSP_ENABLE, config->video_stream_mode.rtsp_enable);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to save RTSP enable to NVS");
+
+    result = json_config_nvs_write_uint32(NVS_KEY_RTSP_PORT, (uint32_t)config->video_stream_mode.rtsp_port);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to save RTSP port to NVS");
+
+    result = json_config_nvs_write_string(NVS_KEY_RTSP_AUTH_MODE, config->video_stream_mode.rtsp_auth_mode);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to save RTSP auth mode to NVS");
+
+    result = json_config_nvs_write_string(NVS_KEY_RTSP_USERNAME, config->video_stream_mode.rtsp_username);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to save RTSP username to NVS");
+
+    result = json_config_nvs_write_string(NVS_KEY_RTSP_PASSWORD, config->video_stream_mode.rtsp_password);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to save RTSP password to NVS");
+
     result = json_config_nvs_write_bool(NVS_KEY_PIR_ENABLE, config->pir_trigger.enable);
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save pir trigger enable to NVS");
@@ -2727,6 +2751,34 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     result = json_config_nvs_read_string(NVS_KEY_RTMP_STREAM_KEY, config->work_mode_config.video_stream_mode.rtmp_stream_key, sizeof(config->work_mode_config.video_stream_mode.rtmp_stream_key));
     if (result != AICAM_OK)
         json_config_nvs_write_string(NVS_KEY_RTMP_STREAM_KEY, config->work_mode_config.video_stream_mode.rtmp_stream_key);
+
+    /* Load RTSP server configuration: these keys are written by the dedicated
+     * RTSP APIs (and the full save above). Loading them here keeps the RAM
+     * copy in sync — otherwise the first full save after boot would rewrite
+     * the boot defaults over the user's NVS values. */
+    result = json_config_nvs_read_bool(NVS_KEY_RTSP_ENABLE, &temp_bool);
+    if (result == AICAM_OK)
+        config->work_mode_config.video_stream_mode.rtsp_enable = temp_bool;
+    else
+        json_config_nvs_write_bool(NVS_KEY_RTSP_ENABLE, config->work_mode_config.video_stream_mode.rtsp_enable);
+
+    result = json_config_nvs_read_uint32(NVS_KEY_RTSP_PORT, &temp_uint32);
+    if (result == AICAM_OK)
+        config->work_mode_config.video_stream_mode.rtsp_port = (uint16_t)temp_uint32;
+    else
+        json_config_nvs_write_uint32(NVS_KEY_RTSP_PORT, (uint32_t)config->work_mode_config.video_stream_mode.rtsp_port);
+
+    result = json_config_nvs_read_string(NVS_KEY_RTSP_AUTH_MODE, config->work_mode_config.video_stream_mode.rtsp_auth_mode, sizeof(config->work_mode_config.video_stream_mode.rtsp_auth_mode));
+    if (result != AICAM_OK)
+        json_config_nvs_write_string(NVS_KEY_RTSP_AUTH_MODE, config->work_mode_config.video_stream_mode.rtsp_auth_mode);
+
+    result = json_config_nvs_read_string(NVS_KEY_RTSP_USERNAME, config->work_mode_config.video_stream_mode.rtsp_username, sizeof(config->work_mode_config.video_stream_mode.rtsp_username));
+    if (result != AICAM_OK)
+        json_config_nvs_write_string(NVS_KEY_RTSP_USERNAME, config->work_mode_config.video_stream_mode.rtsp_username);
+
+    result = json_config_nvs_read_string(NVS_KEY_RTSP_PASSWORD, config->work_mode_config.video_stream_mode.rtsp_password, sizeof(config->work_mode_config.video_stream_mode.rtsp_password));
+    if (result != AICAM_OK)
+        json_config_nvs_write_string(NVS_KEY_RTSP_PASSWORD, config->work_mode_config.video_stream_mode.rtsp_password);
 
     result = json_config_nvs_read_bool(NVS_KEY_PIR_ENABLE, &temp_bool);
     if (result == AICAM_OK)

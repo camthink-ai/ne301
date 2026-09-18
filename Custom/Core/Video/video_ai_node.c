@@ -614,6 +614,27 @@ static aicam_result_t video_ai_process_frame(video_ai_node_data_t *data,
         *output_frame = NULL;
         return AICAM_OK;
     }
+    else if (result == AICAM_ERROR_NOT_SUPPORTED)
+    {
+        /* Camera pipes are stopped (e.g. an interrupted OTA upload stopped the
+         * device and its cleanup path never ran). That is a persistent state
+         * problem, not a per-frame failure: anchor the pacing tick + yield so
+         * the node thread cannot busy-spin, log rate-limited (once per 5 s),
+         * and report OK-no-frame instead of erroring so the pipeline error log
+         * is not flooded at the retry rate. ai_pipeline_start() normally
+         * restarts the camera before this state can be observed. */
+        static uint32_t pipe_stopped_log_tick = 0;
+        uint32_t now = osKernelGetTickCount();
+        if (pipe_stopped_log_tick == 0 || (now - pipe_stopped_log_tick) >= 5000U) {
+            pipe_stopped_log_tick = now;
+            LOG_CORE_ERROR("Camera pipe2 stopped, AI inference idle until camera restart");
+        }
+        data->last_inference_tick = now;
+        osDelay(5);
+        *output_frame = NULL;
+        data->stats.frames_skipped++;
+        return AICAM_OK;
+    }
     else
     {
         LOG_CORE_ERROR("Failed to get pipe2 buffer for AI processing, size: %d", camera_buffer_with_frame_id.size);

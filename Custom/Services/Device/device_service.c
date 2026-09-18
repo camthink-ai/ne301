@@ -1057,6 +1057,13 @@ aicam_result_t device_service_start(void)
         } else {
             g_device_service.indicator_state = SYSTEM_INDICATOR_RUNNING_AP_OFF;
             device_service_set_indicator_state(SYSTEM_INDICATOR_RUNNING_AP_OFF);
+            /* Re-check AFTER writing the blink: if the AP's UP landed between the
+             * check above and this write, the blink just clobbered the solid-on set
+             * by on_wifi_ap_ready — flip back. (Last write wins; the callback sets
+             * solid-on strictly after UP, so no ordering survives incorrectly.) */
+            if (communication_is_interface_connected(NETIF_NAME_WIFI_AP)) {
+                device_service_set_indicator_state(SYSTEM_INDICATOR_RUNNING_AP_ON);
+            }
         }
     }
     

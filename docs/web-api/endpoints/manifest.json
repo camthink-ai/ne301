@@ -112,7 +112,7 @@
     },
     "device": {
       "source": "Custom/Services/Web/api/api_device_module.c",
-      "source_sha256": "a6e4018502c9271d",
+      "source_sha256": "80e72b6afc378195",
       "routes": [
         {
           "method": "GET",
@@ -604,7 +604,7 @@
     },
     "network": {
       "source": "Custom/Services/Web/api/api_network_module.c",
-      "source_sha256": "ed28303daab361d5",
+      "source_sha256": "2b647749001ebeee",
       "routes": [
         {
           "method": "GET",
@@ -904,7 +904,7 @@
     },
     "ota": {
       "source": "Custom/Services/Web/api/api_ota_module.c",
-      "source_sha256": "f9170eaa9d91c2db",
+      "source_sha256": "8a97bdaab6de8c61",
       "routes": [
         {
           "method": "POST",
@@ -1090,7 +1090,7 @@
     },
     "work_mode": {
       "source": "Custom/Services/Web/api/api_work_mode_module.c",
-      "source_sha256": "b04024e72809568d",
+      "source_sha256": "6b3fbd5e9dda6f50",
       "routes": [
         {
           "method": "GET",

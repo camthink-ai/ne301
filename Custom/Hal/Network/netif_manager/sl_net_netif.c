@@ -2405,16 +2405,18 @@ int sl_net_ap_netif_config(netif_config_t *netif_cfg)
     wifi_ap_profile.config.maximum_clients = netif_cfg->wireless_cfg.max_client_num;
     wifi_ap_profile.config.ssid.length = strlen(netif_cfg->wireless_cfg.ssid);
     memcpy(wifi_ap_profile.config.ssid.value, netif_cfg->wireless_cfg.ssid, wifi_ap_profile.config.ssid.length);
-    wifi_ap_credential.data_length = strlen(netif_cfg->wireless_cfg.pw);
-    if (wifi_ap_credential.data_length < 8) {
+    // wifi_ap_credential.data_length = strlen(netif_cfg->wireless_cfg.pw);
+    // currently, the AP interface does not support password setting, so the security mode is set to open. The password setting function will be supported in the future.
+    // if (wifi_ap_credential.data_length < 8) {
         wifi_ap_profile.config.security = SL_WIFI_OPEN;
         wifi_ap_profile.config.credential_id = SL_WIFI_NO_CREDENTIAL_ID;
-    } else {
-        memcpy(wifi_ap_credential.data, netif_cfg->wireless_cfg.pw, wifi_ap_credential.data_length);
-        wifi_ap_profile.config.security = (sl_wifi_security_t)netif_cfg->wireless_cfg.security;
-        wifi_ap_profile.config.credential_id = SL_NET_DEFAULT_WIFI_AP_CREDENTIAL_ID;
-    }
-    wifi_ap_profile.config.encryption = (sl_wifi_encryption_t)netif_cfg->wireless_cfg.encryption;
+    // } else {
+    //     memcpy(wifi_ap_credential.data, netif_cfg->wireless_cfg.pw, wifi_ap_credential.data_length);
+    //     wifi_ap_profile.config.security = (sl_wifi_security_t)netif_cfg->wireless_cfg.security;
+    //     wifi_ap_profile.config.credential_id = SL_NET_DEFAULT_WIFI_AP_CREDENTIAL_ID;
+    // }
+    // wifi_ap_profile.config.encryption = (sl_wifi_encryption_t)netif_cfg->wireless_cfg.encryption;
+    wifi_ap_profile.config.encryption = WIRELESS_DEFAULT_ENCRYPTION;
     wifi_ap_profile.config.channel.channel = netif_cfg->wireless_cfg.channel;
     
     if (netif_cfg->ip_mode == NETIF_IP_MODE_STATIC) wifi_ap_profile.ip.mode = SL_IP_MANAGEMENT_STATIC_IP;
@@ -2676,6 +2678,26 @@ static sl_wifi_region_code_t sl_net_wifi_region_lookup(const char *country_code)
         if (s[j] == '\0' && country_code[j] == '\0') return s_wifi_region_table[i].code;
     }
     return SL_WIFI_IGNORE_REGION;
+}
+
+/// @brief Canonicalize a region string against the supported table (case-insensitive).
+///        Stored wifi_country_code values must be the canonical lowercase form:
+///        the pending/active comparison and the web UI match on exact strings,
+///        so a raw imported "CN" would otherwise show as forever-pending even
+///        though the (case-insensitive) apply succeeded.
+int sl_net_wifi_region_canonicalize(const char *country_code, char *buf, size_t len)
+{
+    sl_wifi_region_code_t code = sl_net_wifi_region_lookup(country_code);
+    uint32_t i;
+    if (code == SL_WIFI_IGNORE_REGION || buf == NULL || len == 0) return SL_STATUS_INVALID_PARAMETER;
+    for (i = 0; i < SL_NET_WIFI_REGION_TABLE_SIZE; i++) {
+        if (s_wifi_region_table[i].code == code) {
+            strncpy(buf, s_wifi_region_table[i].str, len - 1);
+            buf[len - 1] = '\0';
+            return SL_STATUS_OK;
+        }
+    }
+    return SL_STATUS_INVALID_PARAMETER;
 }
 
 /// @brief Configure WiFi region (country) code. Only effective at the next sl_wifi_init,

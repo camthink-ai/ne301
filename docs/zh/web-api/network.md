@@ -205,14 +205,16 @@ switch (current_comm_type) {
     "state": "up",
     "ssid": "AICamera_AP",
     "password_set": true,
-    "security": "wpa2_psk",
+    "security": "open",
     "channel": 6,
     "ip_address": "192.168.4.1",
     "mac_address": "AA:BB:CC:DD:EE:FF",
-    "ap_sleep_time": 300
+    "ap_sleep_time": 1800
   }
 }
 ```
+
+> **说明**：本固件版本热点不再支持设置密码——始终以开放方式运行（WiFi 芯片固件限制：AP 设置密码后，STA 无法连接网络）。`password_set` 仅反映配置中是否存有密码，不会生效。`ap_sleep_time` 仅接受固定档位 0（永不）/ 600 / 1200 / 1800 秒。
 
 ---
 
@@ -236,9 +238,9 @@ switch (current_comm_type) {
 |------|------|------|------|
 | interface | string | 是 | `wl`=客户端, `ap`=热点 |
 | ssid | string | 是 | 网络名称 (1-31字符) |
-| password | string | 否 | 密码 (8-63字符，开放网络留空) |
+| password | string | 否 | STA：密码 (8-63字符，开放网络留空)。AP：接受并存储但**不生效**——本固件版本热点始终以开放方式运行 |
 | bssid | string | 否 | 目标BSSID |
-| ap_sleep_time | number | 否 | 热点休眠时间（仅AP模式） |
+| ap_sleep_time | number | 否 | 热点空闲休眠时间（仅AP模式）：仅允许 0（永不）/ 600 / 1200 / 1800 秒，其它值被拒绝 |
 
 ---
 

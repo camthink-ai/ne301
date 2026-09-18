@@ -652,15 +652,17 @@ aicam_result_t device_sys_clk_config_handler(http_handler_context_t *ctx) {
             return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "sys_clk_profile is required (number)");
         }
 
-        uint32_t profile = (uint32_t)cJSON_GetNumberValue(prof_item);
-        if (profile != FSBL_APP_SYSCLK_PROFILE_HSE_200MHZ &&
-            profile != FSBL_APP_SYSCLK_PROFILE_HSE_400MHZ &&
-            profile != FSBL_APP_SYSCLK_PROFILE_HSI_800MHZ &&
-            profile != FSBL_APP_SYSCLK_PROFILE_HSE_800MHZ) {
+        /* Validate on the double before the uint32 cast (ARM saturates
+         * negatives to 0 and truncates fractions into valid profiles). */
+        double profile_d = cJSON_GetNumberValue(prof_item);
+        if (profile_d < (double)FSBL_APP_SYSCLK_PROFILE_HSE_200MHZ
+            || profile_d > (double)FSBL_APP_SYSCLK_PROFILE_HSE_800MHZ
+            || profile_d != (double)(uint32_t)profile_d) {
             cJSON_Delete(request_json);
             return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
                                       "sys_clk_profile must be 1 (HSE 200), 2 (HSE 400), 3 (HSI 800), or 4 (HSE 800)");
         }
+        uint32_t profile = (uint32_t)profile_d;
 
         sys_clk_config_t cfg = {0};
         cfg.sys_clk_profile = profile;
@@ -1715,9 +1717,13 @@ aicam_result_t device_config_export_handler(http_handler_context_t *ctx) {
     if (config_obj) {
         /* Work frequency (sys clock profile) lives in the FSBL config area,
          * not in json_config — attach it so an export restores it too.
-         * Omitted when nothing valid is stored (merge keeps current). */
+         * Only a real 1..4 selection carries intent: profile 0 = never
+         * modified (FSBL "no override" / GET handler not-set sentinel), so
+         * it is omitted — import then keeps the target's current profile. */
         sys_clk_config_t sysclk_cfg = {0};
-        if (fsbl_app_read_sys_clk_config(&sysclk_cfg) == 0)
+        if (fsbl_app_read_sys_clk_config(&sysclk_cfg) == 0
+            && sysclk_cfg.sys_clk_profile >= FSBL_APP_SYSCLK_PROFILE_HSE_200MHZ
+            && sysclk_cfg.sys_clk_profile <= FSBL_APP_SYSCLK_PROFILE_HSE_800MHZ)
             cJSON_AddNumberToObject(config_obj, "sys_clk_profile", (double)sysclk_cfg.sys_clk_profile);
         cJSON_AddItemToObject(response_json, "config", config_obj);
     } else {
@@ -1788,25 +1794,32 @@ aicam_result_t device_config_import_handler(http_handler_context_t *ctx) {
 
     /* Work frequency rides along in the config JSON but is applied through
      * the FSBL config area (same write path as the dedicated web setter).
-     * An absent key keeps the device's current profile (merge semantics). */
+     * An absent key keeps the device's current profile (merge semantics);
+     * 0 (never modified on the exporting device) is treated the same. */
     int sys_clk_profile = -1;   /* -1 = not present in the file */
     {
         cJSON* cfg_root = cJSON_Parse(config_json_str);
         if (cfg_root) {
             cJSON* prof_item = cJSON_GetObjectItem(cfg_root, "sys_clk_profile");
-            if (cJSON_IsNumber(prof_item)) {
-                uint32_t profile = (uint32_t)cJSON_GetNumberValue(prof_item);
-                if (profile != FSBL_APP_SYSCLK_PROFILE_HSE_200MHZ &&
-                    profile != FSBL_APP_SYSCLK_PROFILE_HSE_400MHZ &&
-                    profile != FSBL_APP_SYSCLK_PROFILE_HSI_800MHZ &&
-                    profile != FSBL_APP_SYSCLK_PROFILE_HSE_800MHZ) {
+            if (prof_item) {
+                /* Validate on the double BEFORE any uint32 cast: ARM's
+                 * float->unsigned conversion saturates, so -2 becomes 0 and
+                 * would silently slip into the keep-current path instead of
+                 * being rejected; a fractional value would truncate into a
+                 * valid profile. A present-but-wrong-typed value is file
+                 * corruption, not absence. Only integral 0..4 are valid. */
+                double profile = cJSON_IsNumber(prof_item) ? cJSON_GetNumberValue(prof_item) : -1.0;
+                if (profile < 0
+                    || profile > (double)FSBL_APP_SYSCLK_PROFILE_HSE_800MHZ
+                    || profile != (double)(uint32_t)profile) {
                     cJSON_Delete(cfg_root);
                     cJSON_Delete(request_json);
                     if (should_free_config_str) cJSON_free(config_json_str);
                     return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
-                                              "sys_clk_profile must be 1 (HSE 200), 2 (HSE 400), 3 (HSI 800), or 4 (HSE 800)");
+                                              "sys_clk_profile must be 0 (keep current), 1 (HSE 200), 2 (HSE 400), 3 (HSI 800), or 4 (HSE 800)");
                 }
-                sys_clk_profile = (int)profile;
+                if (profile != 0)
+                    sys_clk_profile = (int)profile;
             }
             cJSON_Delete(cfg_root);
         }
@@ -1871,8 +1884,6 @@ aicam_result_t device_config_import_handler(http_handler_context_t *ctx) {
     cJSON_AddNumberToObject(response_json, "config_version", new_config.config_version);
     cJSON_AddNumberToObject(response_json, "timestamp", (double)new_config.timestamp);
     cJSON_AddNumberToObject(response_json, "checksum", new_config.checksum);
-    if (sys_clk_profile > 0)
-        cJSON_AddNumberToObject(response_json, "sys_clk_profile", sys_clk_profile);
     cJSON_AddBoolToObject(response_json, "saved_to_file", result == AICAM_OK);
     
     // Send response

@@ -636,7 +636,7 @@ aicam_result_t network_wifi_info_handler(http_handler_context_t *ctx) {
  *   "enabled": true,
  *   "ssid": "AICamera_AP",
  *   "password_set": true,
- *   "ap_sleep_time": 300,
+ *   "ap_sleep_time": 600,
  *   "ip_address": "192.168.4.1"
  * }
  */
@@ -783,15 +783,18 @@ aicam_result_t network_wifi_config_handler(http_handler_context_t *ctx) {
         }
     }
     
-    // Extract AP sleep time (optional, only for AP mode)
+    // Extract AP sleep time (optional, only for AP mode) — fixed choices
+    // matching the web UI: never (0) / 10 / 20 / 30 minutes (seconds).
     uint32_t ap_sleep_time = 0;
     if (strcmp(interface_str, "ap") == 0) {
         cJSON* sleep_time_item = cJSON_GetObjectItem(request_json, "ap_sleep_time");
         if (sleep_time_item && cJSON_IsNumber(sleep_time_item)) {
             ap_sleep_time = (uint32_t)cJSON_GetNumberValue(sleep_time_item);
-            if (ap_sleep_time > 3600) { // Max 1 hour
+            if (ap_sleep_time != 0 && ap_sleep_time != 600 &&
+                ap_sleep_time != 1200 && ap_sleep_time != 1800) {
                 cJSON_Delete(request_json);
-                return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "AP sleep time must be <= 3600 seconds");
+                return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
+                                          "AP sleep time must be 0 (never), 600, 1200 or 1800 seconds");
             }
         }
         network_service_config.ap_sleep_time = ap_sleep_time;
@@ -935,12 +938,16 @@ aicam_result_t network_wifi_region_get_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE, "Communication service is not running");
     }
 
-    /* Configured (pending next-boot) region from NVS; fall back to active runtime region. */
+    /* Configured (pending next-boot) region from NVS; fall back to active runtime region.
+     * Canonicalized: a legacy/imported "CN" must not read as forever-pending against
+     * the canonical lowercase active region. */
     cfg_buf[0] = '\0';
     if (json_config_get_network_service_config(&sys_net) == AICAM_OK && sys_net.wifi_country_code[0] != '\0') {
-        strncpy(cfg_buf, sys_net.wifi_country_code, sizeof(cfg_buf) - 1U);
-        cfg_buf[sizeof(cfg_buf) - 1U] = '\0';
-    } else {
+        if (sl_net_wifi_region_canonicalize(sys_net.wifi_country_code, cfg_buf, sizeof(cfg_buf)) != 0) {
+            cfg_buf[0] = '\0'; /* stored value is not a supported region */
+        }
+    }
+    if (cfg_buf[0] == '\0') {
         (void)sl_net_wifi_get_region_code(cfg_buf, sizeof(cfg_buf));
     }
     region = (cfg_buf[0] != '\0') ? cfg_buf : "us";
@@ -1011,6 +1018,17 @@ aicam_result_t network_wifi_region_set_handler(http_handler_context_t *ctx) {
     }
     if (set_ret == SL_STATUS_OK) {
         restart_required = AICAM_FALSE;
+    }
+
+    /* Store the CANONICAL lowercase form: the pending/active badge compares the
+     * stored string against the canonical active region, so a raw "CN" payload
+     * would leave the UI showing "takes effect after restart" forever. */
+    {
+        char canon_buf[NETIF_WIFI_COUNTRY_CODE_LEN];
+        if (sl_net_wifi_region_canonicalize(region_buf, canon_buf, sizeof(canon_buf)) == 0) {
+            strncpy(region_buf, canon_buf, sizeof(region_buf) - 1U);
+            region_buf[sizeof(region_buf) - 1U] = '\0';
+        }
     }
 
     if (json_config_get_network_service_config(&sys_net) != AICAM_OK) {

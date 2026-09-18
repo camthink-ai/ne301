@@ -517,6 +517,18 @@ int factory_config_write(const factory_config_t *config) {
     }
     storage_nvs_write(NVS_FACTORY, NVS_KEY_MAC_ADDR,
                       config->mac_address, sizeof(config->mac_address));
+    /* Mirror into the USER partition in the SAME string form every other
+     * dev_info_mac reader/writer uses (json_config persists "XX:XX:..") —
+     * the key is read back as a string, never as raw bytes. The app also
+     * re-stamps it from the live MAC on every boot, so this only seeds the
+     * very first boot after the burn. */
+    char mac_str[18];
+    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+             config->mac_address[0], config->mac_address[1],
+             config->mac_address[2], config->mac_address[3],
+             config->mac_address[4], config->mac_address[5]);
+    storage_nvs_write(NVS_USER, NVS_KEY_DEVICE_INFO_MAC,
+                      mac_str, strlen(mac_str) + 1);
     storage_nvs_write(NVS_FACTORY, NVS_KEY_MFG_TIMESTAMP,
                       &config->mfg_timestamp, sizeof(config->mfg_timestamp));
     
@@ -767,6 +779,14 @@ static int factory_test_cmd(int argc, char *argv[]) {
         // Clear: remove the burn, identity + interfaces fall back to the
         // chip-reported MAC after a reboot.
         if (strcmp(argv[2], "clear") == 0) {
+            /* Drop the USER mirror first, warn-and-continue: the FACTORY
+             * burn below is the authoritative marker, and aborting after it
+             * would leave a half-cleared state (burn gone, mirror stale,
+             * identity reset skipped). The app re-stamps the mirror from the
+             * live MAC on the next boot anyway. */
+            if (storage_nvs_delete(NVS_USER, NVS_KEY_DEVICE_INFO_MAC) != 0) {
+                LOG_SIMPLE("Warning: device info MAC mirror delete failed\r\n");
+            }
             if (storage_nvs_delete(NVS_FACTORY, NVS_KEY_MAC_ADDR) != 0) {
                 LOG_SIMPLE("Failed to clear MAC (NVS delete failed)\r\n");
                 return -1;

@@ -9,6 +9,7 @@
 #include <stdbool.h> // For true/false used by cJSON helpers
 #include "buffer_mgr.h"
 #include "generic_file.h"
+#include "sl_net_netif.h" // WiFi region canonicalization on import
 
 /* ==================== JSON Parsing Helpers (static) ==================== */
 
@@ -296,10 +297,37 @@ static void parse_device_service(cJSON *json, device_service_config_t *cfg)
 
 static void parse_network_service(cJSON *json, network_service_config_t *cfg)
 {
-    json_get_uint32(json, "ap_sleep_time", &cfg->ap_sleep_time);
+    /* Hotspot idle sleep follows the web UI's fixed choices (never / 10 / 20 /
+     * 30 min). An out-of-set value (legacy export, hand edit) keeps the
+     * device's own setting instead of failing the import; the web setter
+     * enforces the same set with an explicit error. */
+    {
+        uint32_t ap_sleep = cfg->ap_sleep_time;
+        json_get_uint32(json, "ap_sleep_time", &ap_sleep);
+        if (ap_sleep == 0 || ap_sleep == 600 || ap_sleep == 1200 || ap_sleep == 1800)
+            cfg->ap_sleep_time = ap_sleep;
+    }
     json_get_string(json, "ssid", cfg->ssid, sizeof(cfg->ssid));
     json_get_string(json, "password", cfg->password, sizeof(cfg->password));
-    json_get_string(json, "wifi_country_code", cfg->wifi_country_code, sizeof(cfg->wifi_country_code));
+    /* Region: store the canonical lowercase table entry. The boot apply matches
+     * case-insensitively but the pending/active badge compares raw strings, so a
+     * file carrying "CN" would apply fine yet read as forever-pending. A value
+     * that is not a supported region at all is treated like an absent key (the
+     * device keeps its own setting) instead of silently reverting to US. */
+    {
+        cJSON *cc = cJSON_GetObjectItem(json, "wifi_country_code");
+        if (cJSON_IsString(cc) && cc->valuestring != NULL) {
+            if (cc->valuestring[0] == '\0') {
+                cfg->wifi_country_code[0] = '\0'; /* explicit empty keeps its old clear semantics */
+            } else {
+                char canon[NETIF_WIFI_COUNTRY_CODE_LEN];
+                if (sl_net_wifi_region_canonicalize(cc->valuestring, canon, sizeof(canon)) == 0) {
+                    strncpy(cfg->wifi_country_code, canon, sizeof(cfg->wifi_country_code) - 1);
+                    cfg->wifi_country_code[sizeof(cfg->wifi_country_code) - 1] = '\0';
+                }
+            }
+        }
+    }
     
     // Parse known_networks array
     json_get_uint32(json, "known_network_count", &cfg->known_network_count);

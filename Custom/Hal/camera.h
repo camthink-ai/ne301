@@ -101,6 +101,7 @@ typedef enum {
     CAM_CMD_UNSHARE_PIPE1_BUFFER,
     CAM_CMD_UNSHARE_PIPE2_BUFFER,
     CAM_CMD_APPLY_ISP_IQ,  // Hot-swap ISP IQ params on a running pipeline
+    CAM_CMD_GET_STATE,     // Get camera/pipe run states (camera_state_t)
 } CAM_CMD_E;
 
 typedef enum {

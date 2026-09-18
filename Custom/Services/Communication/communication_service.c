@@ -3089,6 +3089,11 @@ static void on_cellular_ready(const char *if_name, aicam_result_t result)
  * @note Implements quick recovery: loads saved config and connects within 5s target
  *       Connection decision is made by check_all_ready_and_decide()
  */
+/* Borrowed hostname pointer handed to the netif (netif_config_t::host_name is
+ * char*, stored as-is by the W5500 driver): must outlive the stack frames that
+ * apply the PoE config. Shared by on_poe_ready / poe_connect / apply_config. */
+static char s_poe_hostname[32];
+
 static void on_poe_ready(const char *if_name, aicam_result_t result)
 {
     uint32_t init_time = netif_init_manager_get_init_time(if_name);
@@ -3145,7 +3150,9 @@ static void on_poe_ready(const char *if_name, aicam_result_t result)
                 }
 
                 if (poe_cfg.hostname[0] != '\0') {
-                    netif_cfg.host_name = poe_cfg.hostname;
+                    strncpy(s_poe_hostname, poe_cfg.hostname, sizeof(s_poe_hostname) - 1);
+                    s_poe_hostname[sizeof(s_poe_hostname) - 1] = '\0';
+                    netif_cfg.host_name = s_poe_hostname;
                 }
 
                 int cfg_ret = nm_set_netif_cfg(NETIF_NAME_ETH_WAN, &netif_cfg);
@@ -4467,7 +4474,9 @@ aicam_result_t communication_poe_connect(void)
             }
 
             if (poe_cfg.hostname[0] != '\0') {
-                netif_cfg.host_name = poe_cfg.hostname;
+                strncpy(s_poe_hostname, poe_cfg.hostname, sizeof(s_poe_hostname) - 1);
+                s_poe_hostname[sizeof(s_poe_hostname) - 1] = '\0';
+                netif_cfg.host_name = s_poe_hostname;
             }
 
             // Set configuration (this does not bring up the interface since current state is DOWN)
@@ -4786,7 +4795,9 @@ aicam_result_t communication_poe_apply_config(void)
     }
 
     if (poe_cfg.hostname[0] != '\0') {
-        netif_cfg.host_name = poe_cfg.hostname;
+        strncpy(s_poe_hostname, poe_cfg.hostname, sizeof(s_poe_hostname) - 1);
+        s_poe_hostname[sizeof(s_poe_hostname) - 1] = '\0';
+        netif_cfg.host_name = s_poe_hostname;
     }
 
     // Apply configuration using nm_set_netif_cfg
@@ -6248,9 +6259,6 @@ static void on_wifi_ap_ready(const char *if_name, aicam_result_t result)
         // Update MQTT client ID and topic
         mqtt_service_update_client_id_and_topic();
 
-        // Set indicator to solid on (AP active)
-        device_service_set_indicator_state(SYSTEM_INDICATOR_RUNNING_AP_ON);
-
         //Configure AP interface using configuration from json_config_mgr
         network_service_config_t* network_config = (network_service_config_t*)buffer_calloc(1, sizeof(network_service_config_t));
         if (!network_config) {
@@ -6303,8 +6311,15 @@ static void on_wifi_ap_ready(const char *if_name, aicam_result_t result)
         // Single unified UP — netif_init_manager only does INIT, UP is handled here
         {
             aicam_result_t up_result = communication_start_interface(NETIF_NAME_WIFI_AP);
-            if (up_result != AICAM_OK) {
+            if (up_result == AICAM_OK) {
+                /* Solid-on only AFTER the AP is actually UP. Setting it earlier let
+                 * device_service_start's initial AP_OFF blink (its is-connected check
+                 * ran mid-bring-up) clobber the solid-on, and this callback fires once
+                 * only — the LED then stayed blinking while the AP was running. */
+                device_service_set_indicator_state(SYSTEM_INDICATOR_RUNNING_AP_ON);
+            } else {
                 LOG_SVC_WARN("Failed to start WiFi AP: %d", up_result);
+                device_service_set_indicator_state(SYSTEM_INDICATOR_RUNNING_AP_OFF);
             }
         }
 

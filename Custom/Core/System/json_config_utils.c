@@ -67,13 +67,12 @@
              return AICAM_ERROR_INVALID_PARAM;
          }
      }
-     
-     // Validate network service configuration,can be 0 to disable AP sleep timer
-     if ((config->network_service.ap_sleep_time != 0) && (config->network_service.ap_sleep_time < 60 || config->network_service.ap_sleep_time > 86400)) {
-         LOG_CORE_INFO("Invalid AP sleep time: %u (must be 60-86400 seconds)", config->network_service.ap_sleep_time);
-         return AICAM_ERROR_INVALID_PARAM;
-     }
-     
+
+     /* ap_sleep_time: no range check here. The import parser keeps the
+      * device's own value on out-of-set input (a legacy stored value must not
+      * fail an import that never touched the key), and the web setter
+      * enforces the fixed 0/600/1200/1800 set with an explicit error. */
+
      if (strlen(config->network_service.ssid) == 0 || strlen(config->network_service.ssid) >= sizeof(config->network_service.ssid)) {
          LOG_CORE_INFO("Invalid SSID length: %zu (must be 1-%zu characters)", strlen(config->network_service.ssid), sizeof(config->network_service.ssid) - 1);
          return AICAM_ERROR_INVALID_PARAM;
