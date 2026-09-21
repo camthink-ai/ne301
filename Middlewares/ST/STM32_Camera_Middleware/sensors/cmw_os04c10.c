@@ -26,10 +26,8 @@
 #include "isp_param_conf.h"
 #include "isp_services.h"
 
-#ifndef ISP_MW_TUNING_TOOL_SUPPORT
 static int isp_is_initialized = 0;
 extern const ISP_IQParamTypeDef *user_isp_init_param;
-#endif
 
 static int CMW_OS04C10_GetResType(uint32_t width, uint32_t height, uint32_t*res)
 {
@@ -90,7 +88,6 @@ static int32_t CMW_OS04C10_DeInit(void *io_ctx)
     return CMW_ERROR_COMPONENT_FAILURE;
   }
   
-#ifndef ISP_MW_TUNING_TOOL_SUPPORT
   // int ret;
 
   ret = ISP_DeInit(&((CMW_OS04C10_t *)io_ctx)->hIsp);
@@ -99,7 +96,6 @@ static int32_t CMW_OS04C10_DeInit(void *io_ctx)
       return CMW_ERROR_PERIPH_FAILURE;
   }
   isp_is_initialized = 0;
-#endif
   return ret;
 }
 
@@ -170,15 +166,12 @@ static int32_t CMW_OS04C10_SetTestPattern(void *io_ctx, int32_t mode)
 /* 
 static int32_t CMW_OS04C10_SetAEC(void *io_ctx, uint32_t enable)
 {
-#ifndef ISP_MW_TUNING_TOOL_SUPPORT
   ISP_SetAECState(&((CMW_OS04C10_t *)io_ctx)->hIsp, enable);
-#endif
   return CMW_ERROR_NONE;
 }
 
 static int32_t CMW_OS04C10_SetContrast(void *io_ctx, int32_t Saturation)
 {
-#ifndef ISP_MW_TUNING_TOOL_SUPPORT
   ISP_IQParamTypeDef *IQParamConfig;
   ISP_ContrastTypeDef contrast;
   int ret;
@@ -204,7 +197,6 @@ static int32_t CMW_OS04C10_SetContrast(void *io_ctx, int32_t Saturation)
   {
     return CMW_ERROR_COMPONENT_FAILURE;
   }
-#endif
   return CMW_ERROR_NONE;
 }
 */
@@ -249,7 +241,6 @@ void CMW_OS04C10_SetDefaultSensorValues(CMW_OS04C10_config_t *os04c10_config)
 
 static int32_t CMW_OS04C10_Start(void *io_ctx)
 {
-#ifndef ISP_MW_TUNING_TOOL_SUPPORT
   int ret;
   /* Statistic area is provided with null value so that it force the ISP Library to get the statistic
     * area information from the tuning file.
@@ -272,7 +263,6 @@ static int32_t CMW_OS04C10_Start(void *io_ctx)
     }
     isp_is_initialized = 1;
   }
-#endif
   return OS04C10_Start(&((CMW_OS04C10_t *)io_ctx)->ctx_driver);
   // return CMW_ERROR_NONE;
 }
@@ -285,14 +275,12 @@ static int32_t CMW_OS04C10_Stop(void *io_ctx)
 
 static int32_t CMW_OS04C10_Run(void *io_ctx)
 {
-#ifndef ISP_MW_TUNING_TOOL_SUPPORT
   int ret;
   ret = ISP_BackgroundProcess(&((CMW_OS04C10_t *)io_ctx)->hIsp);
   if (ret != ISP_OK)
   {
       return CMW_ERROR_PERIPH_FAILURE;
   }
-#endif
   return CMW_ERROR_NONE;
 }
 
@@ -307,7 +295,6 @@ static void CMW_OS04C10_PowerOn(CMW_OS04C10_t *io_ctx)
 
 static void CMW_OS04C10_VsyncEventCallback(void *io_ctx, uint32_t pipe)
 {
-#ifndef ISP_MW_TUNING_TOOL_SUPPORT
   /* Update the ISP frame counter and call its statistics handler */
   switch (pipe)
   {
@@ -322,7 +309,6 @@ static void CMW_OS04C10_VsyncEventCallback(void *io_ctx, uint32_t pipe)
       ISP_IncAncillaryFrameId(&((CMW_OS04C10_t *)io_ctx)->hIsp);
       break;
   }
-#endif
 
 }
 

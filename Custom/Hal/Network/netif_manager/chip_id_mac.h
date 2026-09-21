@@ -6,6 +6,7 @@
 typedef enum {
     NETIF_CHIP_MAC_W5500 = 0,
     NETIF_CHIP_MAC_HALOW = 1,
+    NETIF_CHIP_MAC_USB_RNDIS = 2,
 } netif_chip_mac_kind_t;
 
 /** Derive a unicast MAC from STM32 96-bit UID (HAL_GetUIDw*). */

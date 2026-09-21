@@ -91,6 +91,7 @@ int modem_device_into_ppp(modem_net_ppp_callback_t recv_callback);
 int modem_device_exit_ppp(uint8_t is_focre);
 int modem_net_ppp_send(uint8_t *p_data, uint16_t len, uint32_t timeout);
 int modem_device_check_and_enable_ecm(void);
+int modem_device_check_and_enable_rndis(void);
 modem_state_t modem_device_get_state(void);
 modem_operator_t modem_device_get_operator(void);
 

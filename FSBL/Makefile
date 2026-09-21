@@ -49,17 +49,17 @@ C_SOURCES += ../Custom/Common/Utils/generic_math.c
 C_SOURCES += ../Custom/Common/Utils/fsbl_app_common.c
 C_SOURCES += ../Custom/Core/System/ota_header.c
 
-# ISP / Camera middleware (same set as Appli)
+# ISP / Camera middleware (same set as Appli — runtime IQ only; the USB
+# tuning-tool transport isp_tool_com.c / isp_cmd_parser.c were removed with
+# the USBX/ISP-tuning cleanup)
 C_SOURCES += ../Middlewares/ST/STM32_Camera_Middleware/cmw_camera.c
 C_SOURCES += ../Middlewares/ST/STM32_Camera_Middleware/cmw_utils.c
 C_SOURCES += ../Middlewares/ST/STM32_Camera_Middleware/sensors/cmw_os04c10.c
 C_SOURCES += ../Middlewares/ST/STM32_Camera_Middleware/sensors/os04c10/os04c10.c
 C_SOURCES += ../Middlewares/ST/STM32_Camera_Middleware/sensors/os04c10/os04c10_reg.c
 C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/Src/isp_algo.c
-C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/Src/isp_cmd_parser.c
 C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/Src/isp_core.c
 C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/Src/isp_services.c
-C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/Src/isp_tool_com.c
 C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/Src/isp_ae_algo.c
 C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/Src/isp_awb_algo.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_dcmipp.c

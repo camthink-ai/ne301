@@ -13,7 +13,6 @@
 #include "codec.h"
 #include "cat1.h"
 #include "sd_file.h"
-// #include "usb_host_video.h"
 #include "netif_manager.h"
 #include "wdg.h"
 #include "jpegc.h"
