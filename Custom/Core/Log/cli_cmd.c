@@ -12,6 +12,8 @@
 #include "ai_service.h"
 #include "communication_service.h"
 #include "ai_draw_service.h"
+#include "usb_cherry.h"
+#include "usbh_uvc_test.h"
 #include "upgrade_manager.h"
 #include "mqtt_service.h"
 #include "service_init.h"
@@ -442,6 +444,121 @@ static int config_set_cmd(int argc, char* argv[])
 }
 
 /* ==================== Utility Commands ==================== */
+
+/**
+ * @brief CherryUSB bring-up: usb host <init|deinit|status> | usb device <init|deinit|status>
+ */
+static int usb_cmd(int argc, char* argv[])
+{
+    if (argc < 3) {
+        goto usage;
+    }
+    if (strcmp(argv[1], "host") == 0) {
+        if (strcmp(argv[2], "init") == 0) {
+            int ret = usb_cherry_host_init(NULL);
+            LOG_SIMPLE("usb host init: %s (%d)\r\n", ret == 0 ? "ok" : "failed", ret);
+            return ret;
+        }
+        if (strcmp(argv[2], "deinit") == 0) {
+            int ret = usb_cherry_host_deinit();
+            LOG_SIMPLE("usb host deinit: %s (%d)\r\n", ret == 0 ? "ok" : "failed", ret);
+            return ret;
+        }
+        if (strcmp(argv[2], "status") == 0) {
+            LOG_SIMPLE("usb host: %s\r\n", usb_cherry_host_is_inited() ? "running" : "stopped");
+            return 0;
+        }
+        if (strcmp(argv[2], "uvc") == 0) {
+            const char *op = (argc >= 4) ? argv[3] : "";
+            if (strcmp(op, "info") == 0) {
+                return usbh_uvc_test_info();
+            }
+            if (strcmp(op, "open") == 0) {
+                if (argc < 6) {
+                    LOG_SIMPLE("Usage: usb host uvc open <w> <h> [alt]\r\n");
+                    return -1;
+                }
+                uint8_t alt = (argc >= 7) ? (uint8_t)atoi(argv[6]) : 0xff;
+                return usbh_uvc_test_open((uint16_t)atoi(argv[4]),
+                                          (uint16_t)atoi(argv[5]), alt);
+            }
+            if (strcmp(op, "close") == 0) {
+                return usbh_uvc_test_close();
+            }
+            if (strcmp(op, "start") == 0) {
+                return usbh_uvc_test_start();
+            }
+            if (strcmp(op, "stop") == 0) {
+                return usbh_uvc_test_stop();
+            }
+            if (strcmp(op, "stat") == 0) {
+                return usbh_uvc_test_stat();
+            }
+            if (strcmp(op, "capture") == 0) {
+                uint32_t tmo = (argc >= 5) ? (uint32_t)atoi(argv[4]) : 5000;
+                return usbh_uvc_test_capture(tmo);
+            }
+            if (strcmp(op, "dump") == 0) {
+                uint32_t off = (argc >= 5) ? (uint32_t)strtoul(argv[4], NULL, 0) : 0;
+                uint32_t len = (argc >= 6) ? (uint32_t)strtoul(argv[5], NULL, 0) : 64;
+                return usbh_uvc_test_dump(off, len);
+            }
+            if (strcmp(op, "raw") == 0) {
+                return usbh_uvc_test_raw();
+            }
+            if (strcmp(op, "hdrdbg") == 0) {
+                return usbh_uvc_test_hdrdbg();
+            }
+            if (strcmp(op, "isodbg") == 0) {
+                return usbh_uvc_test_isodbg();
+            }
+            if (strcmp(op, "fps") == 0) {
+                int v = (argc >= 5) ? atoi(argv[4]) : -1; /* -1 = query only */
+                return usbh_uvc_test_webfps(v);
+            }
+            if (strcmp(op, "trace") == 0) {
+                uint32_t cnt = (argc >= 5) ? (uint32_t)atoi(argv[4]) : 16;
+                return usbh_uvc_test_trace(cnt);
+            }
+            if (strcmp(op, "record") == 0) {
+                if (argc < 5) {
+                    LOG_SIMPLE("Usage: usb host uvc record <seconds> [filename]\r\n");
+                    return -1;
+                }
+                const char *fname = (argc >= 6) ? argv[5] : "uvc_rec.avi";
+                return usbh_uvc_test_record((uint32_t)atoi(argv[4]), fname);
+            }
+            LOG_SIMPLE("Usage: usb host uvc <info|open w h [alt]|close|start|stop|stat|capture [ms]|dump [off [len]]|raw|trace [n]|record s [file]>\r\n");
+            return -1;
+        }
+        goto usage;
+    }
+    if (strcmp(argv[1], "device") == 0) {
+        if (strcmp(argv[2], "init") == 0) {
+            int ret = usb_cherry_device_init();
+            LOG_SIMPLE("usb device init: %s (%d)\r\n", ret == 0 ? "ok" : "failed", ret);
+            return ret;
+        }
+        if (strcmp(argv[2], "deinit") == 0) {
+            int ret = usb_cherry_device_deinit();
+            LOG_SIMPLE("usb device deinit: %s (%d)\r\n", ret == 0 ? "ok" : "failed", ret);
+            return ret;
+        }
+        if (strcmp(argv[2], "status") == 0) {
+            char diag[128];
+            usb_cherry_device_diag(diag, sizeof(diag));
+            LOG_SIMPLE("usb device: %s | %s\r\n",
+                       usb_cherry_device_is_inited() ? "running" : "stopped", diag);
+            return 0;
+        }
+        goto usage;
+    }
+usage:
+    LOG_SIMPLE("Usage: usb host <init|deinit|status|uvc ...>\r\n");
+    LOG_SIMPLE("       usb host uvc <info|open w h [alt]|close|start|stop|stat|capture [ms]|dump [off [len]]>\r\n");
+    LOG_SIMPLE("       usb device <init|deinit|status>\r\n");
+    return -1;
+}
 
 /**
  * @brief Show system version
@@ -1236,6 +1353,7 @@ debug_cmd_reg_t file_cmd_table[] = {
     {"show_slot", "show slot", show_slot_status_cmd },
     {"clean_slot", "clean slot", clean_slot_cmd },
     {"fw_version", "Show all firmware versions (FSBL/APP/WEB/WAKECORE/MODEL)", fw_version_cmd },
+    {"usb", "USB host/device control. usb host|device <init|deinit|status>", usb_cmd },
     {"mg_log_level", "Set/show mongoose log level. mg_log_level [0-4|none|error|info|debug|verbose]", mg_log_level_cmd },
 };
 

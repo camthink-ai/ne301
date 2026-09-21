@@ -35,7 +35,6 @@
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
-#include "usb_otg.h"
 #include "venc.h"
 #include "gpio.h"
 #include "npu_cache.h"

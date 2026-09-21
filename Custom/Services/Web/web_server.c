@@ -11,6 +11,7 @@
 #include "aicam_error.h"
 #include "cmsis_os2.h"
 #include "web_assets.h"
+#include "usbh_uvc_test.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,7 +50,7 @@
  
  /* ==================== Internal Function Declarations ==================== */
  
- static void web_server_event_handler(struct mg_connection *c, int ev, void *ev_data);
+static void web_server_event_handler(struct mg_connection *c, int ev, void *ev_data);
  static aicam_result_t web_server_handle_request(struct mg_connection *c, struct mg_http_message *hm);
  static aicam_result_t web_server_handle_api_request(http_handler_context_t* ctx);
  static aicam_result_t web_server_handle_static_request(http_handler_context_t* ctx);
@@ -429,6 +430,123 @@ aicam_result_t api_response_error(http_handler_context_t* ctx,
 }
 
 
+/* ==================== UVC live preview (test endpoints) ====================
+ * /uvc.jpg  - latest frame snapshot
+ * /uvc.mjpg - multipart/x-mixed-replace MJPEG stream (browser <img>/tab).
+ * Frames come from usbh_uvc_test.c's lock-free latest-frame store; sending
+ * is driven by MG_EV_POLL (10ms cadence, frame-rate limited by seq). */
+
+#define UVC_STRM_MAX 2
+/* Preview throttle, runtime-tunable via web_server_uvc_preview_set_fps().
+ * Default 0 = send every new frame (parsing is IRQ-based since the field
+ * round that added the throttle; send load is bounded by back-pressure). */
+static uint32_t s_uvc_strm_interval_ms = 0;
+static struct mg_connection *s_uvc_strm[UVC_STRM_MAX];
+static uint32_t s_uvc_strm_seq[UVC_STRM_MAX];
+static uint32_t s_uvc_strm_last_ms[UVC_STRM_MAX];
+
+/* preview send statistics */
+static uint32_t s_uvc_sent_frames, s_uvc_sent_bytes, s_uvc_sent_fps;
+static uint32_t s_uvc_sent_window_cnt, s_uvc_sent_window_tick;
+static uint32_t s_uvc_bp_skips;
+
+void web_server_uvc_preview_set_fps(uint32_t fps)
+{
+    s_uvc_strm_interval_ms = (fps == 0) ? 0 : (1000u / fps);
+}
+
+void web_server_uvc_preview_get_stats(uvc_preview_stats_t *out)
+{
+    if (out == NULL) {
+        return;
+    }
+    out->interval_ms = s_uvc_strm_interval_ms;
+    out->sent_frames = s_uvc_sent_frames;
+    out->sent_bytes = s_uvc_sent_bytes;
+    out->sent_fps = s_uvc_sent_fps;
+    out->bp_skips = s_uvc_bp_skips;
+    out->clients = 0;
+    for (int i = 0; i < UVC_STRM_MAX; i++) {
+        if (s_uvc_strm[i] != NULL) {
+            out->clients++;
+        }
+    }
+}
+
+/* Frames are sent DIRECTLY from the zero-copy preview store (no snapshot
+ * copy). KNOWN THEORETICAL HAZARD, accepted deliberately: the store is a
+ * 3-slot rotation assembled by the USB IRQ, so a reader stalled >3 frame
+ * periods (~100ms @30fps) by higher-priority work (tcpip@5, wifi@7, USB2@4)
+ * mid-send could see a slot mid-overwrite -> one torn frame. Since the
+ * host IRQ priority fix (miss:0 under full load, see PORTING.md) such
+ * stalls have not reproduced; a snapshot copy here would eliminate the
+ * window at ~2% CPU (300KB x 10fps) — restore uvc_http_snap() from git
+ * history if torn frames ever reappear. */
+
+static void uvc_strm_del(struct mg_connection *c)
+{
+    for (int i = 0; i < UVC_STRM_MAX; i++) {
+        if (s_uvc_strm[i] == c) {
+            s_uvc_strm[i] = NULL;
+            usbh_uvc_preview_release();
+        }
+    }
+}
+
+static void uvc_strm_poll(struct mg_connection *c)
+{
+    for (int i = 0; i < UVC_STRM_MAX; i++) {
+        if (s_uvc_strm[i] != c) {
+            continue;
+        }
+
+        /* keep the idle reaper away: streams never produce another HTTP_MSG */
+        web_conn_touch(c, osKernelGetTickCount());
+
+        {
+            uint32_t now2 = osKernelGetTickCount();
+            if ((now2 - s_uvc_sent_window_tick) >= 1000) {
+                s_uvc_sent_fps = s_uvc_sent_window_cnt;
+                s_uvc_sent_window_cnt = 0;
+                s_uvc_sent_window_tick = now2;
+            }
+        }
+
+        /* client back-pressure: if the socket cannot drain what was already
+         * queued (Wi-Fi laptop, slow browser), drop preview frames instead
+         * of letting the Realtime web task spin on futile TCP retries —
+         * that starves the uvc_rx worker and wrecks the stream */
+        if (c->send.len > 128 * 1024) {
+            s_uvc_bp_skips++;
+            return;
+        }
+
+        uint32_t now = osKernelGetTickCount();
+        if (s_uvc_strm_interval_ms != 0 &&
+            (now - s_uvc_strm_last_ms[i]) < s_uvc_strm_interval_ms) {
+            return;
+        }
+
+        const uint8_t *p;
+        uint32_t len;
+        uint16_t w, h;
+        uint32_t seq = usbh_uvc_preview_get(&p, &len, &w, &h);
+
+        if (seq != 0 && seq != s_uvc_strm_seq[i] && len > 0) {
+            s_uvc_strm_seq[i] = seq;
+            s_uvc_strm_last_ms[i] = now;
+            s_uvc_sent_frames++;
+            s_uvc_sent_bytes += len;
+            s_uvc_sent_window_cnt++;
+            mg_printf(c, "--uvcb\r\nContent-Type: image/jpeg\r\nContent-Length: %lu\r\n\r\n",
+                      (unsigned long)len);
+            mg_send(c, p, len);
+            mg_printf(c, "\r\n");
+        }
+        return;
+    }
+}
+
 /* Keep-alive idle reaper helpers live above http_server_init */
  static void web_server_event_handler(struct mg_connection *c, int ev, void *ev_data)
  {
@@ -525,6 +643,7 @@ aicam_result_t api_response_error(http_handler_context_t* ctx,
     } else if (ev == MG_EV_CLOSE) {
         WEB_LOG("[CONN] close  id=%lu", (unsigned long) c->id);
         web_conn_forget(c);
+        uvc_strm_del(c);
     } else if (ev == MG_EV_POLL && !c->is_listening) {
         uint32_t now = osKernelGetTickCount();
         for (int i = 0; i < WEB_CONN_TRACK_MAX; i++) {
@@ -536,6 +655,7 @@ aicam_result_t api_response_error(http_handler_context_t* ctx,
                 break;
             }
         }
+        uvc_strm_poll(c);
     }
 
     if (ev == MG_EV_HTTP_MSG) {
@@ -587,6 +707,49 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
     }
 
     WEB_LOG("[REQ] %s %s from %s", ctx.request.method, ctx.request.uri, ctx.request.client_ip);
+
+    /* UVC live preview test endpoints (no auth; LAN test feature) */
+    if (strcmp(ctx.request.method, "GET") == 0 && strcmp(ctx.request.uri, "/uvc.jpg") == 0) {
+        /* publishing is watcher-gated: become a watcher and let one frame
+         * period pass so the snapshot is fresh even with no stream open */
+        usbh_uvc_preview_acquire();
+        osDelay(60);
+        const uint8_t *p;
+        uint32_t len;
+        uint16_t w, h;
+        uint32_t seq = usbh_uvc_preview_get(&p, &len, &w, &h);
+        usbh_uvc_preview_release();
+        if (seq == 0 || len == 0) {
+            mg_http_reply(c, 503, "Content-Type: text/plain\r\n",
+                          "uvc preview: no frame yet (usb host uvc open/start first)\r\n");
+        } else {
+            mg_printf(c, "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: %lu\r\nCache-Control: no-cache\r\n\r\n",
+                      (unsigned long)len);
+            mg_send(c, p, len);
+        }
+        c->is_draining = 1;
+        return AICAM_OK;
+    }
+    if (strcmp(ctx.request.method, "GET") == 0 && strcmp(ctx.request.uri, "/uvc.mjpg") == 0) {
+        int slot = -1;
+        for (int i = 0; i < UVC_STRM_MAX; i++) {
+            if (s_uvc_strm[i] == NULL) {
+                slot = i;
+                break;
+            }
+        }
+        if (slot < 0) {
+            mg_http_reply(c, 503, "Content-Type: text/plain\r\n", "uvc preview: too many stream clients\r\n");
+            c->is_draining = 1;
+            return AICAM_OK;
+        }
+        s_uvc_strm[slot] = c;
+        s_uvc_strm_seq[slot] = 0;
+        s_uvc_strm_last_ms[slot] = 0;
+        usbh_uvc_preview_acquire();
+        mg_printf(c, "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=uvcb\r\nCache-Control: no-store\r\nPragma: no-cache\r\n\r\n");
+        return AICAM_OK;
+    }
 
     /* Validate request */
     result = web_server_validate_request(&ctx);

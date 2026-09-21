@@ -58,7 +58,7 @@ C_SOURCES += $(wildcard Core/Src/hpdma.c Core/Src/i2c.c Core/Src/i2s.c Core/Src/
 C_SOURCES += $(wildcard Core/Src/iwdg.c Core/Src/jpeg.c Core/Src/ramcfg.c)
 C_SOURCES += $(wildcard Core/Src/rng.c Core/Src/rtc.c Core/Src/sai.c)
 C_SOURCES += $(wildcard Core/Src/sdmmc.c Core/Src/spi.c Core/Src/tim.c)
-C_SOURCES += $(wildcard Core/Src/usart.c Core/Src/usb_otg.c Core/Src/venc.c)
+C_SOURCES += $(wildcard Core/Src/usart.c Core/Src/venc.c)
 C_SOURCES += $(wildcard Core/Src/wwdg.c Core/Src/secure_nsc.c)
 C_SOURCES += ../FSBL/Core/Src/xspim.c
 C_SOURCES += $(wildcard Core/Src/crc.c)
@@ -137,9 +137,10 @@ C_SOURCES += ../Custom/Hal/rs485_driver.c
 C_SOURCES += ../Custom/Hal/storage.c
 C_SOURCES += ../Custom/Hal/system_top.c
 C_SOURCES += ../Custom/Hal/u0_module.c
-C_SOURCES += ../Custom/Hal/usbx_host.c
-C_SOURCES += ../Custom/Hal/usb_host_video.c
-C_SOURCES += ../Custom/Hal/usb_host_ecm.c
+C_SOURCES += ../Custom/Hal/usb/usb_glue_stm32n6.c
+C_SOURCES += ../Custom/Hal/usb/usb_cherry.c
+C_SOURCES += ../Custom/Hal/usb/usb_device_composite.c
+C_SOURCES += ../Custom/Hal/usb/usbh_uvc_test.c
 C_SOURCES += ../Custom/Hal/wdg.c
 C_SOURCES += ../Custom/Hal/wifi.c
 
@@ -182,12 +183,12 @@ C_SOURCES += ../Custom/Hal/Network/http_client/aws_sigv4.c
 C_SOURCES += ../Custom/Hal/Network/http_client/aws_capture.c
 C_SOURCES += ../Custom/Hal/Network/http_client/http_client_test.c
 C_SOURCES += ../Custom/Hal/Network/netif_manager/eg912u_gl_netif.c
+C_SOURCES += ../Custom/Hal/Network/netif_manager/usb_rndis_netif.c
 C_SOURCES += ../Custom/Hal/Network/netif_manager/netif_manager.c
 C_SOURCES += ../Custom/Hal/Network/netif_manager/sl_net_netif.c
 C_SOURCES += ../Custom/Hal/Network/netif_manager/chip_id_mac.c
 C_SOURCES += ../Custom/Hal/Network/netif_manager/mm_halow_netif.c
 C_SOURCES += ../Custom/Hal/Network/netif_manager/w5500_netif.c
-C_SOURCES += ../Custom/Hal/Network/netif_manager/usb_ecm_netif.c
 C_SOURCES += ../Custom/Hal/Network/netif_manager/netif_init_manager.c
 C_SOURCES += ../Custom/Hal/Network/sl_rsi_ble/sl_rsi_ble.c
 C_SOURCES += ../Custom/Hal/Network/w5500/eth_tool.c
@@ -323,19 +324,13 @@ C_SOURCES += ../Middlewares/ST/STM32_Camera_Middleware/sensors/cmw_os04c10.c
 C_SOURCES += ../Middlewares/ST/STM32_Camera_Middleware/sensors/os04c10/os04c10.c
 C_SOURCES += ../Middlewares/ST/STM32_Camera_Middleware/sensors/os04c10/os04c10_reg.c
 
-# Middlewares - ISP Library
+# Middlewares - ISP Library (runtime IQ params/types only; the USB tuning-tool
+# transport isp_tool_com.c and its command parser were removed with USBX/ISP tuning)
 C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/Src/isp_algo.c
-C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/Src/isp_cmd_parser.c
 C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/Src/isp_core.c
 C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/Src/isp_services.c
-C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/Src/isp_tool_com.c
 C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/Src/isp_ae_algo.c
 C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/Src/isp_awb_algo.c
-
-# Middlewares - ISP Library USB Device (for ISP tuning tool, disabled – relies on USBD)
-# C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/USB_Device/Src/usb_device.c
-# C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/USB_Device/Src/usbd_cdc_if.c
-# C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/USB_Device/Src/usbd_desc.c
 
 # Middlewares - ThreadX (based on .project linked files)
 C_SOURCES += ../Middlewares/ST/threadx/common/src/tx_block_allocate.c
@@ -448,30 +443,26 @@ C_SOURCES += ../Middlewares/ST/cmsis_rtos_threadx/cmsis_os2.c
 C_SOURCES += $(wildcard ../Middlewares/ST/threadx/common/src/txe_*.c)
 C_SOURCES += ../Middlewares/ST/threadx/ports/cortex_M55/gnu/src/txe_thread_secure_stack_free.c
 
-# Middlewares - USBX Core System
-C_SOURCES += $(wildcard ../Middlewares/ST/usbx/common/core/src/ux_system_*.c)
-C_SOURCES += $(wildcard ../Middlewares/ST/usbx/common/core/src/ux_utility_*.c)
+# Middlewares - CherryUSB (upstream commit 4885555; see Middlewares/CherryUSB/PORTING.md)
+C_SOURCES += ../Middlewares/CherryUSB/core/usbh_core.c
+C_SOURCES += ../Middlewares/CherryUSB/core/usbd_core.c
+C_SOURCES += ../Middlewares/CherryUSB/osal/usb_osal_threadx.c
+C_SOURCES += ../Middlewares/CherryUSB/port/dwc2/usb_hc_dwc2.c
+C_SOURCES += ../Middlewares/CherryUSB/port/dwc2/usb_dc_dwc2.c
+C_SOURCES += ../Middlewares/CherryUSB/class/hub/usbh_hub.c
+# Host classes (bulk-only; they only activate once a matching device enumerates).
+C_SOURCES += ../Middlewares/CherryUSB/class/cdc/usbh_cdc_ecm.c
+C_SOURCES += ../Middlewares/CherryUSB/class/wireless/usbh_rndis.c
+# Host UVC: needs the dwc2 host ISO support (NE301 patch #9, see PORTING.md).
+C_SOURCES += ../Middlewares/CherryUSB/class/video/usbh_video.c
+# Device classes (CDC-ACM / CDC-ECM / RNDIS / UVC): add together with their
+# descriptors once the device side is needed, e.g.:
+C_SOURCES += ../Middlewares/CherryUSB/class/cdc/usbd_cdc_acm.c
+C_SOURCES += ../Middlewares/CherryUSB/class/wireless/usbd_rndis.c
 
-# Middlewares - USBX Device Classes
-C_SOURCES += $(wildcard ../Middlewares/ST/usbx/common/usbx_device_classes/src/ux_device_class_audio*.c)
-C_SOURCES += $(wildcard ../Middlewares/ST/usbx/common/usbx_device_classes/src/ux_device_class_cdc_acm*.c)
-C_SOURCES += $(wildcard ../Middlewares/ST/usbx/common/usbx_device_classes/src/ux_device_class_video*.c)
-
-# Middlewares - USBX Device Controllers
-C_SOURCES += $(wildcard ../Middlewares/ST/usbx/common/usbx_stm32_device_controllers/ux_dcd_stm32*.c)
-
-# Middlewares - USBX Device CoreStack
-C_SOURCES += $(wildcard ../Middlewares/ST/usbx/common/core/src/ux_device_stack_*.c)
-
-# Middlewares - USBX Host Classes
-C_SOURCES += $(wildcard ../Middlewares/ST/usbx/common/usbx_host_classes/src/ux_host_class_video*.c)
-C_SOURCES += $(wildcard ../Middlewares/ST/usbx/common/usbx_host_classes/src/ux_host_class_cdc_ecm*.c)
-
-# Middlewares - USBX Host Controllers
-C_SOURCES += $(wildcard ../Middlewares/ST/usbx/common/usbx_stm32_host_controllers/ux_hcd_stm32*.c)
-
-# Middlewares - USBX Host CoreStack
-C_SOURCES += $(wildcard ../Middlewares/ST/usbx/common/core/src/ux_host_stack_*.c)
+# Vendored upstream code is not -Werror-clean on this toolchain (uint32_t
+# printf formats); keep project-level -Werror but downgrade it for the subset.
+$(BUILD_DIR)/Middlewares/CherryUSB/%.o: CFLAGS += -Wno-error
 
 # Middlewares - FileX
 C_SOURCES += ../Middlewares/ST/filex/common/drivers/fx_stm32_sd_driver.c
@@ -516,15 +507,12 @@ C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_dma.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_dma_ex.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_exti.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_hash.c
-C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_hcd.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_icache.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_iwdg.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_jpeg.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_mce.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_mmc.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_mmc_ex.c
-C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_pcd.c
-C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_pcd_ex.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_pka.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_rng.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_rtc.c
@@ -542,7 +530,6 @@ C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_i2s_ex.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_tim.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_tim_ex.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_wwdg.c
-C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_ll_usb.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_ll_venc.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_crc.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_crc_ex.c
@@ -610,7 +597,6 @@ C_DEFS += -DENABLE_U0_MODULE=1
 # RELEASE NOTE: re-comment the SIMULATION_* lines above before any release
 # build (test-only fault injections; pool/nwp_mute/hal_spin/flagkill variants
 # were verified useless in the 0x19 hunt and removed 2026-08-26).
-# C_DEFS += -DISP_MW_TUNING_TOOL_SUPPORT
 
 # AI Runtime
 C_DEFS += -DAPP_HAS_PARALLEL_NETWORKS=1
@@ -639,10 +625,6 @@ C_DEFS += -DTX_ENABLE_STACK_CHECKING
 # FileX
 C_DEFS += -DFX_ENABLE_EXFAT=1
 
-# USBX
-C_DEFS += -DUX_INCLUDE_USER_DEFINE_FILE
-C_DEFS += -DUSBL_PACKET_PER_MICRO_FRAME=3
-C_DEFS += -DUX_HOST_CLASS_NETWORK_NO_NX
 
 # MbedTLS
 C_DEFS += '-DMBEDTLS_CONFIG_FILE="config-ccm-psk-tls1_2.h"'
@@ -664,16 +646,6 @@ C_DEFS += -DSTM32N6
 # Video Encoder - increase HW timeout (default 100ms may be too short)
 C_DEFS += -DEWL_TIMEOUT=500UL
 
-######################################
-# ISP Tuning Tool / USBX Integration
-######################################
-ifneq ($(findstring -DISP_MW_TUNING_TOOL_SUPPORT,$(C_DEFS)),)
- C_DEFS += -DUSBX_USE_DMA
- C_DEFS += -DISP_ENABLE_UVC
- C_SOURCES += ../Custom/Hal/usbx/usbx_conf/usbx_conf.c
- C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/usbx/Src/usbx.c
- C_SOURCES += ../Middlewares/ST/STM32_ISP_Library/isp/usbx/Src/usb_desc.c
-endif
 
 ######################################
 # Assembly-specific Defines
@@ -691,8 +663,6 @@ AS_DEFS += -DTX_HAS_PARALLEL_NETWORKS=0
 AS_DEFS += -DTX_SINGLE_MODE_SECURE=1
 AS_DEFS += -DFEAT_THREADX
 AS_DEFS += -DTX_INCLUDE_USER_DEFINE_FILE
-AS_DEFS += -DUX_INCLUDE_USER_DEFINE_FILE
-AS_DEFS += -DUSBL_PACKET_PER_MICRO_FRAME=3
 AS_DEFS += -DTX_LOW_POWER
 AS_DEFS += -DTX_ENABLE_EXECUTION_CHANGE_NOTIFY
 
@@ -706,8 +676,6 @@ AS_INCLUDES += -I../Middlewares/Third_Party/CMSIS/RTOS2/Include
 AS_INCLUDES += -I../Drivers/STM32N6xx_HAL_Driver/Inc
 AS_INCLUDES += -I../Drivers/CMSIS/Device/ST/STM32N6xx/Include
 AS_INCLUDES += -I../Drivers/STM32N6xx_HAL_Driver/Inc/Legacy
-AS_INCLUDES += -I../Middlewares/ST/usbx/common/core/inc
-AS_INCLUDES += -I../Middlewares/ST/usbx/ports/generic/inc
 AS_INCLUDES += -I../Drivers/CMSIS/Include
 AS_INCLUDES += -I$(STEDGEAI_LIB_ROOT)/Npu/Devices/$(STEDGEAI_NPU_DEVICE)
 AS_INCLUDES += -I$(STEDGEAI_LIB_ROOT)/Inc
@@ -715,8 +683,6 @@ AS_INCLUDES += -I$(STEDGEAI_LIB_ROOT)/Npu/ll_aton
 AS_INCLUDES += -I../Middlewares/ST/threadx/common/inc
 AS_INCLUDES += -I../Middlewares/ST/threadx/ports/cortex_M55/gnu/inc
 AS_INCLUDES += -I../Middlewares/ST/threadx/utility/low_power
-AS_INCLUDES += -I../Middlewares/ST/usbx/common/usbx_stm32_device_controllers
-AS_INCLUDES += -I../Middlewares/ST/usbx/common/usbx_device_classes/inc
 
 ######################################
 # C Include Paths (Organized by Category)
@@ -828,15 +794,6 @@ C_INCLUDES += -I../Middlewares/ST/STM32_Camera_Middleware/sensors/imx335
 C_INCLUDES += -I../Middlewares/ST/STM32_Camera_Middleware/sensors/os04c10
 C_INCLUDES += -I../Middlewares/ST/STM32_ISP_Library/isp/Inc
 
-# USBX / ISP tuning include paths:
-# - Default: use project-specific USBX config under Custom/Hal/usbx
-# - When ISP_MW_TUNING_TOOL_SUPPORT is enabled: also add ISP's USBX headers and usbx_conf
-ifeq ($(findstring -DISP_MW_TUNING_TOOL_SUPPORT,$(C_DEFS)),)
- C_INCLUDES += -I../Custom/Hal/usbx
-else
- C_INCLUDES += -I../Custom/Hal/usbx/usbx_conf
- C_INCLUDES += -I../Middlewares/ST/STM32_ISP_Library/isp/usbx/Inc
-endif
 
 C_INCLUDES += -I../Middlewares/ST/cmsis_rtos_threadx
 C_INCLUDES += -I../Middlewares/ST/filex/common/inc
@@ -847,14 +804,16 @@ C_INCLUDES += -I../Middlewares/ST/threadx/ports/cortex_M55/gnu/inc
 C_INCLUDES += -I../Middlewares/ST/threadx/utility/execution_profile_kit
 C_INCLUDES += -I../Middlewares/ST/threadx/utility/low_power
 C_INCLUDES += -I../Middlewares/ST/threadx/utility/rtos_compatibility_layers/FreeRTOS
-C_INCLUDES += -I../Middlewares/ST/usbx/common/core/inc
-C_INCLUDES += -I../Middlewares/ST/usbx/common/usbx_device_classes/inc
-C_INCLUDES += -I../Middlewares/ST/usbx/common/usbx_host_classes/inc
-C_INCLUDES += -I../Middlewares/ST/usbx/common/usbx_host_controllers/inc
-C_INCLUDES += -I../Middlewares/ST/usbx/common/usbx_network/inc
-C_INCLUDES += -I../Middlewares/ST/usbx/common/usbx_stm32_device_controllers
-C_INCLUDES += -I../Middlewares/ST/usbx/common/usbx_stm32_host_controllers
-C_INCLUDES += -I../Middlewares/ST/usbx/ports/generic/inc
+# CherryUSB (config header lives in Custom/Hal/usb)
+C_INCLUDES += -I../Custom/Hal/usb
+C_INCLUDES += -I../Middlewares/CherryUSB/common
+C_INCLUDES += -I../Middlewares/CherryUSB/core
+C_INCLUDES += -I../Middlewares/CherryUSB/osal
+C_INCLUDES += -I../Middlewares/CherryUSB/port/dwc2
+C_INCLUDES += -I../Middlewares/CherryUSB/class/hub
+C_INCLUDES += -I../Middlewares/CherryUSB/class/cdc
+C_INCLUDES += -I../Middlewares/CherryUSB/class/wireless
+C_INCLUDES += -I../Middlewares/CherryUSB/class/video
 C_INCLUDES += -I../Middlewares/ST/VideoEncoder_EWL
 C_INCLUDES += -I../Middlewares/Third_Party/VideoEncoder/source/h264
 

@@ -81,9 +81,7 @@ CAMERA_Ctx_t  Camera_Ctx;
 DCMIPP_HandleTypeDef hcamera_dcmipp;
 static CMW_Sensor_if_t Camera_Drv;
 
-#ifndef ISP_MW_TUNING_TOOL_SUPPORT
 const ISP_IQParamTypeDef *user_isp_init_param = NULL;
-#endif
 
 static union
 {
@@ -178,13 +176,11 @@ ISP_HandleTypeDef* CMW_CAMERA_GetISPHandle(void)
     return NULL;
 }
 
-#ifndef ISP_MW_TUNING_TOOL_SUPPORT
 int32_t CMW_CAMERA_SetISPInitParam(const ISP_IQParamTypeDef *isp_param)
 {
     user_isp_init_param = isp_param;
     return CMW_ERROR_NONE;
 }
-#endif
 
 int32_t CMW_CAMERA_SetPipeConfig(uint32_t pipe, CMW_DCMIPP_Conf_t *p_conf, uint32_t *pitch)
 {

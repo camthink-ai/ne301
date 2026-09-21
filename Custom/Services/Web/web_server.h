@@ -471,7 +471,20 @@ aicam_result_t web_server_ap_sleep_timer_update(uint32_t sleep_timeout);
   */
  #define ASSET_BIN_MAGIC 0x12345678
  
- #ifdef __cplusplus
+ /* UVC web-preview runtime tuning + stats (test feature) */
+typedef struct {
+    uint32_t interval_ms;   /* current throttle (0 = send every new frame) */
+    uint32_t sent_frames;   /* total frames pushed to stream clients */
+    uint32_t sent_bytes;    /* total JPEG bytes sent */
+    uint32_t sent_fps;      /* frames sent in the last 1s window */
+    uint32_t bp_skips;      /* frames skipped by send back-pressure */
+    uint32_t clients;       /* active stream connections */
+} uvc_preview_stats_t;
+
+void web_server_uvc_preview_set_fps(uint32_t fps);
+void web_server_uvc_preview_get_stats(uvc_preview_stats_t *out);
+
+#ifdef __cplusplus
  }
  #endif
  

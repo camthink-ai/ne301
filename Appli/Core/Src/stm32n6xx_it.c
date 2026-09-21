@@ -23,7 +23,6 @@
 #include "netif_manager.h"
 #include "cmw_camera.h"
 #include "debug.h"
-#include "usb_otg.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "spi.h"
@@ -138,16 +137,6 @@ extern UART_HandleTypeDef huart2;
 extern UART_HandleTypeDef huart3;
 extern UART_HandleTypeDef huart9;
 extern RTC_HandleTypeDef hrtc;
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-extern PCD_HandleTypeDef usbx_pcd_handle;
-#else
-#ifdef UX_HCD_ECM_USE_USB_OTG_HS1
-extern HCD_HandleTypeDef hhcd_USB_OTG_HS1;
-#else
-extern PCD_HandleTypeDef hpcd_USB_OTG_HS1;
-#endif
-#endif
-extern HCD_HandleTypeDef hhcd_USB_OTG_HS2;
 extern XSPI_HandleTypeDef hxspi1;
 extern XSPI_HandleTypeDef hxspi2;
 
@@ -810,19 +799,8 @@ void SDMMC1_IRQHandler(void)
   /* USER CODE END SDMMC1_IRQn 1 */
 }
 
-/**
-  * @brief This function handles USB1 OTG HS interrupt.
-  */
-void USB2_OTG_HS_IRQHandler(void)
-{
-  /* USER CODE BEGIN USB1_OTG_HS_IRQn 0 */
-
-  /* USER CODE END USB1_OTG_HS_IRQn 0 */
-  HAL_HCD_IRQHandler(&hhcd_USB_OTG_HS2);
-  /* USER CODE BEGIN USB1_OTG_HS_IRQn 1 */
-
-  /* USER CODE END USB1_OTG_HS_IRQn 1 */
-}
+/* USB1/USB2_OTG_HS_IRQHandler: CherryUSB DWC2 ISRs live in
+ * Custom/Hal/usb/usb_glue_stm32n6.c (vector names are N6-specific). */
 
 void XSPI2_IRQHandler(void)
 {
@@ -834,26 +812,6 @@ void XSPI2_IRQHandler(void)
 
     /* USER CODE END XSPI2_IRQn 1 */
 }
-/**
-  * @brief This function handles USB2 OTG HS interrupt.
-  */
-void USB1_OTG_HS_IRQHandler(void)
-{
-  /* USER CODE BEGIN USB2_OTG_HS_IRQn 0 */
-
-  /* USER CODE END USB2_OTG_HS_IRQn 0 */
-  // HAL_PCD_IRQHandler(&hpcd_USB_OTG_HS1);
-  /* USER CODE BEGIN USB2_OTG_HS_IRQn 1 */
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-  HAL_PCD_IRQHandler(&usbx_pcd_handle);
-#else
-#ifdef UX_HCD_ECM_USE_USB_OTG_HS1
-  HAL_HCD_IRQHandler(&hhcd_USB_OTG_HS1);
-#endif
-#endif
-  /* USER CODE END USB2_OTG_HS_IRQn 1 */
-}
-
 /**
   * @brief This function handles RTC secure interrupt.
   */

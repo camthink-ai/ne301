@@ -21,10 +21,6 @@
 #include "isp_api.h"
 #include "isp_services.h"
 #include "isp_algo.h"
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-#include "isp_tool_com.h"
-#include "isp_cmd_parser.h"
-#endif
 #include <math.h>
 #include <inttypes.h>
 
@@ -67,9 +63,6 @@ ISP_StatusTypeDef ISP_Init(ISP_HandleTypeDef *hIsp,
 
   memset(hIsp, 0, sizeof(*hIsp));
 
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-  ISP_ToolCom_Init();
-#endif
 
   hIsp->hDcmipp = hDcmipp;
   hIsp->cameraInstance = CameraInstance;
@@ -329,22 +322,12 @@ ISP_StatusTypeDef ISP_Start(ISP_HandleTypeDef *hIsp)
 static ISP_StatusTypeDef _ISP_BackgroundProcess(ISP_HandleTypeDef *hIsp)
 {
   ISP_StatusTypeDef retAlgo, retStats;
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-  ISP_StatusTypeDef retCmdParser = ISP_OK;
-  uint8_t *cmd;
-#endif
 
   if (hIsp == NULL)
   {
     return ISP_ERR_EINVAL;
   }
 
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-  if (ISP_ToolCom_CheckCommandReceived(&cmd) > 0)
-  {
-    retCmdParser = ISP_CmdParser_ProcessCommand(hIsp, cmd);
-  }
-#endif
 
   /* Check if a statistics gathering cycle has been completed to call the statistic callbacks */
   retStats = ISP_SVC_Stats_ProcessCallbacks(hIsp);
@@ -352,12 +335,6 @@ static ISP_StatusTypeDef _ISP_BackgroundProcess(ISP_HandleTypeDef *hIsp)
   /* Process the algorithms */
   retAlgo = ISP_Algo_Process(hIsp);
 
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-  if (retCmdParser != ISP_OK)
-  {
-    return retCmdParser;
-  }
-#endif
   if (retStats != ISP_OK)
   {
     return retStats;
