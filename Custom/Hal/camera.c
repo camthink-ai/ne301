@@ -572,19 +572,9 @@ void camera_fill_isp_iq_scene(cam_iq_scene_t scene, ISP_IQParamTypeDef *out_iq)
         return;
     }
     camera_copy_default_isp_iq(sensor, out_iq);
-    /* Indoor: IQTune snapshot — contrast curve + statistic region (OS04C10 full frame). */
+    /* Indoor differs from outdoor ONLY in the AE statistic region (OS04C10);
+       contrast curve and every other block come from the tuned profile. */
     if (scene == CAM_IQ_SCENE_INDOOR) {
-        out_iq->contrast.enable = 1;
-        /* Contrast strength: IQT unit x100 (e.g. 100 = 1.0), from IQTune "Contrast 1" / INDOOR */
-        out_iq->contrast.coeff.LUM_0 = 50;
-        out_iq->contrast.coeff.LUM_32 = 80;
-        out_iq->contrast.coeff.LUM_64 = 94;
-        out_iq->contrast.coeff.LUM_96 = 100;
-        out_iq->contrast.coeff.LUM_128 = 100;
-        out_iq->contrast.coeff.LUM_160 = 102;
-        out_iq->contrast.coeff.LUM_192 = 110;
-        out_iq->contrast.coeff.LUM_224 = 112;
-        out_iq->contrast.coeff.LUM_256 = 120;
         if (sensor == CMW_OS04C10_Sensor) {
             out_iq->statAreaStatic.X0 = 109U;
             out_iq->statAreaStatic.Y0 = 92U;

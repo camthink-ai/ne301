@@ -212,7 +212,7 @@ ISP_HandleTypeDef* camera_get_isp_handle(void);
 
 /**
  * @brief Fill ISP IQ parameters for a built-in scene (indoor vs outdoor stock).
- * @param scene CAM_IQ_SCENE_INDOOR applies IQTune contrast + stat region (OS04C10); outdoor uses sensor defaults only.
+ * @param scene CAM_IQ_SCENE_INDOOR applies the indoor stat region only (OS04C10); outdoor uses the tuned profile verbatim.
  * @param out_iq Output buffer (must not be NULL).
  */
 void camera_fill_isp_iq_scene(cam_iq_scene_t scene, ISP_IQParamTypeDef *out_iq);
