@@ -60,6 +60,8 @@ Custom/Common/Lib/SiliconLabs_SDK*/**/*.slcc
 .claude/
 CLAUDE.md
 .codegraph/
+.zcodeignore
+.codex/
 
 # Python cache files
 __pycache__/
