@@ -106,6 +106,13 @@
  #define NVS_KEY_CAPTURE_DISABLE_COMM    "capture_un_comm"
  #define NVS_KEY_CAPTURE_STORAGE_AI      "capture_stor_ai"
  #define NVS_KEY_CAPTURE_QUICK_MODE      "capture_qmode"
+
+// Camera source configuration key names
+#define NVS_KEY_CAMERA_SOURCE        "cam_src"
+#define NVS_KEY_CAMERA_NATIVE_RES    "cam_nat_res"
+#define NVS_KEY_CAMERA_UVC_W         "cam_uvc_w"
+#define NVS_KEY_CAMERA_UVC_H         "cam_uvc_h"
+#define NVS_KEY_CAMERA_UVC_FPS       "cam_uvc_fps"
  #define NVS_KEY_LIGHT_CONNECTED         "light_conn"
  #define NVS_KEY_LIGHT_MODE              "light_mode"
  #define NVS_KEY_LIGHT_START_HOUR        "light_s_h"
@@ -399,6 +406,7 @@
  aicam_result_t json_config_save_power_mode_config_to_nvs(const power_mode_config_t *config);
 aicam_result_t json_config_save_device_info_config_to_nvs(const device_info_config_t *config);
 aicam_result_t json_config_save_device_service_image_config_to_nvs(const image_config_t *config);
+aicam_result_t json_config_save_camera_source_config_to_nvs(const camera_source_config_t *config);
 aicam_result_t json_config_save_device_service_light_config_to_nvs(const light_config_t *config);
 aicam_result_t json_config_save_isp_config_to_nvs(const isp_config_t *config);
 aicam_result_t json_config_save_network_service_config_to_nvs(const network_service_config_t *config);

@@ -41,6 +41,13 @@ int quick_snapshot_init(void);
 int quick_snapshot_is_init(void);
 
 /**
+ * @brief UVC capture buffer identity (the camera JPEG handed out as the
+ *        capture result on the UVC wake path)
+ * @return Buffer base pointer, or NULL when quick snapshot is not inited
+ */
+const uint8_t *quick_snapshot_uvc_cap_buf(void);
+
+/**
  * @brief Wait for snapshot config
  * @param snapshot_config Snapshot config
  * @return 0 on success, other values on error

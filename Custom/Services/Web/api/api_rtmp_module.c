@@ -8,6 +8,7 @@
 #include "rtsp_service.h"
 #include "web_api.h"
 #include "web_server.h"
+#include "usbh_uvc_service.h"
 #include "cJSON.h"
 #include "json_config_mgr.h"
 #include <string.h>
@@ -159,6 +160,12 @@ static aicam_result_t rtmp_start_handler(http_handler_context_t* ctx)
 {
     if (!web_api_verify_method(ctx, "POST")) {
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Method Not Allowed");
+    }
+
+    if (usbh_uvc_service_is_active()) {
+        /* MJPEG-only image source: no H.264 stream to push. */
+        return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE,
+                                  "RTMP push is unavailable with the UVC camera");
     }
 
     if (!rtmp_service_is_initialized()) {

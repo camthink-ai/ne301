@@ -633,7 +633,19 @@ static void SystemIsolation_Config(void)
     HAL_GPIO_ConfigPinAttributes(GPIOH,GPIO_PIN_2,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
 
 /* USER CODE BEGIN RIF_Init 1 */
-
+    /* GPU2D (NemaGFX) was missing from the isolation config: its master
+     * transactions and the GFXMMU/GPU2D register access were filtered by
+     * RIF, hanging the first GPU command list forever. */
+    {
+        RIMC_MasterConfig_t gpu_master = {0};
+        gpu_master.MasterCID = RIF_CID_1;
+        gpu_master.SecPriv = RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV;
+        HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_GPU2D, &gpu_master);
+        HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_GFXMMU,
+                                              RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
+        HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_GPU2D,
+                                              RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
+    }
 /* USER CODE END RIF_Init 1 */
 /* USER CODE BEGIN RIF_Init 2 */
 

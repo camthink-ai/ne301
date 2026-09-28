@@ -16,6 +16,7 @@ import {
 import SvgIcon from '@/components/svg-icon';
 import { Input } from '@/components/ui/input';
 import Player from './player';
+import MjpegPlayer from './mjpegPlayer';
 import ToolGuide from './tool-guide';
 import TriggerConfig from './trigger-config';
 import { getItem } from '@/utils/storage';
@@ -23,6 +24,7 @@ import { getItem } from '@/utils/storage';
 import deviceTool, { type AiParams, type VideoStreamPushReq } from '@/services/api/deviceTool';
 import hardwareManagement from '@/services/api/hardware-management';
 import systemApis from '@/services/api/system';
+import cameraApi, { type UvcStatus } from '@/services/api/camera';
 
 import DeviceToolSkeleton from './skeleton';
 import { useAiStatusStore } from '@/store/aiStatus';
@@ -171,6 +173,20 @@ export default function DeviceTool() {
       throw error;
     }
   };
+  /* Image source: 'uvc' swaps the H.264/MSE player for the MJPEG preview */
+  const [cameraSource, setCameraSource] = useState<'native' | 'uvc' | null>(null);
+  const [uvcStatus, setUvcStatus] = useState<UvcStatus | null>(null);
+  const initCameraSource = async () => {
+    try {
+      const res = await cameraApi.getCameraList();
+      setCameraSource(res.data.active);
+      setUvcStatus(res.data.uvc_status ?? null);
+    } catch (error) {
+      console.error('initCameraSource', error);
+      setCameraSource('native');
+    }
+  };
+
   const initSysClk = async () => {
     try {
       const clkRes = await getSysClkConfigReq();
@@ -206,6 +222,7 @@ export default function DeviceTool() {
         initPowerMode(),
         getAiParams(),
         initSysClk(),
+        initCameraSource(),
       ])
     } catch (error) {
       console.error('initQueue', error);
@@ -306,11 +323,17 @@ export default function DeviceTool() {
           <CardContent className="sm:w-xl flex flex-col">
 
             <div className=" bg-gray-100 w-full  aspect-video flex justify-center items-center">
-              <Player
-                key={playerEpoch}
-                videoUrl={getWebSocketUrl()}
-                videoRendererInstance={videoRendererInstance}
-              />
+              {cameraSource === 'uvc' ? (
+                <MjpegPlayer
+                  status={uvcStatus?.streaming ? uvcStatus : undefined}
+                />
+              ) : (
+                <Player
+                  key={playerEpoch}
+                  videoUrl={getWebSocketUrl()}
+                  videoRendererInstance={videoRendererInstance}
+                />
+              )}
             </div>
             <div
               className=" w-full bg-white pt-4"
@@ -511,7 +534,7 @@ export default function DeviceTool() {
                                   </SelectContent>
                                 </Select>
                               </div>
-                              {curWorkModel === 'video_stream' && (
+                              {curWorkModel === 'video_stream' && cameraSource !== 'uvc' && (
                                 <div className="border border-gray-200 border-solid p-2 rounded-md mt-2">
                                   <div className="flex items-center  justify-between">
                                     <div className="flex items-center">
@@ -562,7 +585,15 @@ export default function DeviceTool() {
                               )}
                             </div>
                             <Separator className="my-2" />
-                            <RtmpConfig />
+                            {cameraSource === 'uvc' ? (
+                              /* RTMP/RTSP push needs an H.264 stream: the UVC
+                               * (MJPEG) source has none - config hidden. */
+                              <p className="text-xs text-amber-600 mb-1">
+                                {i18n._('sys.device_tool.uvc_no_push')}
+                              </p>
+                            ) : (
+                              <RtmpConfig />
+                            )}
                           </div>
                         </div>
                       </CardContent>

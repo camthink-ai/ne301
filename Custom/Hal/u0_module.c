@@ -28,7 +28,11 @@ static uint8_t u9_rx_buf[U9_MAX_RECV_LEN] = {0};
 static HAL_StatusTypeDef u9_rx_state = HAL_OK;
 static ms_bridging_handler_t *u0_handler = NULL;
 static osMutexId_t u0_tx_mutex = NULL;
-static uint8_t ms_bd_thread_stack[1024 * 4] ALIGN_32 IN_PSRAM;
+/* Internal SRAM (NOT PSRAM): this stack sat in PSRAM next to USB buffers
+ * and took two corruption-style HardFaults; GPU2D/DMA2D/JPEG masters only
+ * write PSRAM, so this both shields the thread and splits the diagnosis
+ * (still crashing => CPU-side writer; stops => PSRAM master overflow). */
+static uint8_t ms_bd_thread_stack[1024 * 4] ALIGN_32;
 static const osThreadAttr_t ms_bd_task_attributes = {
     .name = "ms_bd_Task",
     .priority = (osPriority_t) osPriorityRealtime,

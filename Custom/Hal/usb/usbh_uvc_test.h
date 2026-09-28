@@ -49,4 +49,39 @@ uint32_t usbh_uvc_preview_get(const uint8_t **buf, uint32_t *len, uint16_t *w, u
 void usbh_uvc_preview_acquire(void);
 void usbh_uvc_preview_release(void);
 
+/* ---- service layer (usbh_uvc_service) introspection ---- */
+
+struct usbh_uvc_stream_cfg {
+    uint16_t width;
+    uint16_t height;
+    uint32_t interval_100ns;   /* dwDefaultFrameInterval (0 = unknown) */
+};
+
+struct usbh_uvc_devinfo {
+    uint16_t vid, pid;
+    int is_bulk;               /* bulk data interface (vs iso) */
+    char product[32];          /* USB product string, may be empty */
+};
+
+struct usbh_uvc_state {
+    int dev_ready;             /* camera enumerated */
+    int opened;
+    int streaming;
+    int is_bulk;
+    uint16_t width, height;    /* current session resolution */
+    uint32_t fps;              /* negotiated frame rate */
+    uint32_t fps_measured;     /* assembled intact frames in the last 1s */
+    uint32_t frames, frames_bad;
+    uint32_t reconnects;       /* watchdog session rebuilds */
+};
+
+/* 1 when a UVC camera is enumerated on the host bus */
+int usbh_uvc_test_dev_ready(void);
+/* static device identity of the enumerated camera (0 ok, -1 none) */
+int usbh_uvc_test_get_devinfo(struct usbh_uvc_devinfo *info);
+/* list the MJPEG stream configurations; returns count (0..max), -1 = no dev */
+int usbh_uvc_test_enumerate(struct usbh_uvc_stream_cfg *out, int max);
+/* engine session state snapshot */
+void usbh_uvc_test_get_state(struct usbh_uvc_state *st);
+
 #endif /* USBH_UVC_TEST_H */

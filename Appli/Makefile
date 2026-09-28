@@ -141,6 +141,11 @@ C_SOURCES += ../Custom/Hal/usb/usb_glue_stm32n6.c
 C_SOURCES += ../Custom/Hal/usb/usb_cherry.c
 C_SOURCES += ../Custom/Hal/usb/usb_device_composite.c
 C_SOURCES += ../Custom/Hal/usb/usbh_uvc_test.c
+C_SOURCES += ../Custom/Hal/usb/usbh_uvc_service.c
+C_SOURCES += ../Custom/Hal/usb/usbh_uvc_jpeg.c
+C_SOURCES += ../Custom/Hal/GPU/nema_hal.c
+C_SOURCES += ../Custom/Hal/GPU/gpu_resize.c
+C_SOURCES += ../Custom/Services/AI/ai_uvc_task.c
 C_SOURCES += ../Custom/Hal/wdg.c
 C_SOURCES += ../Custom/Hal/wifi.c
 
@@ -222,6 +227,7 @@ C_SOURCES += ../Custom/Services/Web/web_service.c
 C_SOURCES += ../Custom/Services/Web/websocket_stream_server.c
 C_SOURCES += ../Custom/Services/Web/api/api_ai_management_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_auth_module.c
+C_SOURCES += ../Custom/Services/Web/api/api_camera_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_device_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_file_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_model_validation_module.c
@@ -483,6 +489,8 @@ C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_cortex.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_dcmipp.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_dma2d.c
+C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_gpu2d.c
+C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_gfxmmu.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_gpio.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_i2c.c
 C_SOURCES += ../Drivers/STM32N6xx_HAL_Driver/Src/stm32n6xx_hal_i2c_ex.c
@@ -707,6 +715,8 @@ C_INCLUDES += -I../Custom/Core/Video
 # Custom - HAL
 C_INCLUDES += -I../Custom/Hal
 C_INCLUDES += -I../Custom/Hal/Quick_Bootstrap
+C_INCLUDES += -I../Custom/Hal/GPU
+C_INCLUDES += -I../Custom/Common/Lib/NemaGFX/include
 C_INCLUDES += -I../Custom/Hal/SensorExt/vl53l1x
 C_INCLUDES += -I../Custom/Hal/SensorExt/vl53l1x/API/platform
 C_INCLUDES += -I../Custom/Hal/SensorExt/vl53l1x/API/core
@@ -855,9 +865,11 @@ endif
 # Libraries (in correct order for linking)
 LIBS = -lc -lm -lnosys
 LIBS += -l:$(NETWORK_RUNTIME_LIB)
+LIBS += -l:libnemagfx-float-abi-hard.a
 
 LIBDIR =
 LIBDIR += -L$(STEDGEAI_LIBDIR)
+LIBDIR += -L../Custom/Common/Lib/NemaGFX/lib
 
 # Linker flags (inherits COMMON_LDFLAGS from root)
 LDFLAGS = $(COMMON_LDFLAGS) -T$(LDSCRIPT)

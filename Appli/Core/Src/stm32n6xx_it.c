@@ -77,6 +77,25 @@ static void fault_dump_frames(uint32_t exc_return, uint32_t entry_sp)
   uint32_t *sps[2];
   int i;
 
+  /* name the faulting thread: without it a wild-jump dump (PC/LR all FF,
+   * junk backtrace) is unattributable - ThreadX knows who was running */
+  {
+    VOID *thr = tx_thread_identify();
+    if (thr != NULL) {
+      TX_THREAD *t = (TX_THREAD *)thr;
+      char name[16];
+      UINT k;
+      for (k = 0; k < sizeof(name) - 1 && t->tx_thread_name[k]; k++) {
+        name[k] = t->tx_thread_name[k];
+      }
+      name[k] = 0;
+      printf("  fault thread: %s (stack %p..%p)\r\n", name,
+             (void *)t->tx_thread_stack_start, (void *)t->tx_thread_stack_end);
+    } else {
+      printf("  fault thread: <handler/idle>\r\n");
+    }
+  }
+
   sps[0] = (uint32_t *)((exc_return & 0x4u) ? psp : entry_sp);
   sps[1] = (uint32_t *)((exc_return & 0x4u) ? entry_sp : psp);
   printf("  EXC_RETURN=0x%08lx (MSP=0x%08lx PSP=0x%08lx)\r\n",

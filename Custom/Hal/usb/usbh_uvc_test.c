@@ -84,6 +84,7 @@ static uint32_t g_uvc_rec_idx_len[UVC_REC_IDX_MAX] IN_PSRAM;
  * publish periods (100ms @ 30fps) — slow web sends under priority bursts
  * used to tear on a 2-slot rotation */
 #define UVC_PREV_SLOTS 3
+static uint32_t s_prev_pub_sig;         /* last published frame signature */
 static uint8_t g_uvc_prev_buf[UVC_PREV_SLOTS][UVC_PREVIEW_BYTES] ALIGN_32 IN_PSRAM;
 static volatile uint32_t g_uvc_prev_len[UVC_PREV_SLOTS];
 static volatile uint32_t g_uvc_prev_seq;
@@ -174,6 +175,7 @@ static struct {
 
     /* stats (IRQ side: 32-bit increments only) */
     volatile uint32_t st_urb_ok, st_urb_err, st_urb_zero, st_drop_slot;
+    volatile uint32_t st_dup;       /* duplicate frames suppressed at publish */
     volatile uint32_t st_bytes, st_frames, st_frames_bad, st_hdr_err, st_resync;
     volatile int st_last_err;
     volatile uint32_t last_urb_tick; /* tick of the last completion (IRQ) */
@@ -181,10 +183,19 @@ static struct {
     volatile uint32_t st_miss;      /* ISO: microframes lost to late re-arms */
     volatile uint32_t st_cps;       /* completions in the last 1s window */
     uint32_t miss_win_base, miss_win_tick;
+    volatile uint32_t st_wdt;       /* silent-wedge recoveries (watchdog) */
+    volatile uint32_t st_reconnects;/* full session re-inits (port reset) */
+    uint32_t wdt_streak;            /* recoveries without any completion */
+    volatile int recovering;        /* watchdog kill in progress: the SHUTDOWN
+                                     * completion that follows must not stop
+                                     * the stream */
     /* stats (worker side) */
     uint32_t fps, fps_window_frames;
     uint64_t fps_window_tick;
     uint32_t last_good_len;
+    uint32_t bytes_seen;           /* st_bytes snapshot for dead-pipe detect */
+    uint32_t bytes_seen_tick;      /* when the snapshot last changed */
+    uint32_t dead_pipes;           /* NAK-idle session rebuilds */
 } g_uvct;
 
 /* ==================== MJPEG recording (AVI/MJPG on SD) ==================== */
@@ -521,7 +532,6 @@ static void uvc_frame_finish(void)
     }
 
     g_uvct.st_frames++;
-    g_uvct.fps_window_frames++;
 
     {
         uint64_t now = (uint64_t)osKernelGetTickCount();
@@ -541,11 +551,33 @@ static void uvc_frame_finish(void)
     } else {
         g_uvct.last_good_len = g_uvct.frame_len;
 
-        /* publish to the web preview store. ISO assembles DIRECTLY in the
-         * preview double buffer, so publishing is a zero-copy seq bump (a
-         * memcpy here used to stall the channel re-arm ~300us and lose
-         * microframes). Bulk still copies in worker context. */
-        if (g_uvct.frame_len <= UVC_PREVIEW_BYTES) {
+        /* duplicate-frame suppression at the publish boundary: some
+         * cameras resend the previous encoded frame when nothing changed
+         * (observed 2x per frame at 320x240, doubling preview bandwidth).
+         * Content signature = length + sparse byte samples; a genuine
+         * re-encode always differs in bytes, identical bytes = identical
+         * picture for preview purposes. Duplicates are neither published
+         * nor counted in fps - the badge stays honest. */
+        uint32_t sig = g_uvct.frame_len;
+        if (g_uvct.frame_len >= 32) {
+            uint32_t stride = g_uvct.frame_len / 8u;
+            for (uint32_t i = 0; i < g_uvct.frame_len; i += stride) {
+                sig = (sig * 33u) + g_uvct.frame_cur[i];
+            }
+        }
+        int dup = (sig == s_prev_pub_sig);
+        s_prev_pub_sig = sig;
+
+        if (dup) {
+            g_uvct.st_dup++;
+        } else {
+            g_uvct.fps_window_frames++; /* unique-frame rate for the badge */
+        }
+        if (!dup && g_uvct.frame_len <= UVC_PREVIEW_BYTES) {
+            /* publish to the web preview store. ISO assembles DIRECTLY in
+             * the preview double buffer, so publishing is a zero-copy seq
+             * bump (a memcpy here used to stall the channel re-arm ~300us
+             * and lose microframes). Bulk still copies in worker context. */
             g_uvc_prev_len[g_uvc_prev_seq % UVC_PREV_SLOTS] = g_uvct.frame_len;
             g_uvc_prev_seq++;
         }
@@ -761,6 +793,90 @@ static void uvc_worker(void *arg)
             }
         }
 
+        /* silent-wedge watchdog: a parked URB with NO completion for >1.5s
+         * means the channel died without raising an interrupt (observed
+         * once after `usb device init` — root cause pending). Kill and
+         * resubmit: converts the wedge into one recoverable glitch. */
+        if (g_uvct.streaming && g_uvct.urb.hcpriv != NULL &&
+            (osKernelGetTickCount() - g_uvct.last_urb_tick) > 1500) {
+            g_uvct.st_wdt++;
+            if (g_uvct.st_wdt <= 3) { /* register dump on the first events */
+                volatile uint32_t *r = (volatile uint32_t *)USB2_OTG_HS_BASE;
+                printf("[UVC] wdt wedge: GINTSTS=%08x GINTMSK=%08x GAHBCFG=%08x HAINT=%08x HAINTMSK=%08x HPRT=%08x\r\n",
+                       (unsigned)r[0x014 / 4], (unsigned)r[0x018 / 4], (unsigned)r[0x008 / 4],
+                       (unsigned)r[0x414 / 4], (unsigned)r[0x418 / 4], (unsigned)r[0x440 / 4]);
+                for (int ch = 0; ch < 16; ch++) {
+                    volatile uint32_t *hc = (volatile uint32_t *)(USB2_OTG_HS_BASE + 0x500 + ch * 0x20);
+                    if ((hc[0] & 0xC0000000U) || hc[2]) { /* CHENA/CHDIS or pending int */
+                        printf("[UVC]  ch%d: HCCHAR=%08x HCINT=%08x HCINTMSK=%08x HCTSIZ=%08x\r\n",
+                               ch, (unsigned)hc[0], (unsigned)hc[2], (unsigned)hc[3], (unsigned)hc[4]);
+                    }
+                }
+            }
+            printf("[UVC] wdt: silent wedge (%ums), recovering\r\n",
+                   (unsigned)(osKernelGetTickCount() - g_uvct.last_urb_tick));
+            g_uvct.recovering = 1;
+            usbh_kill_urb(&g_uvct.urb);
+            g_uvct.recovering = 0;
+            osDelay(2);
+            uvc_submit_slot(g_uvct.urb.transfer_buffer);
+
+            /* repeated useless recoveries = the device went away behind our
+             * back (port reset re-enumerated it, e.g. USB1 cold init
+             * glitching the USB2 port). Rebuild the whole session. */
+            if (++g_uvct.wdt_streak >= 4 && g_uvct.video != NULL) {
+                printf("[UVC] wdt: %u dead recoveries, re-initializing session\r\n",
+                       (unsigned)g_uvct.wdt_streak);
+                g_uvct.st_reconnects++;
+                uint16_t w = g_uvct.rec_w, h = g_uvct.rec_h;
+                g_uvct.streaming = 0; /* inline stop: keep THIS worker alive */
+                if (g_uvct.urb.hcpriv != NULL) {
+                    g_uvct.recovering = 1;
+                    usbh_kill_urb(&g_uvct.urb);
+                    g_uvct.recovering = 0;
+                }
+                (void)usbh_video_close(g_uvct.video);
+                osDelay(100); /* let the hub settle after the port reset */
+                if (usbh_uvc_test_open(w, h, 0xff) == 0) {
+                    (void)usbh_uvc_test_start(); /* reuses this worker */
+                }
+                g_uvct.wdt_streak = 0;
+            }
+        }
+
+        /* dead-pipe watchdog (bulk): NAK completions keep last_urb_tick
+         * fresh, so the silent-wedge watchdog above never fires when the
+         * camera simply never delivers (zero commit / wedged firmware):
+         * the session looks "streaming" while zero payload bytes arrive.
+         * A bulk camera at 30fps always sends; 3s of no bytes = rebuild. */
+        if (g_uvct.streaming && g_uvct.is_bulk) {
+            if (g_uvct.st_bytes != g_uvct.bytes_seen) {
+                g_uvct.bytes_seen = g_uvct.st_bytes;
+                g_uvct.bytes_seen_tick = osKernelGetTickCount();
+            } else if (g_uvct.bytes_seen_tick != 0 &&
+                       (osKernelGetTickCount() - g_uvct.bytes_seen_tick) > 3000 &&
+                       g_uvct.video != NULL) {
+                printf("[UVC] dead pipe: 0 payload bytes for %ums, rebuilding session\r\n",
+                       (unsigned)(osKernelGetTickCount() - g_uvct.bytes_seen_tick));
+                g_uvct.dead_pipes++;
+                g_uvct.st_reconnects++;
+                uint16_t w = g_uvct.rec_w, h = g_uvct.rec_h;
+                g_uvct.streaming = 0; /* inline stop: keep THIS worker alive */
+                if (g_uvct.urb.hcpriv != NULL) {
+                    g_uvct.recovering = 1;
+                    usbh_kill_urb(&g_uvct.urb);
+                    g_uvct.recovering = 0;
+                }
+                (void)usbh_video_close(g_uvct.video);
+                osDelay(100); /* let the hub settle after the port reset */
+                if (usbh_uvc_test_open(w, h, 0xff) == 0) {
+                    (void)usbh_uvc_test_start(); /* reuses this worker */
+                }
+                g_uvct.bytes_seen_tick = osKernelGetTickCount();
+                g_uvct.wdt_streak = 0;
+            }
+        }
+
         uvc_rec_drain_stage();
     }
 }
@@ -814,6 +930,10 @@ static void uvc_urb_complete(void *arg, int nbytes)
         g_uvct.st_urb_err++;
         g_uvct.st_last_err = -nbytes;
         g_uvct.last_urb_tick = osKernelGetTickCount();
+        if (nbytes == -USB_ERR_SHUTDOWN && g_uvct.recovering) {
+            return; /* watchdog kill: the worker resubmits right after —
+                     * NOT a real completion: keep the wdt streak */
+        }
         if (nbytes == -USB_ERR_NOTCONN || nbytes == -USB_ERR_SHUTDOWN) {
             g_uvct.streaming = 0;
             return;
@@ -829,6 +949,8 @@ static void uvc_urb_complete(void *arg, int nbytes)
         uvc_submit_slot(g_uvct.urb.transfer_buffer);
         return;
     }
+
+    g_uvct.wdt_streak = 0; /* a real completion arrived: session is alive */
 
     if (nbytes == 0) {
         g_uvct.st_urb_zero++;
@@ -938,6 +1060,25 @@ int usbh_uvc_test_open(uint16_t width, uint16_t height, uint8_t alt)
     }
 
     if (v->is_bulk) {
+        /* Wake-enumeration quirk: the first GET_CUR probe right after
+         * enumeration can come back all-zero (observed ~200ms after the
+         * port came up). Committing zeros arms nothing on the camera -
+         * the pipe then NAKs forever while everything looks "streaming".
+         * Re-read the probe until it is sane before committing. */
+        for (int i = 0; i < 10 &&
+                       (v->probe.dwMaxPayloadTransferSize == 0 ||
+                        v->probe.dwFrameInterval == 0); i++) {
+            osDelay(30);
+            (void)usbh_videostreaming_get_cur_probe(v);
+        }
+        if (v->probe.dwMaxPayloadTransferSize == 0 ||
+            v->probe.dwFrameInterval == 0) {
+            /* refuse to commit zeros: fail so the caller retries the open
+             * (a fresh usbh_video_open re-runs the whole negotiation) */
+            printf("[UVC] open: probe stays zero after retries\r\n");
+            return -1;
+        }
+
         /* Bulk UVC: dwMaxPayloadTransferSize is nominally host-chosen. Ask
          * for the slot size; many devices (this one: 102656 B ≈ whole MJPEG
          * frames per payload) ignore it — read-back decides single-payload
@@ -1037,13 +1178,19 @@ int usbh_uvc_test_start(void)
     g_uvct.have_fid = 0;
     g_uvct.st_urb_ok = g_uvct.st_urb_err = g_uvct.st_urb_zero = 0;
     g_uvct.st_drop_slot = g_uvct.st_bytes = g_uvct.st_frames = 0;
+    g_uvct.bytes_seen = 0;
+    g_uvct.bytes_seen_tick = osKernelGetTickCount(); /* dead-pipe window */
     g_uvct.st_frames_bad = g_uvct.st_hdr_err = g_uvct.st_resync = 0;
     g_uvct.st_last_err = 0;
     g_uvct.st_urb_total = 0;
     g_uvct.st_miss = 0;
     g_uvct.st_cps = 0;
+    g_uvct.st_wdt = 0;
+    g_uvct.wdt_streak = 0;
+    g_uvct.recovering = 0;
     g_uvct.miss_win_base = 0;
     g_uvct.miss_win_tick = 0;
+    g_uvct.last_urb_tick = osKernelGetTickCount(); /* wdt baseline */
     g_uvct.fps = g_uvct.fps_window_frames = 0;
     g_uvct.fps_window_tick = (uint64_t)osKernelGetTickCount();
 
@@ -1058,7 +1205,7 @@ int usbh_uvc_test_start(void)
         return -1;
     }
 
-    {
+    if (g_uvct.worker == NULL) { /* watchdog reconnect reuses this thread */
         static const osThreadAttr_t attr = {
             .name = "uvc_rx",
             /* Realtime (=8, same band as web/camera/wifi tasks). The ISO
@@ -1155,6 +1302,7 @@ int usbh_uvc_test_stat(void)
            (unsigned)g_uvct.st_drop_slot, (unsigned)g_uvct.st_hdr_err,
            (unsigned)g_uvct.st_resync, g_uvct.st_last_err,
            (unsigned)g_uvct.st_cps, (unsigned)g_uvct.st_miss);
+    printf("[UVC] wdt recoveries:%u\r\n", (unsigned)g_uvct.st_wdt);
     return 0;
 }
 
@@ -1351,6 +1499,84 @@ void usbh_uvc_preview_release(void)
     if (g_uvc_prev_users > 0) {
         g_uvc_prev_users--;
     }
+}
+
+/* ==================== service layer introspection ==================== */
+
+int usbh_uvc_test_dev_ready(void)
+{
+    return g_uvct.video != NULL;
+}
+
+int usbh_uvc_test_get_devinfo(struct usbh_uvc_devinfo *info)
+{
+    if (g_uvct.video == NULL || info == NULL) {
+        return -1;
+    }
+    struct usbh_video *v = g_uvct.video;
+    memset(info, 0, sizeof(*info));
+    info->vid = v->hport->device_desc.idVendor;
+    info->pid = v->hport->device_desc.idProduct;
+    info->is_bulk = (v->bulkin != NULL);
+    if (v->hport->iProduct != NULL) {
+        snprintf(info->product, sizeof(info->product), "%s", v->hport->iProduct);
+    }
+    return 0;
+}
+
+int usbh_uvc_test_enumerate(struct usbh_uvc_stream_cfg *out, int max)
+{
+    if (g_uvct.video == NULL || out == NULL || max <= 0) {
+        return -1;
+    }
+    struct usbh_video *v = g_uvct.video;
+    int n = 0;
+    for (int i = 0; i < v->num_of_formats; i++) {
+        if (v->format[i].format_type != USBH_VIDEO_FORMAT_MJPEG) {
+            continue; /* MJPEG-only product path */
+        }
+        for (int j = 0; j < v->format[i].num_of_frames; j++) {
+            if (n >= max) {
+                return n;
+            }
+            /* some cameras list a frame twice in the descriptors */
+            int dup = 0;
+            for (int k = 0; k < n; k++) {
+                if (out[k].width == v->format[i].frame[j].wWidth &&
+                    out[k].height == v->format[i].frame[j].wHeight) {
+                    dup = 1;
+                    break;
+                }
+            }
+            if (dup) {
+                continue;
+            }
+            out[n].width = v->format[i].frame[j].wWidth;
+            out[n].height = v->format[i].frame[j].wHeight;
+            out[n].interval_100ns = v->format[i].frame[j].dwDefaultFrameInterval;
+            n++;
+        }
+    }
+    return n;
+}
+
+void usbh_uvc_test_get_state(struct usbh_uvc_state *st)
+{
+    if (st == NULL) {
+        return;
+    }
+    memset(st, 0, sizeof(*st));
+    st->dev_ready = (g_uvct.video != NULL);
+    st->opened = st->dev_ready && g_uvct.video->is_opened;
+    st->streaming = g_uvct.streaming;
+    st->is_bulk = g_uvct.is_bulk;
+    st->width = g_uvct.rec_w;
+    st->height = g_uvct.rec_h;
+    st->fps = g_uvct.rec_fps;
+    st->fps_measured = g_uvct.fps; /* worker-side 1s window of intact frames */
+    st->frames = g_uvct.st_frames;
+    st->frames_bad = g_uvct.st_frames_bad;
+    st->reconnects = g_uvct.st_reconnects;
 }
 
 int usbh_uvc_test_dump(uint32_t offset, uint32_t len)

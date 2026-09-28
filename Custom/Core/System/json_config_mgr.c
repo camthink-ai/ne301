@@ -155,6 +155,14 @@
              .fill_light_while_streaming = AICAM_FALSE
          }
      },
+
+     .camera_config = {
+         .source = CAMERA_SOURCE_NATIVE,
+         .native_stream_res = CAMERA_NATIVE_RES_720P,
+         .uvc_stream_width = 0,   /* 0/0 = auto: highest MJPEG resolution */
+         .uvc_stream_height = 0,
+         .uvc_stream_fps = 0
+     },
      
      .network_service = {
          .ap_sleep_time = 0,        // Default AP sleep time (0 = no sleep)
@@ -1128,6 +1136,69 @@
          return AICAM_ERROR_NOT_INITIALIZED;
      }
      *light_config = g_json_config_ctx.current_config.device_service.light_config;
+     return AICAM_OK;
+ }
+
+ aicam_result_t json_config_get_camera_config(camera_source_config_t *camera_config)
+ {
+     if (!g_json_config_ctx.initialized)
+     {
+         return AICAM_ERROR_NOT_INITIALIZED;
+     }
+     *camera_config = g_json_config_ctx.current_config.camera_config;
+     return AICAM_OK;
+ }
+
+ aicam_result_t json_config_set_camera_config(const camera_source_config_t *camera_config)
+ {
+     if (!camera_config)
+     {
+         return AICAM_ERROR_INVALID_PARAM;
+     }
+
+     if (camera_config->source != CAMERA_SOURCE_NATIVE &&
+         camera_config->source != CAMERA_SOURCE_UVC)
+     {
+         return AICAM_ERROR_INVALID_PARAM;
+     }
+
+     if (camera_config->native_stream_res != CAMERA_NATIVE_RES_720P &&
+         camera_config->native_stream_res != CAMERA_NATIVE_RES_1080P)
+     {
+         return AICAM_ERROR_INVALID_PARAM;
+     }
+
+     if (camera_config->source == CAMERA_SOURCE_UVC &&
+         ((camera_config->uvc_stream_width == 0) != (camera_config->uvc_stream_height == 0)))
+     {
+         /* auto selection is 0/0; an explicit selection must set both */
+         return AICAM_ERROR_INVALID_PARAM;
+     }
+
+     if (camera_config->uvc_stream_width > 7680u || camera_config->uvc_stream_height > 4320u ||
+         camera_config->uvc_stream_fps > 120u)
+     {
+         return AICAM_ERROR_INVALID_PARAM;
+     }
+
+     if (camera_config != &g_json_config_ctx.current_config.camera_config)
+     {
+         memcpy(&g_json_config_ctx.current_config.camera_config, camera_config, sizeof(camera_source_config_t));
+     }
+
+     // update to NVS
+     aicam_result_t result = json_config_save_camera_source_config_to_nvs(camera_config);
+     if (result != AICAM_OK) {
+         LOG_CORE_ERROR("Failed to save camera source configuration to NVS");
+         return result;
+     }
+
+     LOG_CORE_INFO("Camera source configuration updated: source=%u, native_res=%u, uvc=%ux%u@%ufps",
+                   (unsigned)camera_config->source,
+                   (unsigned)camera_config->native_stream_res,
+                   (unsigned)camera_config->uvc_stream_width,
+                   (unsigned)camera_config->uvc_stream_height,
+                   (unsigned)camera_config->uvc_stream_fps);
      return AICAM_OK;
  }
 

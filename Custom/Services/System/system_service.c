@@ -28,6 +28,8 @@
 #include "web_service.h"
 #include "ai_draw_service.h"
 #include "nn.h"
+#include "usbh_uvc_jpeg.h"
+#include "usbh_uvc_service.h"
 #include "drtc.h"
 #include "quick_snapshot.h"
 #include "cJSON.h"
@@ -3602,28 +3604,111 @@ static aicam_result_t generate_inference_image(const uint8_t *jpeg_buffer,
         .quality = jpeg_params.ImageQuality
     };
 
-    ret = ai_jpeg_decode(jpeg_buffer, jpeg_size, &decode_config, &raw_data, &raw_size);
-    // buffer_free(jpeg_copy);
-    // jpeg_copy = NULL;
-
-    if (ret != AICAM_OK) {
-        LOG_SVC_ERROR("Failed to decode JPEG: %d", ret);
-        return ret;
+    /* The convention above describes OUR internal encoder, not the stream
+     * being decoded: the UVC camera serves 4:2:2 at 720P while the
+     * convention says 4:2:0. jpegc sizes its raster and the DMA2D convert
+     * walks the plane layout from these values - both MUST match the
+     * actual stream or the overlay tears and the raster over-reads its
+     * allocation (observed at 720P). Parse the real SOF and correct. */
+    {
+        uvc_jpeg_info_t real = {0};
+        if (uvc_jpeg_parse_header(jpeg_buffer, jpeg_size, &real) == 0 &&
+            real.width != 0 && real.height != 0) {
+            if (decode_config.width != real.width ||
+                decode_config.height != real.height ||
+                decode_config.chroma_subsampling != real.chroma_subsampling) {
+                LOG_SVC_INFO("inference decode params corrected: %lux%lu css%lu -> %lux%lu css%lu",
+                             (unsigned long)decode_config.width,
+                             (unsigned long)decode_config.height,
+                             (unsigned long)decode_config.chroma_subsampling,
+                             (unsigned long)real.width, (unsigned long)real.height,
+                             (unsigned long)real.chroma_subsampling);
+            }
+            decode_config.width = real.width;
+            decode_config.height = real.height;
+            decode_config.chroma_subsampling = real.chroma_subsampling;
+        }
     }
 
-    // Step 3: Convert YCbCr to RGB565 for drawing
-    ret = ai_color_convert(raw_data, decode_config.width, decode_config.height,
-                          DMA2D_INPUT_YCBCR, 0, decode_config.chroma_subsampling, &rgb_data, &raw_size, DMA2D_OUTPUT_RGB565);
-    
+    /* UVC fast path - YCbCr pass-through: decode, draw boxes directly on
+     * the planar raster and re-encode it raw (the JPEG core accepts the
+     * decode layout natively; verified on target). Skips the RGB565
+     * convert buffer AND the per-chunk CPU RGB->YCbCr convert: the encode
+     * drops from ~2-3s under load to ~0.2s. Falls back to the RGB path. */
+    /* DISABLED: the jpegc HW decoder raster is MCU-block ordered (the
+     * DMA2D YCbCr input layout), not planar - drawing with raster
+     * coordinates smears the overlay. Re-enable only with block-aware
+     * drawing. The yuvtest roundtrip could not catch this: encode and
+     * decode share the same layout, so it is self-consistent. */
+    if (0 && usbh_uvc_service_is_active()) {
+        uint8_t *yc = NULL;
+        uint32_t ylen = 0;
+        uvc_jpeg_info_t ji = {0};
+        if (uvc_jpeg_raster_trylock(5000) == 0) {
+            if (uvc_jpeg_decode_ycbcr(jpeg_buffer, jpeg_size, &yc, &ylen, &ji) == 0 && yc) {
+                int nbox = ai_draw_results_ycbcr(yc, ji.width, ji.height,
+                                                 ji.chroma_subsampling, nn_result);
+                if (nbox > 0) {
+                    ai_jpeg_encode_config_t ec = {
+                        .width = ji.width,
+                        .height = ji.height,
+                        .chroma_subsampling = ji.chroma_subsampling,
+                        .quality = jpeg_params.ImageQuality,
+                    };
+                    jpegc_encode_set_raw_yuv(1);
+                    aicam_result_t er = ai_jpeg_encode(yc, ylen, &ec,
+                                                       output_jpeg, output_jpeg_size);
+                    jpegc_encode_set_raw_yuv(0);
+                    uvc_jpeg_raster_unlock();
+                    if (er == AICAM_OK && *output_jpeg) {
+                        LOG_SVC_INFO("inference image: ycbcr pass-through, %d boxes, %luB",
+                                     nbox, (unsigned long)*output_jpeg_size);
+                        return AICAM_OK;
+                    }
+                    LOG_SVC_WARN("ycbcr pass-through encode failed: %d", er);
+                } else {
+                    uvc_jpeg_raster_unlock();
+                    LOG_SVC_WARN("ycbcr pass-through drew nothing, falling back");
+                }
+            } else {
+                uvc_jpeg_raster_unlock();
+                LOG_SVC_WARN("ycbcr pass-through decode failed, falling back");
+            }
+        } else {
+            LOG_SVC_WARN("ycbcr pass-through raster lock timeout, falling back");
+        }
+        if (*output_jpeg) { buffer_free(*output_jpeg); *output_jpeg = NULL; }
+        *output_jpeg_size = 0;
+    }
+
+    /* Raster lock: with the UVC source, the continuous AI task decodes into
+     * the same jpegc raster; hold it across decode+convert so it cannot
+     * start a new decode under our feet. Uncontended on native boots.
+     * On timeout, skip - proceeding unlocked would reconfigure jpegc under
+     * the AI task and wedge the codec. */
+    ret = AICAM_ERROR_TIMEOUT;
+    if (uvc_jpeg_raster_trylock(5000) == 0) {
+        ret = ai_jpeg_decode(jpeg_buffer, jpeg_size, &decode_config, &raw_data, &raw_size);
+
+        if (ret == AICAM_OK) {
+            // Step 3: Convert YCbCr to RGB565 for drawing
+            ret = ai_color_convert(raw_data, decode_config.width, decode_config.height,
+                                  DMA2D_INPUT_YCBCR, 0, decode_config.chroma_subsampling, &rgb_data, &raw_size, DMA2D_OUTPUT_RGB565);
+        }
+        uvc_jpeg_raster_unlock();
+    } else {
+        LOG_SVC_WARN("capture overlay: raster lock timeout, skipping draw");
+    }
+
     // Return decode buffer
     device_t *jpeg_dev = device_find_pattern(JPEG_DEVICE_NAME, DEV_TYPE_VIDEO);
-    if (jpeg_dev) {
+    if (jpeg_dev && raw_data) {
         device_ioctl(jpeg_dev, JPEGC_CMD_RETURN_DEC_BUFFER, raw_data, 0);
     }
     raw_data = NULL;
 
     if (ret != AICAM_OK) {
-        LOG_SVC_ERROR("Failed to convert color: %d", ret);
+        LOG_SVC_ERROR("Decode/convert failed: %d", ret);
         return ret;
     }
 

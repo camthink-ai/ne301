@@ -191,6 +191,9 @@ typedef struct {
 
 int camera_register(void);
 int camera_deinit_but_not_unregister(void);
+/* Sensor identity string ("CMW_OS04C10", ...) once the camera device is
+ * initialized; -1 when not initialized. */
+int camera_get_sensor_name(char *name, size_t name_len);
 void camera_free_unshared_buffer(uint8_t *buffer);
 int camera_unregister(void);
 

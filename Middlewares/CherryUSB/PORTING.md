@@ -168,6 +168,21 @@ Keep these when rebasing the vendored tree (drop only if upstream fixed them):
    keep the periodic stream gapless, and must reconstruct packet boundaries
    from the MPS stride (see `usbh_uvc_test.c`). Split ISO (FS/LS device
    behind a HS hub) is rejected with `-USB_ERR_INVAL`.
+
+10. `port/dwc2/usb_hc_dwc2.c` — **XFRC-without-CHH wedge fix**. The core can
+   raise XFRC and leave the channel ENABLED without ever halting it
+   (observed on bulk AND iso IN, typically while USB1 initializes);
+   upstream unmasks only CHHM, so that state raises NO interrupt and the
+   URB parks forever (silent wedge: frozen counters, growing urb_age).
+   Fix: HCINTMSK also unmasks XFRCM; the IN-channel IRQ handler gained an
+   early-completion branch (XFRC && !CHH && !ep0) that finishes the URB,
+   halts the channel and hands off — the late CHH is dropped by a new
+   urb==NULL guard. ep0/control is excluded (multi-phase state machine).
+   The test module additionally carries a silent-wedge watchdog (>1.5s no
+   completion -> kill+resubmit) that escalates to a full session re-init
+   (close/open/start) when 4 recoveries yield no completion — this heals
+   the USB2 port reset that a USB1 cold init can trigger (HPRT PRST
+   observed; the camera re-enumerates behind the stream's back).
 
 ## Known limitations
 

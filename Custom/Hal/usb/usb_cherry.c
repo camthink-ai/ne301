@@ -97,6 +97,12 @@ int usb_cherry_osal_ensure(void)
 int usb_cherry_host_init(usbh_event_handler_t event_cb)
 {
     if (usb_cherry_host_inited) {
+        /* A late consumer (4G NIC coming up after the uvc service powered
+         * the host) adopts the event stream; the default logger stays for
+         * anything it doesn't handle. */
+        if (event_cb != NULL) {
+            usb_cherry_dispatch_event = event_cb;
+        }
         return 0;
     }
 

@@ -7,6 +7,8 @@
 #include "web_api.h"
 #include "ai_service.h"
 #include "mqtt_service.h"
+#include "usbh_uvc_service.h"
+#include "nn.h"
 #include "cJSON.h"
 #include "debug.h"
 #include <string.h>
@@ -48,11 +50,18 @@ static aicam_result_t ai_management_status_handler(http_handler_context_t* ctx) 
     
     // Get AI model information
     nn_model_info_t model_info;
-    
+
     aicam_result_t result = ai_get_model_info(&model_info);
     if (result != AICAM_OK) {
-        LOG_SVC_ERROR("Failed to get AI model info: %d", result);
-        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to get AI model info");
+        /* UVC image source: the native AI pipeline does not exist this boot;
+         * the continuous MJPEG task owns the model. Query the nn layer
+         * directly (model may still be loading -> report "unloaded"). */
+        if (usbh_uvc_service_is_active() && nn_get_model_info(&model_info) == AICAM_OK) {
+            result = AICAM_OK;
+        } else {
+            memset(&model_info, 0, sizeof(model_info));
+            result = AICAM_OK;
+        }
     }
     // Create response data
     cJSON* data = cJSON_CreateObject();

@@ -14,10 +14,22 @@
 #include "ai_draw_service.h"
 #include "usb_cherry.h"
 #include "usbh_uvc_test.h"
+#include "usbh_uvc_service.h"
+#include "usbh_uvc_jpeg.h"
+#include "nn.h"
+#include "image_utils.h"
+#include "buffer_mgr.h"
+#include "dev_manager.h"
+#include "jpegc.h"
+#include "gpu_resize.h"
+extern void jpegc_encode_set_raw_yuv(int on);
 #include "upgrade_manager.h"
 #include "mqtt_service.h"
 #include "service_init.h"
 #include "ota_header.h"
+#include "u0_module.h"
+#include "cmsis_os2.h"
+#include "stm32n6xx_hal.h"
 #include "storage.h"
 #include "video_pipeline.h"
 #include "websocket_stream_server.h"
@@ -289,7 +301,634 @@ static int flashfile_cmd(int argc, char* argv[])
 }
 
 
-static int mem_cmd(int argc, char* argv[]) 
+static int captest_cmd(int argc, char* argv[])
+{
+    (void)argc; (void)argv;
+    LOG_SIMPLE("capture test: triggering capture+upload (AI on)...\r\n");
+    aicam_result_t r = system_service_capture_and_upload_mqtt(AICAM_TRUE, 0, AICAM_TRUE,
+                                                              AICAM_CAPTURE_TRIGGER_BUTTON);
+    LOG_SIMPLE("capture test result: %d\r\n", (int)r);
+    return 0;
+}
+
+/* Sleep-wake test support: during a wake event (PIR/RTC interval capture)
+ * the device returns to standby right after the capture. Sending this
+ * command inside that window clears the u0 wake events and reboots into
+ * the FULL boot (network up, OTA possible) - the remote-test substitute
+ * for the physical long-press config key. */
+static int configmode_cmd(int argc, char* argv[])
+{
+    (void)argc; (void)argv;
+    LOG_SIMPLE("entering config mode: clearing u0 wake events and rebooting...\r\n");
+    debug_flush_logs();
+    osDelay(100);
+#if ENABLE_U0_MODULE
+    u0_module_clear_wakeup_flag();
+    u0_module_reset_chip_n6();
+#endif
+    HAL_NVIC_SystemReset();
+    return 0;
+}
+
+/* AI input-pipeline debug: render the current UVC frame into the NPU model
+ * input two ways and print 8x8 grids of per-tile mean RGB (hex RRGGBB per
+ * tile) for PC-side comparison against a reference squash of the same frame.
+ *   A: live AI path (uvc jpegc decode -> convert -> resize)
+ *   B: proven decode path (ai_jpeg_decode -> convert -> same resize)
+ * A==B!=PC pins image_resize; A!=B pins the uvc decode/convert stage. */
+static void aidump_grid(const uint8_t *rgb, uint32_t w, uint32_t h, const char *tag)
+{
+    LOG_SIMPLE("%s ", tag);
+    for (uint32_t ty = 0; ty < 8; ty++) {
+        for (uint32_t tx = 0; tx < 8; tx++) {
+            uint32_t x0 = tx * w / 8, x1 = (tx + 1) * w / 8;
+            uint32_t y0 = ty * h / 8, y1 = (ty + 1) * h / 8;
+            uint32_t r = 0, g = 0, b = 0, n = 0;
+            if (x1 <= x0) x1 = x0 + 1;
+            if (y1 <= y0) y1 = y0 + 1;
+            for (uint32_t y = y0; y < y1; y += 3) {
+                const uint8_t *p = rgb + ((size_t)y * w + x0) * 3u;
+                for (uint32_t x = x0; x < x1; x += 3, p += 9) {
+                    r += p[0]; g += p[1]; b += p[2]; n++;
+                }
+            }
+            if (n == 0) n = 1;
+            LOG_SIMPLE("%02X%02X%02X ", (unsigned)(r / n), (unsigned)(g / n), (unsigned)(b / n));
+        }
+    }
+    LOG_SIMPLE("\r\n");
+}
+
+static int aidump_cmd(int argc, char* argv[])
+{
+    (void)argc; (void)argv;
+    const uint8_t *p = NULL;
+    uint32_t len = 0;
+    uint16_t w = 0, h = 0;
+    uint32_t seq = usbh_uvc_service_latest_frame(&p, &len, &w, &h);
+    if (seq == 0 || len == 0 || !p) {
+        LOG_SIMPLE("aidump: no uvc frame (streaming?)\r\n");
+        return -1;
+    }
+    if (len > 512u * 1024u) {
+        len = 512u * 1024u;
+    }
+    uint8_t *frame = buffer_malloc_aligned(len, 32);
+    nn_model_info_t mi = {0};
+    uint8_t *model_buf = NULL;
+    if (!frame) {
+        LOG_SIMPLE("aidump: frame alloc failed\r\n");
+        return -1;
+    }
+    memcpy(frame, p, len);
+
+    if (nn_get_model_info(&mi) != AICAM_OK || mi.input_width == 0 || mi.input_height == 0) {
+        LOG_SIMPLE("aidump: model info invalid\r\n");
+        buffer_free(frame);
+        return -1;
+    }
+    model_buf = buffer_malloc_aligned((size_t)mi.input_width * mi.input_height * 3u, 32);
+    if (!model_buf) {
+        LOG_SIMPLE("aidump: model buf alloc failed\r\n");
+        buffer_free(frame);
+        return -1;
+    }
+
+    uvc_jpeg_info_t info = {0};
+    uvc_jpeg_parse_header(frame, len, &info);
+    LOG_SIMPLE("aidump: frame %luB hdr %ux%u css=%d | model %ux%u\r\n",
+               (unsigned long)len, (unsigned)info.width, (unsigned)info.height,
+               (int)info.chroma_subsampling,
+               (unsigned)mi.input_width, (unsigned)mi.input_height);
+
+    aicam_result_t r = ai_uvc_frame_to_model_input(frame, len, model_buf,
+                                                   mi.input_width, mi.input_height);
+    if (r == AICAM_OK) {
+        aidump_grid(model_buf, mi.input_width, mi.input_height, "A:");
+    } else {
+        LOG_SIMPLE("aidump: A (live path) failed: %d\r\n", (int)r);
+    }
+
+    /* NOTE: the former "B" cross-check (ai_jpeg_decode on the same frame)
+     * was removed: its SET_DEC_PARAM/RETURN_DEC_BUFFER cycle tears down the
+     * raster the live path shares with jpegc and left the decoder in a
+     * sticky INVALID_DATA (-3) loop. Use gputest for GPU/software A/B. */
+
+    buffer_free(model_buf);
+    buffer_free(frame);
+    return 0;
+}
+
+/* GPU2D resize A/B: decode+convert one live UVC frame once, then time the
+ * NemaGFX bilinear blit against the software bilinear over N iterations.
+ * A synthetic COLORED identity blit runs first: packing/format/channel
+ * corruption hides on grayscale camera scenes (tile means barely move),
+ * so correctness needs content with independent R/G/B structure. */
+static int gputest_synth_identity(void)
+{
+    const uint32_t S = 256;
+    uint8_t *src = buffer_malloc_aligned(S * S * 3u, 32);
+    uint8_t *out = buffer_malloc_aligned(S * S * 3u, 32);
+    if (!src || !out) {
+        if (src) buffer_free(src);
+        if (out) buffer_free(out);
+        LOG_SIMPLE("gputest synth: alloc failed\r\n");
+        return -1;
+    }
+    for (uint32_t y = 0; y < S; y++) {
+        for (uint32_t x = 0; x < S; x++) {
+            uint8_t *px = src + (y * S + x) * 3u;
+            px[0] = (uint8_t)(x * 255u / (S - 1u));        /* R: horizontal */
+            px[1] = (uint8_t)(y * 255u / (S - 1u));        /* G: vertical */
+            px[2] = (uint8_t)((x + y) * 255u / (2u * S - 2u)); /* B: diag */
+        }
+    }
+
+    static const struct { const char *name; int src_rgba; int (*fn)(const uint8_t *, uint32_t, uint32_t,
+                                                      uint8_t *, uint32_t, uint32_t); } modes[] = {
+        { "rgba8888+packing", 0, gpu_resize_rgb888 },
+        { "rgb24-direct",     0, gpu_resize_rgb888_direct },
+        { "rgba-src-direct",  1, gpu_resize_rgba8888_to_rgb888 },
+        { "ref-combo-packed", 1, gpu_resize_rgba8888_packed },
+    };
+    uint8_t *src4 = buffer_malloc_aligned(S * S * 4u, 32);
+    if (!src4) {
+        buffer_free(src); buffer_free(out);
+        LOG_SIMPLE("gputest synth: alloc4 failed\r\n");
+        return -1;
+    }
+    for (uint32_t i = 0; i < S * S; i++) {
+        src4[i * 4u + 0u] = src[i * 3u + 0u];
+        src4[i * 4u + 1u] = src[i * 3u + 1u];
+        src4[i * 4u + 2u] = src[i * 3u + 2u];
+        src4[i * 4u + 3u] = 0xFFu;
+    }
+    int good = -1;
+    for (int m = 0; m < 4; m++) {
+        memset(out, 0xA5, S * S * 3u);
+        /* push the sentinel pattern to memory: after the blit, remaining
+         * 0xA5 bytes mean the GPU never wrote that region */
+        SCB_CleanDCache_by_Addr((void *)out, (int32_t)(S * S * 3u));
+        const uint8_t *s = modes[m].src_rgba ? src4 : src;
+        int ret = modes[m].fn(s, S, S, out, S, S);
+        if (ret != 0) {
+            LOG_SIMPLE("gputest synth[%s]: blit failed (%d)\r\n", modes[m].name, ret);
+            continue;
+        }
+        uint32_t unwritten = 0;
+        for (uint32_t i = 0; i < S * S * 3u; i++) {
+            if (out[i] == 0xA5u) unwritten++;
+        }
+        LOG_SIMPLE("gputest synth[%s]: sentinel-left=%lu/%lu\r\n", modes[m].name,
+                   (unsigned long)unwritten, (unsigned long)(S * S * 3u));
+        uint32_t acc = 0, mx = 0, bad = 0;
+        for (uint32_t i = 0; i < S * S * 3u; i++) {
+            uint32_t d = out[i] > src[i] ? out[i] - src[i] : src[i] - out[i];
+            acc += d;
+            if (d > mx) mx = d;
+            if (d > 2) bad++;
+        }
+        LOG_SIMPLE("gputest synth[%s]: diff mean=%lu.%02lu max=%lu bytes>2=%lu/%lu\r\n",
+                   modes[m].name,
+                   (unsigned long)(acc / (S * S * 3u)),
+                   (unsigned long)((acc % (S * S * 3u)) * 100u / (S * S * 3u)),
+                   (unsigned long)mx, (unsigned long)bad,
+                   (unsigned long)(S * S * 3u));
+        /* first pixels: expected R,G,B = (0,y,y/2), got bytes expose any
+         * channel permutation / byte shift directly */
+        LOG_SIMPLE("  src[0..11]: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\r\n"
+                   "  out[0..11]: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+                   src[0],src[1],src[2],src[3],src[4],src[5],src[6],src[7],src[8],src[9],src[10],src[11],
+                   out[0],out[1],out[2],out[3],out[4],out[5],out[6],out[7],out[8],out[9],out[10],out[11]);
+        if (mx <= 2u && good < 0) {
+            good = m;
+        }
+    }
+    buffer_free(src);
+    buffer_free(src4);
+    buffer_free(out);
+    return good;
+}
+
+/* Deliberately decode a TRUNCATED MJPEG frame (no EOI) - suspected root
+ * cause of the silent jpegc stall (core consumes all input, never
+ * completes, no error callback). Then decode the full frame to prove the
+ * watchdog recovery path restored the codec. */
+static int jpegfuzz_cmd(int argc, char* argv[])
+{
+    (void)argc; (void)argv;
+    const uint8_t *p = NULL;
+    uint32_t len = 0;
+    uint16_t w = 0, h = 0;
+
+    if (usbh_uvc_service_latest_frame(&p, &len, &w, &h) == 0 || len < 2048) {
+        LOG_SIMPLE("jpegfuzz: no uvc frame\r\n");
+        return -1;
+    }
+    uint8_t *frame = buffer_malloc_aligned(len, 32);
+    if (!frame) {
+        return -1;
+    }
+    memcpy(frame, p, len);
+
+    uint8_t *ycbcr = NULL;
+    uint32_t ylen = 0;
+    uvc_jpeg_info_t info = {0};
+
+    if (uvc_jpeg_raster_trylock(5000) != 0) {
+        LOG_SIMPLE("jpegfuzz: raster lock timeout\r\n");
+        buffer_free(frame);
+        return -1;
+    }
+
+    uint32_t t0 = osKernelGetTickCount();
+    int r1 = uvc_jpeg_decode_ycbcr(frame, len / 2u, &ycbcr, &ylen, &info);
+    uint32_t t1 = osKernelGetTickCount();
+    LOG_SIMPLE("jpegfuzz: truncated %lu/%luB -> %d (%lu ticks)\r\n",
+               (unsigned long)(len / 2u), (unsigned long)len, r1,
+               (unsigned long)(t1 - t0));
+
+    int r2 = uvc_jpeg_decode_ycbcr(frame, len, &ycbcr, &ylen, &info);
+    uint32_t t2 = osKernelGetTickCount();
+    LOG_SIMPLE("jpegfuzz: full -> %d (%lu ticks) %s\r\n",
+               r2, (unsigned long)(t2 - t1),
+               (r2 == 0) ? "RECOVERED" : "STILL BROKEN");
+
+    uvc_jpeg_raster_unlock();
+    buffer_free(frame);
+    return (r2 == 0) ? 0 : -1;
+}
+
+/* Isolate the capture-encode stall: encode a SYNTHETIC RGB565 1920x1080
+ * gradient with each chroma subsampling, no camera/capture involved.
+ * usage: enctest [css]   (css: 0=444 1=420 2=422; default tests 422+444) */
+static int enctest_cmd(int argc, char* argv[])
+{
+    const uint32_t W = 1920, H = 1080;
+    uint32_t css = (argc > 1) ? (uint32_t)atoi(argv[1]) : 0xFF;
+
+    uint16_t *rgb565 = buffer_malloc_aligned(W * H * 2u, 32);
+    uint8_t *jpg = NULL;
+    uint32_t jpg_len = 0;
+    if (!rgb565) {
+        LOG_SIMPLE("enctest: alloc failed\r\n");
+        return -1;
+    }
+    for (uint32_t y = 0; y < H; y++) {
+        for (uint32_t x = 0; x < W; x++) {
+            rgb565[y * W + x] = (uint16_t)(((x * 31u) / W) | (((y * 63u) / H) << 5) |
+                                           ((((x + y) * 31u) / (W + H)) << 11));
+        }
+    }
+
+    static const uint32_t try_css[] = { JPEG_422_SUBSAMPLING, JPEG_444_SUBSAMPLING };
+    for (uint32_t t = 0; t < 2u; t++) {
+        uint32_t use = try_css[t];
+        if (css != 0xFF && css != use) {
+            continue;
+        }
+
+        /* capture-flow sequence: decode one live UVC frame FIRST (the
+         * overlay step always runs before the re-encode), convert to
+         * RGB565, DRAW a fake detection (the stall only happens when AI
+         * results are drawn), then encode. The plain cold encode passes;
+         * this mirrors the real generate-inference-image path. */
+        uint16_t *draw_fb = NULL;
+        {
+            const uint8_t *fp = NULL;
+            uint32_t flen = 0;
+            uint16_t fw = 0, fh = 0;
+            (void)usbh_uvc_service_latest_frame(&fp, &flen, &fw, &fh);
+            if (fp != NULL && flen > 0 && flen <= 512u * 1024u) {
+                uint8_t *fbuf = buffer_malloc_aligned(flen, 32);
+                if (fbuf != NULL) {
+                    uint8_t *yc = NULL;
+                    uint32_t yclen = 0;
+                    uvc_jpeg_info_t fi = {0};
+                    memcpy(fbuf, fp, flen);
+                    if (uvc_jpeg_raster_trylock(5000) == 0) {
+                        int dr = uvc_jpeg_decode_ycbcr(fbuf, flen, &yc, &yclen, &fi);
+                        uvc_jpeg_raster_unlock();
+                        if (dr == 0) {
+                            uint8_t *rgb = NULL;
+                            uint32_t rlen = 0;
+                            if (ai_color_convert(yc, fi.width, fi.height,
+                                                 DMA2D_INPUT_YCBCR, 0,
+                                                 fi.chroma_subsampling, &rgb, &rlen,
+                                                 DMA2D_OUTPUT_RGB565) == AICAM_OK && rgb) {
+                                draw_fb = (uint16_t *)rgb;
+                                /* fake person box, normalized top-left */
+                                static od_detect_t det = {
+                                    .x = 0.30f, .y = 0.20f, .width = 0.25f,
+                                    .height = 0.55f, .conf = 0.9f,
+                                    .class_name = "person",
+                                };
+                                static nn_result_t res;
+                                res.type = PP_TYPE_OD;
+                                res.is_valid = 1;
+                                res.od.nb_detect = 1;
+                                res.od.detects = &det;
+                                if (!ai_draw_is_initialized()) {
+                                    ai_draw_config_t dc2;
+                                    ai_draw_get_default_config(&dc2);
+                                    dc2.image_width = fi.width;
+                                    dc2.image_height = fi.height;
+                                    (void)ai_draw_service_init(&dc2);
+                                }
+                                if (ai_draw_is_initialized()) {
+                                    aicam_result_t drw = ai_draw_results(
+                                        (uint8_t *)draw_fb, fi.width, fi.height, &res);
+                                    LOG_SIMPLE("enctest: pre-decode+draw -> %d\r\n", drw);
+                                } else {
+                                    LOG_SIMPLE("enctest: draw init failed\r\n");
+                                }
+                            }
+                        } else {
+                            LOG_SIMPLE("enctest: pre-decode -> %d\r\n", dr);
+                        }
+                    }
+                    buffer_free(fbuf);
+                }
+            }
+        }
+
+        jpg = NULL;
+        const uint8_t *enc_src = (const uint8_t *)(draw_fb ? draw_fb : rgb565);
+        ai_jpeg_encode_config_t ec = {
+            .width = W, .height = H, .chroma_subsampling = use, .quality = 80,
+        };
+        uint32_t t0 = osKernelGetTickCount();
+        aicam_result_t r = ai_jpeg_encode(enc_src, W * H * 2u, &ec, &jpg, &jpg_len);
+        uint32_t dt = osKernelGetTickCount() - t0;
+        LOG_SIMPLE("enctest: css=%u src=%s -> %d (%luB, %lu ticks)%s\r\n",
+                   (unsigned)use, draw_fb ? "drawn" : "synth",
+                   (int)r, (unsigned long)jpg_len, (unsigned long)dt,
+                   (r == AICAM_OK) ? "" : "  <<<< STALL/FAIL");
+        if (draw_fb) {
+            buffer_free(draw_fb);
+            draw_fb = NULL;
+        }
+        if (jpg) {
+            ai_jpeg_free_buffer(jpg);
+            jpg = NULL;
+        }
+    }
+    buffer_free(rgb565);
+    return 0;
+}
+
+
+/* EXPERIMENT: verify the JPEG encoder accepts the decode raster (planar
+ * YCbCr) directly, skipping the RGB->YCbCr software conversion.
+ * decode -> RAW encode -> decode back -> compare Y-plane 8x8 tile means. */
+static int yuvtest_cmd(int argc, char* argv[])
+{
+    (void)argc; (void)argv;
+    const uint8_t *p = NULL;
+    uint32_t len = 0;
+    uint16_t w = 0, h = 0;
+    if (usbh_uvc_service_latest_frame(&p, &len, &w, &h) == 0 || len == 0) {
+        LOG_SIMPLE("yuvtest: no uvc frame\r\n");
+        return -1;
+    }
+    if (len > 512u * 1024u) len = 512u * 1024u;
+    uint8_t *frame = buffer_malloc_aligned(len, 32);
+    if (!frame) return -1;
+    memcpy(frame, p, len);
+
+    if (uvc_jpeg_raster_trylock(5000) != 0) {
+        LOG_SIMPLE("yuvtest: raster lock timeout\r\n");
+        buffer_free(frame);
+        return -1;
+    }
+
+    uint8_t *yc = NULL;
+    uint32_t ylen = 0;
+    uvc_jpeg_info_t info = {0};
+    if (uvc_jpeg_decode_ycbcr(frame, len, &yc, &ylen, &info) != 0 || !yc) {
+        LOG_SIMPLE("yuvtest: decode failed\r\n");
+        uvc_jpeg_raster_unlock();
+        buffer_free(frame);
+        return -1;
+    }
+    LOG_SIMPLE("yuvtest: decoded %ux%u css=%u raster=%luB\r\n",
+               (unsigned)info.width, (unsigned)info.height,
+               (unsigned)info.chroma_subsampling, (unsigned long)ylen);
+
+    /* snapshot Y-plane tile means of the source raster */
+    uint32_t W = info.width, H = info.height;
+    uint32_t src_grid[64];
+    for (uint32_t ty = 0; ty < 8; ty++)
+        for (uint32_t tx = 0; tx < 8; tx++) {
+            uint32_t acc = 0, n = 0;
+            for (uint32_t y = ty * H / 8; y < (ty + 1) * H / 8; y += 16)
+                for (uint32_t x = tx * W / 8; x < (tx + 1) * W / 8; x += 16) {
+                    acc += yc[y * W + x]; n++;
+                }
+            src_grid[ty * 8 + tx] = n ? acc / n : 0;
+        }
+
+    /* RAW encode from the planar raster */
+    jpegc_encode_set_raw_yuv(1);
+    uint8_t *jpg = NULL;
+    uint32_t jpg_len = 0;
+    ai_jpeg_encode_config_t ec = {
+        .width = W, .height = H,
+        .chroma_subsampling = info.chroma_subsampling, .quality = 80,
+    };
+    uint32_t t0 = osKernelGetTickCount();
+    aicam_result_t r = ai_jpeg_encode(yc, ylen, &ec, &jpg, &jpg_len);
+    uint32_t dt = osKernelGetTickCount() - t0;
+    jpegc_encode_set_raw_yuv(0);
+    if (r != AICAM_OK || !jpg) {
+        LOG_SIMPLE("yuvtest: RAW encode FAILED (%d) after %lu ticks\r\n", (int)r, (unsigned long)dt);
+        uvc_jpeg_raster_unlock();
+        buffer_free(frame);
+        if (jpg) ai_jpeg_free_buffer(jpg);
+        return -1;
+    }
+    LOG_SIMPLE("yuvtest: RAW encode OK %luB in %lu ticks\r\n",
+               (unsigned long)jpg_len, (unsigned long)dt);
+
+    /* decode the produced JPEG back and compare Y-plane tiles */
+    uint8_t *yc2 = NULL;
+    uint32_t ylen2 = 0;
+    uvc_jpeg_info_t info2 = {0};
+    int dr = uvc_jpeg_decode_ycbcr(jpg, jpg_len, &yc2, &ylen2, &info2);
+    uvc_jpeg_raster_unlock();
+    if (dr != 0 || !yc2) {
+        LOG_SIMPLE("yuvtest: roundtrip decode FAILED - layout likely wrong\r\n");
+        ai_jpeg_free_buffer(jpg);
+        buffer_free(frame);
+        return -1;
+    }
+    uint32_t acc = 0, mx = 0;
+    for (uint32_t ty = 0; ty < 8; ty++)
+        for (uint32_t tx = 0; tx < 8; tx++) {
+            uint32_t a = 0, n = 0;
+            for (uint32_t y = ty * H / 8; y < (ty + 1) * H / 8; y += 16)
+                for (uint32_t x = tx * W / 8; x < (tx + 1) * W / 8; x += 16) {
+                    a += yc2[y * W + x]; n++;
+                }
+            uint32_t m = n ? a / n : 0;
+            uint32_t d = m > src_grid[ty*8+tx] ? m - src_grid[ty*8+tx] : src_grid[ty*8+tx] - m;
+            acc += d;
+            if (d > mx) mx = d;
+        }
+    LOG_SIMPLE("yuvtest: roundtrip Y-tile diff mean=%lu max=%lu -> %s\r\n",
+               (unsigned long)(acc / 64), (unsigned long)mx,
+               (mx <= 12u) ? "PLANAR YCbCb ACCEPTED (pass-through viable)"
+                           : "LAYOUT MISMATCH (garbage) - needs MCU reorder");
+    /* chroma plane order check: compare roundtrip Cb against BOTH source
+     * planes - a match against Cr means the encoder swaps Cb/Cr (the AI
+     * image would render red/blue swapped) */
+    if (info.chroma_subsampling == JPEG_422_SUBSAMPLING) {
+        uint32_t cw = W / 2u;
+        const uint8_t *cb_src = yc + (size_t)W * H;
+        const uint8_t *cr_src = cb_src + (size_t)cw * H;
+        const uint8_t *cb_rt = yc2 + (size_t)W * H;
+        uint32_t d_same = 0, d_swap = 0, n = 0;
+        for (uint32_t y = 0; y < H; y += 32)
+            for (uint32_t x = 0; x < cw; x += 32) {
+                uint32_t i = (size_t)y * cw + x;
+                uint32_t a = cb_rt[i] > cb_src[i] ? cb_rt[i] - cb_src[i] : cb_src[i] - cb_rt[i];
+                uint32_t b = cb_rt[i] > cr_src[i] ? cb_rt[i] - cr_src[i] : cr_src[i] - cb_rt[i];
+                d_same += a; d_swap += b; n++;
+            }
+        LOG_SIMPLE("yuvtest: chroma Cb-vs-Cb mean=%lu, Cb-vs-Cr(swap) mean=%lu -> %s\r\n",
+                   (unsigned long)(d_same / n), (unsigned long)(d_swap / n),
+                   (d_swap / n + 8u < d_same / n) ? "CB/CR SWAPPED BY ENCODER"
+                                                  : "chroma order OK");
+    }
+    ai_jpeg_free_buffer(jpg);
+    buffer_free(frame);
+    return (mx <= 12u) ? 0 : -1;
+}
+
+static int gputest_cmd(int argc, char* argv[])
+{
+    (void)argc; (void)argv;
+    const uint8_t *p = NULL;
+    uint32_t len = 0;
+    uint16_t w = 0, h = 0;
+
+    LOG_SIMPLE("gputest: gpu available=%d\r\n", gpu_resize_is_available());
+    (void)gputest_synth_identity();
+
+    if (usbh_uvc_service_latest_frame(&p, &len, &w, &h) == 0 || len == 0) {
+        LOG_SIMPLE("gputest: no uvc frame\r\n");
+        return -1;
+    }
+    if (len > 512u * 1024u) {
+        len = 512u * 1024u;
+    }
+    uint8_t *frame = buffer_malloc_aligned(len, 32);
+    nn_model_info_t mi = {0};
+    uint8_t *rgb = NULL;
+    uint8_t *dst = NULL;
+    uint32_t rgb_len = 0;
+    if (!frame) {
+        return -1;
+    }
+    memcpy(frame, p, len);
+    if (nn_get_model_info(&mi) != AICAM_OK || mi.input_width == 0) {
+        LOG_SIMPLE("gputest: model info invalid\r\n");
+        buffer_free(frame);
+        return -1;
+    }
+
+    /* decode + convert once into a stable RGB888 source */
+    uint8_t *ycbcr = NULL;
+    uvc_jpeg_info_t info = {0};
+    if (uvc_jpeg_raster_trylock(5000) != 0) {
+        LOG_SIMPLE("gputest: raster lock timeout\r\n");
+        buffer_free(frame);
+        return -1;
+    }
+    int dec = uvc_jpeg_decode_ycbcr(frame, len, &ycbcr, &rgb_len, &info);
+    if (dec != 0) {
+        LOG_SIMPLE("gputest: decode failed (%d)\r\n", dec);
+    } else {
+        aicam_result_t cc = ai_color_convert(ycbcr, info.width, info.height,
+                                             DMA2D_INPUT_YCBCR, 1,
+                                             info.chroma_subsampling, &rgb,
+                                             &rgb_len, DMA2D_OUTPUT_ARGB8888);
+        if (cc != AICAM_OK) {
+            LOG_SIMPLE("gputest: convert failed (%d)\r\n", (int)cc);
+        }
+    }
+    uvc_jpeg_raster_unlock();
+    if (dec != 0 || rgb == NULL) {
+        buffer_free(frame);
+        return -1;
+    }
+    dst = buffer_malloc_aligned((size_t)mi.input_width * mi.input_height * 3u, 32);
+    if (!dst) {
+        buffer_free(rgb); buffer_free(frame);
+        return -1;
+    }
+
+    const int N = 20;
+    uint32_t t0, t_gpu = 0, t_sw = 0;
+    int gpu_ok = 0;
+
+    for (int i = 0; i < N; i++) {
+        t0 = osKernelGetTickCount();
+        if (gpu_resize_rgba8888_packed(rgb, info.width, info.height, dst,
+                                       mi.input_width, mi.input_height) == 0) {
+            gpu_ok++;
+        }
+        t_gpu += osKernelGetTickCount() - t0;
+    }
+    for (int i = 0; i < N; i++) {
+        t0 = osKernelGetTickCount();
+        (void)image_resize(rgb, info.width, info.height, DMA2D_INPUT_ARGB8888,
+                           dst, mi.input_width, mi.input_height, DMA2D_INPUT_RGB888);
+        t_sw += osKernelGetTickCount() - t0;
+    }
+
+    LOG_SIMPLE("gputest: %ux%u -> %ux%u x%d: gpu=%lums (ok %d/%d) sw=%lums\r\n",
+               (unsigned)info.width, (unsigned)info.height,
+               (unsigned)mi.input_width, (unsigned)mi.input_height,
+               N, (unsigned long)t_gpu, gpu_ok, N, (unsigned long)t_sw);
+
+    /* correctness A/B on the SAME source: GPU render vs software render,
+     * compared as 8x8 tile-mean grids (immune to scene motion). */
+    if (gpu_ok > 0) {
+        uint8_t *sw = buffer_malloc_aligned((size_t)mi.input_width * mi.input_height * 3u, 32);
+        if (sw &&
+            gpu_resize_rgba8888_packed(rgb, info.width, info.height, dst,
+                                       mi.input_width, mi.input_height) == 0 &&
+            image_resize(rgb, info.width, info.height, DMA2D_INPUT_ARGB8888,
+                         sw, mi.input_width, mi.input_height,
+                         DMA2D_INPUT_RGB888) == AICAM_OK) {
+            uint32_t acc = 0, mx = 0;
+            size_t bytes = (size_t)mi.input_width * mi.input_height * 3u;
+            for (size_t i = 0; i < bytes; i++) {
+                uint32_t d = dst[i] > sw[i] ? dst[i] - sw[i] : sw[i] - dst[i];
+                acc += d;
+                if (d > mx) {
+                    mx = d;
+                }
+            }
+            LOG_SIMPLE("gputest: gpu-vs-sw pixels: mean=%lu.%02lu max=%lu\r\n",
+                       (unsigned long)(acc / bytes),
+                       (unsigned long)((acc % bytes) * 100u / bytes),
+                       (unsigned long)mx);
+        }
+        if (sw) {
+            buffer_free(sw);
+        }
+    }
+
+    buffer_free(dst);
+    buffer_free(rgb);
+    buffer_free(frame);
+    return 0;
+}
+
+
+static int mem_cmd(int argc, char* argv[])
 {
     if (argc < 4) {
         LOG_SIMPLE("Usage: mem r <address> <length>\r\n");
@@ -1332,6 +1971,13 @@ debug_cmd_reg_t file_cmd_table[] = {
     {"sdfile", "Switch to sd filesystem", sdfile_cmd},
     {"flashfile", "Switch to flash filesystem", flashfile_cmd},
     {"mem", "Memory read/write. r addr len | w addr value", mem_cmd},
+    {"captest", "Trigger a full capture+upload cycle (AI on)", captest_cmd},
+    {"configmode", "Clear u0 wake events and reboot into full/config mode", configmode_cmd},
+    {"aidump", "Dump AI model-input render grids for the current UVC frame", aidump_cmd},
+    {"gputest", "Time GPU2D vs software resize on the current UVC frame", gputest_cmd},
+    {"jpegfuzz", "Decode a truncated MJPEG frame to exercise the stall recovery", jpegfuzz_cmd},
+    {"enctest", "Encode a synthetic RGB565 1080P frame per subsampling (422/444)", enctest_cmd},
+    {"yuvtest", "EXPERIMENT: raw planar-YCbCr encode pass-through verification", yuvtest_cmd},
     {"fget", "NVS get. fget [key]", fget_cmd},
     {"fset", "NVS set/delete. fset <key> [value]", fset_cmd},
     {"standby", "standby mode", standby_cmd},

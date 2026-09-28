@@ -17,6 +17,7 @@
 #include "api_mqtt_module.h"
 #include "api_network_module.h"
 #include "api_device_module.h"
+#include "api_camera_module.h"
 #include "api_ota_module.h"
 #include "api_rtmp_module.h"
 #include "api_rtsp_module.h"
@@ -87,6 +88,7 @@ aicam_result_t web_service_init(void *config)
     web_api_register_mqtt_module();
     web_api_register_network_module();
     web_api_register_device_module();
+    web_api_register_camera_module();
     web_api_register_ota_module();
     web_api_register_rtmp_module();
     web_api_register_rtsp_module();

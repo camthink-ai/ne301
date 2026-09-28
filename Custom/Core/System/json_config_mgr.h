@@ -574,6 +574,30 @@ typedef struct {
     isp_config_t isp_config;
 } device_service_config_t;
 
+/* ==================== Camera Source Configuration ==================== */
+
+/** Image source selection. Reboot-apply: services read this once at init. */
+typedef enum {
+    CAMERA_SOURCE_NATIVE = 0,               /* DCMIPP sensor (OS04C10) */
+    CAMERA_SOURCE_UVC    = 1,               /* USB UVC camera, MJPEG payload only */
+} camera_source_t;
+
+/** Native camera stream resolution. Affects preview/encode/draw only; the AI
+ *  pipe resolution follows the loaded model (unchanged by this setting). */
+#define CAMERA_NATIVE_RES_720P   0u
+#define CAMERA_NATIVE_RES_1080P  1u
+
+typedef struct {
+    camera_source_t source;                 /* selected image source */
+    uint32_t native_stream_res;             /* CAMERA_NATIVE_RES_720P/_1080P */
+    /* UVC MJPEG stream selection. 0/0 = auto (highest resolution the camera
+     * offers). Persisted as concrete w/h/fps rather than a format index so a
+     * different camera still matches by resolution (falls back to auto). */
+    uint32_t uvc_stream_width;
+    uint32_t uvc_stream_height;
+    uint32_t uvc_stream_fps;                /* 0 = ignore fps when matching */
+} camera_source_config_t;
+
 typedef struct {
     uint32_t session_timeout_ms;                       // Session timeout in milliseconds
     aicam_bool_t enable_session_timeout;               // Enable session timeout
@@ -699,6 +723,7 @@ typedef struct {
     power_mode_config_t power_mode_config; // Power mode configuration
     device_info_config_t device_info;
     device_service_config_t device_service;
+    camera_source_config_t camera_config;          /* image source + per-source stream settings */
     network_service_config_t network_service;
     mqtt_service_config_t mqtt_service;
     auth_mgr_config_t auth_mgr;
@@ -1043,6 +1068,20 @@ aicam_result_t json_config_get_device_service_image_config(image_config_t *image
  * @return aicam_result_t Operation result
  */
 aicam_result_t json_config_set_device_service_image_config(const image_config_t *image_config);
+
+/**
+ * @brief Get camera source configuration
+ * @param camera_config Camera source configuration structure pointer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_get_camera_config(camera_source_config_t *camera_config);
+
+/**
+ * @brief Set camera source configuration (applies after reboot)
+ * @param camera_config Camera source configuration structure pointer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_set_camera_config(const camera_source_config_t *camera_config);
 
 /**
  * @brief Get device service light configuration

@@ -675,6 +675,39 @@ aicam_result_t json_config_save_device_service_image_config_to_nvs(const image_c
     return result;
 }
 
+// save camera source configuration to NVS
+aicam_result_t json_config_save_camera_source_config_to_nvs(const camera_source_config_t *config)
+{
+    if (!config)
+    {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    aicam_result_t result = AICAM_OK;
+
+    result = json_config_nvs_write_uint32(NVS_KEY_CAMERA_SOURCE, (uint32_t)config->source);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to save camera source to NVS");
+
+    result = json_config_nvs_write_uint32(NVS_KEY_CAMERA_NATIVE_RES, config->native_stream_res);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to save camera native resolution to NVS");
+
+    result = json_config_nvs_write_uint32(NVS_KEY_CAMERA_UVC_W, config->uvc_stream_width);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to save camera UVC width to NVS");
+
+    result = json_config_nvs_write_uint32(NVS_KEY_CAMERA_UVC_H, config->uvc_stream_height);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to save camera UVC height to NVS");
+
+    result = json_config_nvs_write_uint32(NVS_KEY_CAMERA_UVC_FPS, config->uvc_stream_fps);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to save camera UVC fps to NVS");
+
+    LOG_CORE_INFO("Camera source configuration saved to NVS successfully");
+    return result;
+}
+
 // save device service light configuration to NVS
 aicam_result_t json_config_save_device_service_light_config_to_nvs(const light_config_t *config)
 {
@@ -1570,6 +1603,11 @@ aicam_result_t json_config_save_to_nvs(const aicam_global_config_t *config)
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save image configuration to NVS");
 
+    // Save camera source configuration
+    result = json_config_save_camera_source_config_to_nvs(&config->camera_config);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to save camera source configuration to NVS");
+
     /* Custom ISP IQ block (isp_valid, lux blob, etc.). Required on factory reset so old NVS tuning
      * does not survive after defaults (device_service.isp_config is zeroed in default_config). */
     result = json_config_save_isp_config_to_nvs(&config->device_service.isp_config);
@@ -1931,6 +1969,37 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
         config->device_service.image_config.capture_storage_ai = temp_bool;
     else
         json_config_nvs_write_bool(NVS_KEY_CAPTURE_STORAGE_AI, config->device_service.image_config.capture_storage_ai);
+
+    // Load camera source configuration
+    result = json_config_nvs_read_uint32(NVS_KEY_CAMERA_SOURCE, &temp_uint32);
+    if (result == AICAM_OK && temp_uint32 <= (uint32_t)CAMERA_SOURCE_UVC)
+        config->camera_config.source = (camera_source_t)temp_uint32;
+    else
+        json_config_nvs_write_uint32(NVS_KEY_CAMERA_SOURCE, (uint32_t)config->camera_config.source);
+
+    result = json_config_nvs_read_uint32(NVS_KEY_CAMERA_NATIVE_RES, &temp_uint32);
+    if (result == AICAM_OK && temp_uint32 <= CAMERA_NATIVE_RES_1080P)
+        config->camera_config.native_stream_res = temp_uint32;
+    else
+        json_config_nvs_write_uint32(NVS_KEY_CAMERA_NATIVE_RES, config->camera_config.native_stream_res);
+
+    result = json_config_nvs_read_uint32(NVS_KEY_CAMERA_UVC_W, &temp_uint32);
+    if (result == AICAM_OK && temp_uint32 <= 7680u)
+        config->camera_config.uvc_stream_width = temp_uint32;
+    else
+        json_config_nvs_write_uint32(NVS_KEY_CAMERA_UVC_W, config->camera_config.uvc_stream_width);
+
+    result = json_config_nvs_read_uint32(NVS_KEY_CAMERA_UVC_H, &temp_uint32);
+    if (result == AICAM_OK && temp_uint32 <= 4320u)
+        config->camera_config.uvc_stream_height = temp_uint32;
+    else
+        json_config_nvs_write_uint32(NVS_KEY_CAMERA_UVC_H, config->camera_config.uvc_stream_height);
+
+    result = json_config_nvs_read_uint32(NVS_KEY_CAMERA_UVC_FPS, &temp_uint32);
+    if (result == AICAM_OK && temp_uint32 <= 120u)
+        config->camera_config.uvc_stream_fps = temp_uint32;
+    else
+        json_config_nvs_write_uint32(NVS_KEY_CAMERA_UVC_FPS, config->camera_config.uvc_stream_fps);
 
     // Load device service configuration - light config
     result = json_config_nvs_read_bool(NVS_KEY_LIGHT_CONNECTED, &temp_bool);

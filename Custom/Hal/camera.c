@@ -39,11 +39,17 @@ typedef enum {
     CAMERA_BUFF_FREE,
 } BUFF_STATE_E;
 
+/* Keep in sync with CMW_Sensor_Name_t (cmw_camera.h) order. */
 static const char *sensor_names[] = {
     "CMW_UNKNOWN",
     "CMW_VD66GY",
+    "CMW_VD56G3",
     "CMW_IMX335",
+    "CMW_OV5640",
     "CMW_VD55G1",
+    "CMW_VD65G4",
+    "CMW_VD1943",
+    "CMW_VD5943",
     "CMW_OS04C10",
 };
 
@@ -1703,11 +1709,35 @@ static void camera_cmd_register(void)
     debug_cmdline_register(camera_cmd_table, sizeof(camera_cmd_table) / sizeof(camera_cmd_table[0]));
 }
 
+/* Sensor identity for the camera-detect API. Requires the device to be
+ * initialized (camera_register/device_init done). 0 ok, -1 not ready. */
+int camera_get_sensor_name(char *name, size_t name_len)
+{
+    CMW_Sensor_Name_t sensor;
+
+    if (name == NULL || name_len == 0) {
+        return -1;
+    }
+    name[0] = '\0';
+    if (g_camera.is_init != true) {
+        return -1;
+    }
+    if (CMW_CAMERA_GetSensorName(&sensor) != CMW_ERROR_NONE) {
+        return -1;
+    }
+    if ((int)sensor >= 0 && (size_t)sensor < sizeof(sensor_names) / sizeof(sensor_names[0])) {
+        snprintf(name, name_len, "%s", sensor_names[sensor]);
+    } else {
+        snprintf(name, name_len, "CMW_0x%x", (unsigned)sensor);
+    }
+    return 0;
+}
+
 int camera_register(void)
 {
     static dev_ops_t camera_ops ={
-        .init = camera_init, 
-        .deinit = camera_deinit, 
+        .init = camera_init,
+        .deinit = camera_deinit,
         .start = camera_start,
         .stop = camera_stop,
         .ioctl = camera_ioctl

@@ -15,6 +15,12 @@
 #include "common_utils.h"
 #include "pwr.h"
 #include "drtc.h"
+#include "usb_cherry.h"
+#include "usbh_uvc_test.h"
+#include "usbh_uvc_jpeg.h"
+#include "ai_service.h"
+#include "buffer_mgr.h"
+#include "image_utils.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -155,6 +161,234 @@ static void qs_stop_camera_pipes(aicam_bool_t need_ai)
     camera_deinit_but_not_unregister();
 }
 
+/* ==================== UVC (MJPEG) wake capture ==================== */
+
+/* The camera delivers final JPEGs; the frame captured here doubles as the
+ * main JPEG handed to the wait APIs (recognized by
+ * device_service_camera_free_jpeg_buffer via quick_snapshot_uvc_cap_buf). */
+static uint8_t qs_uvc_cap_buf[512 * 1024] ALIGN_32 IN_PSRAM;
+
+const uint8_t *quick_snapshot_uvc_cap_buf(void)
+{
+    return qs_uvc_cap_buf;
+}
+
+/* open the configured MJPEG resolution (NVS cam_uvc_w/h, else the largest
+ * the camera offers). 0 ok. */
+static int qs_uvc_open(uint16_t *w, uint16_t *h)
+{
+    struct usbh_uvc_stream_cfg cfg[16];
+    int n = usbh_uvc_test_enumerate(cfg, 16);
+    if (n <= 0) {
+        return -1;
+    }
+
+    uint32_t cw = 0, chh = 0;
+    quick_storage_get_uvc_resolution(&cw, &chh);
+    if (cw != 0 && chh != 0) {
+        for (int i = 0; i < n; i++) {
+            if (cfg[i].width == (uint16_t)cw && cfg[i].height == (uint16_t)chh) {
+                *w = cfg[i].width;
+                *h = cfg[i].height;
+                goto resolved;
+            }
+        }
+        QT_TRACE("[QS] ", "uvc cfg %lux%lu absent, using largest", (unsigned long)cw, (unsigned long)chh);
+    }
+
+    int best = 0;
+    for (int i = 1; i < n; i++) {
+        if ((uint32_t)cfg[i].width * cfg[i].height > (uint32_t)cfg[best].width * cfg[best].height) {
+            best = i;
+        }
+    }
+    *w = cfg[best].width;
+    *h = cfg[best].height;
+
+resolved:
+    /* the uvc service may already run this exact session (full boot racing
+     * the wake capture): reuse it instead of issuing a second open whose
+     * re-commit can wedge cameras that just started delivering */
+    {
+        struct usbh_uvc_state st;
+        usbh_uvc_test_get_state(&st);
+        if (st.streaming && st.width == *w && st.height == *h) {
+            return 0;
+        }
+    }
+    return usbh_uvc_test_open(*w, *h, 0xff);
+}
+
+/* wait for the (skip+1)-th published intact frame and copy it out */
+static int qs_uvc_wait_frame(uint8_t *dst, uint32_t cap, uint32_t skip,
+                             uint32_t timeout_ms, uint32_t *out_len)
+{
+    const uint8_t *p;
+    uint32_t len;
+    uint16_t w, h;
+    uint32_t target = usbh_uvc_preview_get(&p, &len, &w, &h) + skip + 1;
+    uint32_t t0 = osKernelGetTickCount();
+
+    for (;;) {
+        uint32_t seq = usbh_uvc_preview_get(&p, &len, &w, &h);
+        if (seq >= target && len > 0) {
+            if (len > cap) {
+                return -2;
+            }
+            memcpy(dst, p, len);
+            *out_len = len;
+            return 0;
+        }
+        if ((osKernelGetTickCount() - t0) >= timeout_ms) {
+            return -1;
+        }
+        osDelay(10);
+    }
+}
+
+static void qs_snapshot_uvc(void)
+{
+    qt_prof_t prof;
+    uint32_t len = 0;
+    uint16_t w = 0, h = 0;
+
+    qt_prof_init(&prof);
+    QT_TRACE("[QS] ", "uvc snap start");
+
+    (void)osEventFlagsSet(s_evt, QS_FLAG_CFG_READY);
+
+    const aicam_bool_t need_ai = (s_cfg.ai_enabled != 0);
+
+    /* model info first when NVS didn't pin the AI pipe size */
+    nn_model_info_t *model_info_opt = NULL;
+    if (need_ai && (s_cfg.ai_pipe_width == 0 || s_cfg.ai_pipe_height == 0)) {
+        uint32_t flags = osEventFlagsWait(s_evt, QS_FLAG_AI_INFO_READY | QS_FLAG_ERROR_ABORT,
+                                          osFlagsWaitAny | osFlagsNoClear, osWaitForever);
+        if (flags & QS_FLAG_ERROR_ABORT) {
+            osThreadExit();
+            return;
+        }
+        model_info_opt = &s_model_info;
+    }
+
+    if (!s_light_dev) {
+        s_light_dev = device_find_pattern(FLASH_DEVICE_NAME, DEV_TYPE_MISC);
+    }
+    if (!s_jpeg_dev) {
+        s_jpeg_dev = device_find_pattern(JPEG_DEVICE_NAME, DEV_TYPE_VIDEO);
+    }
+
+    /* light: same schedule/policy as the native wake path */
+    aicam_bool_t light_on = AICAM_FALSE;
+    if (s_light_dev && s_cfg.light_mode != QS_LIGHT_MODE_OFF) {
+        if (s_cfg.light_mode == QS_LIGHT_MODE_ON) light_on = AICAM_TRUE;
+        else if (s_cfg.light_mode == QS_LIGHT_MODE_AUTO) light_on = AICAM_TRUE;
+        else if (s_cfg.light_mode == QS_LIGHT_MODE_CUSTOM) {
+            uint64_t ts = rtc_get_local_timestamp();
+            uint32_t now_s = (uint32_t)(ts % 86400);
+            if (s_cfg.light_start_time < s_cfg.light_end_time) {
+                light_on = (now_s >= s_cfg.light_start_time && now_s <= s_cfg.light_end_time);
+            } else {
+                light_on = (now_s >= s_cfg.light_start_time || now_s <= s_cfg.light_end_time);
+            }
+        }
+        if (light_on) {
+            qs_light_set(AICAM_TRUE, s_cfg.light_brightness);
+        }
+    }
+    qt_prof_step(&prof, "[QS] uvc:light ");
+
+    /* power the host, wait for enumeration, open + start the stream.
+     * Generous windows: cold-start enumeration from a wake is slow and
+     * varies with log level; failures print unconditionally (QT_TRACE is
+     * level-gated) so warn-level captures stay diagnosable. */
+    if (!usb_cherry_host_is_inited()) {
+        (void)usb_cherry_host_init(NULL);
+    }
+    uint32_t waited = 0;
+    while (!usbh_uvc_test_dev_ready() && waited < 10000) {
+        osDelay(100);
+        waited += 100;
+    }
+    printf("[QS] uvc: dev %s after %lums\r\n",
+           usbh_uvc_test_dev_ready() ? "ready" : "missing", (unsigned long)waited);
+    if (!usbh_uvc_test_dev_ready()) {
+        (void)osEventFlagsSet(s_evt, QS_FLAG_ERROR_ABORT);
+        if (light_on) qs_light_set(AICAM_FALSE, 0);
+        osThreadExit();
+        return;
+    }
+
+    int open_ret = qs_uvc_open(&w, &h);
+    if (open_ret == 0) {
+        open_ret = usbh_uvc_test_start();
+    }
+    if (open_ret != 0) {
+        printf("[QS] uvc: open/start fail %d, one retry\r\n", open_ret);
+        osDelay(500);
+        open_ret = qs_uvc_open(&w, &h);
+        if (open_ret == 0) {
+            open_ret = usbh_uvc_test_start();
+        }
+    }
+    if (open_ret != 0) {
+        printf("[QS] uvc: open/start failed %d\r\n", open_ret);
+        (void)usbh_uvc_test_close();
+        (void)osEventFlagsSet(s_evt, QS_FLAG_ERROR_ABORT);
+        if (light_on) qs_light_set(AICAM_FALSE, 0);
+        osThreadExit();
+        return;
+    }
+    qt_prof_step(&prof, "[QS] uvc:start ");
+
+    /* skip frames for AE settle, then take one */
+    uint32_t skip = (s_cfg.fast_capture_skip_frames > 20u) ? 20u : s_cfg.fast_capture_skip_frames;
+    int cap = qs_uvc_wait_frame(qs_uvc_cap_buf, sizeof(qs_uvc_cap_buf), skip, 5000, &len);
+    printf("[QS] uvc: capture %ux%u -> %d (%luB)\r\n",
+           (unsigned)w, (unsigned)h, cap, (unsigned long)len);
+    if (cap != 0) {
+        QT_TRACE("[QS] ", "uvc: capture fail %d", cap);
+        (void)usbh_uvc_test_stop();
+        (void)usbh_uvc_test_close();
+        (void)osEventFlagsSet(s_evt, QS_FLAG_ERROR_ABORT);
+        if (light_on) qs_light_set(AICAM_FALSE, 0);
+        osThreadExit();
+        return;
+    }
+
+    if (light_on) {
+        qs_light_set(AICAM_FALSE, 0);
+    }
+
+    /* stop the session: the full boot (uvc service) re-opens it later, and
+     * a capture-only wake goes back to sleep right after the upload. */
+    (void)usbh_uvc_test_stop();
+    (void)usbh_uvc_test_close();
+    qt_prof_step(&prof, "[QS] uvc:stop ");
+
+    s_main_fb = qs_uvc_cap_buf;
+    s_main_fb_size = (size_t)len;
+    s_frame_id = 0;
+    (void)osEventFlagsSet(s_evt, QS_FLAG_FRAME_READY);
+
+    /* AI input comes from this JPEG (the AI thread decodes it) */
+    if (need_ai) {
+        (void)osEventFlagsSet(s_evt, QS_FLAG_AI_FRAME_READY);
+    }
+
+    /* the camera JPEG is the capture result: no encode step */
+    s_jpeg_data = qs_uvc_cap_buf;
+    s_jpeg_size = (size_t)len;
+    (void)osEventFlagsSet(s_evt, QS_FLAG_JPEG_READY);
+    QT_TRACE("[QS] ", "uvc: jpeg %luB", (unsigned long)s_jpeg_size);
+    qt_prof_step(&prof, "[QS] uvc:done  ");
+    printf("SNAP(uvc): %lu ms, %lux%lu %luB\r\n",
+           (unsigned long)HAL_GetTick(), (unsigned long)w, (unsigned long)h,
+           (unsigned long)len);
+    (void)model_info_opt;
+    osThreadExit();
+}
+
 static int qs_prepare_camera_and_jpeg(const qs_snapshot_config_t *cfg, const nn_model_info_t *model_info_opt)
 {
     if (!cfg) return AICAM_ERROR_INVALID_PARAM;
@@ -275,6 +509,12 @@ static void qs_snapshot_thread(void *argument)
     (void)osEventFlagsSet(s_evt, QS_FLAG_CFG_READY);
     QT_TRACE("[QS] ", "cfg ai=%u store_ai=%u", (unsigned)s_cfg.ai_enabled, (unsigned)s_cfg.capture_storage_ai);
     qt_prof_step(&prof, "[QS] snap:cfg ");
+
+    /* UVC image source: separate capture flow (USB bring-up + MJPEG). */
+    if (quick_storage_get_camera_source() == 1u) {
+        qs_snapshot_uvc();
+        return;
+    }
 
     /* find devices */
     if (!s_cam_dev) {
@@ -511,6 +751,32 @@ static void qs_ai_thread(void *argument)
         }
         s_ai_fb = NULL;
         s_ai_fb_size = 0;
+    } else if (quick_storage_get_camera_source() == 1u && s_main_fb && s_main_fb_size > 0) {
+        /* UVC: the "inference frame" is the captured MJPEG; decode -> RGB888
+         * -> resize into the model input, then infer. */
+        uint32_t mw = s_model_info.input_width ? s_model_info.input_width : s_cfg.ai_pipe_width;
+        uint32_t mh = s_model_info.input_height ? s_model_info.input_height : s_cfg.ai_pipe_height;
+
+        memset(&s_ai_result, 0, sizeof(s_ai_result));
+        (void)nn_set_confidence_threshold((float)s_cfg.confidence_threshold / 100.0f);
+        (void)nn_set_nms_threshold((float)s_cfg.nms_threshold / 100.0f);
+
+        if (mw > 0 && mh > 0) {
+            uint8_t *mbuf = buffer_malloc_aligned((size_t)mw * mh * 3u, 32);
+            if (mbuf != NULL) {
+                if (ai_uvc_frame_to_model_input(s_main_fb, (uint32_t)s_main_fb_size,
+                                                mbuf, mw, mh) == AICAM_OK) {
+                    uint32_t start = osKernelGetTickCount();
+                    (void)nn_inference_frame(mbuf, mw * mh * 3u, &s_ai_result);
+                    s_ai_inference_time_ms = osKernelGetTickCount() - start;
+                    QT_TRACE("[QS] ", "uvc infer %lums valid=%u",
+                             (unsigned long)s_ai_inference_time_ms,
+                             (unsigned)s_ai_result.is_valid);
+                    qt_prof_step(&prof, "[QS] ai:infer ");
+                }
+                buffer_free(mbuf);
+            }
+        }
     }
 
     /* release NPU/model resources */
@@ -526,6 +792,15 @@ static void qs_ai_thread(void *argument)
      * (flash or SD). Overriding silently dropped the AI image on flash-only units
      * and wasted an encode + leaked the jpegc buffer when the toggle was off. */
     if (s_cfg.capture_storage_ai) {
+        /* Skip the overlay decode entirely without detections: >1080P
+         * sources skip AI (no result) and decoding a 4K frame just to
+         * re-encode an unannotated copy wastes seconds + MBs. */
+        if (!s_ai_result.is_valid ||
+            (s_ai_result.od.nb_detect == 0 && s_ai_result.mpe.nb_detect == 0)) {
+            (void)osEventFlagsSet(s_evt, QS_FLAG_AI_ERROR_ABORT);
+            osThreadExit();
+            return;
+        }
         if (!s_draw_dev) {
             s_draw_dev = device_find_pattern(DRAW_DEVICE_NAME, DEV_TYPE_VIDEO);
         }
@@ -541,20 +816,47 @@ static void qs_ai_thread(void *argument)
             /* Draw AI results on the captured main frame (RGB565), then encode another JPEG. */
             if (s_main_fb && s_main_fb_size > 0) {
                 uint32_t w = 0, h = 0;
-                qs_get_pipe1_wh(&s_cfg, &w, &h);
+                uint8_t *draw_dst = s_main_fb;
+                uint8_t *uvc_raster = NULL;
 
-                if (w > 0 && h > 0) {
+                if (quick_storage_get_camera_source() == 1u) {
+                    /* UVC: the main frame is a JPEG; decode + convert to an
+                     * RGB565 raster to draw on (encode params follow it). */
+                    uvc_jpeg_info_t ji = {0};
+                    uint8_t *ycbcr = NULL;
+                    uint32_t ylen = 0;
+                    if (uvc_jpeg_raster_trylock(5000) != 0) {
+                        QT_TRACE("[QS] ", "uvc overlay: raster lock timeout");
+                    } else {
+                    if (uvc_jpeg_decode_ycbcr(s_main_fb, (uint32_t)s_main_fb_size,
+                                              &ycbcr, &ylen, &ji) == 0) {
+                        if (ai_color_convert(ycbcr, ji.width, ji.height,
+                                             DMA2D_INPUT_YCBCR, 0, ji.chroma_subsampling,
+                                             &uvc_raster, &ylen, DMA2D_OUTPUT_RGB565) == AICAM_OK) {
+                            draw_dst = uvc_raster;
+                            w = ji.width;
+                            h = ji.height;
+                        }
+                        /* raster stays owned by jpegc (RETURN would free it) */
+                    }
+                    uvc_jpeg_raster_unlock();
+                    }
+                } else {
+                    qs_get_pipe1_wh(&s_cfg, &w, &h);
+                }
+
+                if (w > 0 && h > 0 && draw_dst != NULL) {
                     qs_ai_draw_init_if_needed(w, h);
 
                     if (s_ai_draw_inited && s_ai_result.type == PP_TYPE_OD) {
-                        s_od_conf.p_dst = s_main_fb;
+                        s_od_conf.p_dst = draw_dst;
                         s_od_conf.image_width = w;
                         s_od_conf.image_height = h;
                         for (int i = 0; i < s_ai_result.od.nb_detect; i++) {
                             (void)od_draw_result(&s_od_conf, (od_detect_t *)&s_ai_result.od.detects[i]);
                         }
                     } else if (s_ai_draw_inited && s_ai_result.type == PP_TYPE_MPE) {
-                        s_mpe_conf.p_dst = s_main_fb;
+                        s_mpe_conf.p_dst = draw_dst;
                         s_mpe_conf.image_width = w;
                         s_mpe_conf.image_height = h;
                         for (int i = 0; i < s_ai_result.mpe.nb_detect; i++) {
@@ -567,8 +869,10 @@ static void qs_ai_thread(void *argument)
                     /* Encode AI-overlay JPEG (same lifecycle rules as s_jpeg_data). */
                     jpegc_params_t enc_params = {0};
                     if (device_ioctl(s_jpeg_dev, JPEGC_CMD_GET_ENC_PARAM, (uint8_t *)&enc_params, sizeof(jpegc_params_t)) == 0) {
+                        enc_params.ImageWidth = w;
+                        enc_params.ImageHeight = h;
                         if (device_ioctl(s_jpeg_dev, JPEGC_CMD_SET_ENC_PARAM, (uint8_t *)&enc_params, sizeof(jpegc_params_t)) == 0) {
-                            if (s_jpeg_dev && device_ioctl(s_jpeg_dev, JPEGC_CMD_INPUT_ENC_BUFFER, s_main_fb, (uint32_t)s_main_fb_size) == 0) {
+                            if (s_jpeg_dev && device_ioctl(s_jpeg_dev, JPEGC_CMD_INPUT_ENC_BUFFER, draw_dst, w * h * 2u) == 0) {
                                 unsigned char *out = NULL;
                                 int out_len = device_ioctl(s_jpeg_dev, JPEGC_CMD_OUTPUT_ENC_BUFFER, (unsigned char *)&out, 0);
                                 if (out && out_len > 0) {
@@ -582,6 +886,9 @@ static void qs_ai_thread(void *argument)
                             }
                         }
                     }
+                }
+                if (uvc_raster != NULL) {
+                    buffer_free(uvc_raster);
                 }
             }
         }
@@ -681,7 +988,12 @@ int quick_snapshot_wait_capture_jpeg(uint8_t **jpeg_data, size_t *jpeg_size)
     if (!jpeg_data || !jpeg_size) return AICAM_ERROR_INVALID_PARAM;
     if (!s_inited || s_evt == NULL) return AICAM_ERROR_NOT_INITIALIZED;
 
-    flags = osEventFlagsWait(s_evt, QS_FLAG_JPEG_READY | QS_FLAG_ERROR_ABORT, osFlagsWaitAny | osFlagsNoClear, QS_WAIT_EVENT_TIMEOUT_MS);
+    /* UVC wake capture has its own slow start path (probe settle retries +
+     * a 5s frame wait inside the snapshot thread); the generic 3s event
+     * wait would give up while the capture is still about to succeed. */
+    uint32_t wait_ms = (quick_storage_get_camera_source() == 1u)
+                           ? 6000u : QS_WAIT_EVENT_TIMEOUT_MS;
+    flags = osEventFlagsWait(s_evt, QS_FLAG_JPEG_READY | QS_FLAG_ERROR_ABORT, osFlagsWaitAny | osFlagsNoClear, wait_ms);
     if (flags & QS_FLAG_ERROR_ABORT) {
         return AICAM_ERROR;
     } else {
