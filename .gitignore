@@ -68,3 +68,4 @@ __pycache__/
 
 # API test artifacts (agent guide + results archive)
 .test/
+tools/
