@@ -60,11 +60,12 @@ Custom/Common/Lib/SiliconLabs_SDK*/**/*.slcc
 .claude/
 CLAUDE.md
 .codegraph/
+.zcodeignore
 .codex/
 
 # Python cache files
 __pycache__/
 
-# Bench test tooling: useful locally (see tools/README.md) but embeds
-# local bench config (device IP, COM ports) - keep out of the repo
+# API test artifacts (agent guide + results archive)
+.test/
 tools/

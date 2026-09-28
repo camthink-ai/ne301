@@ -636,7 +636,7 @@ aicam_result_t network_wifi_info_handler(http_handler_context_t *ctx) {
  *   "enabled": true,
  *   "ssid": "AICamera_AP",
  *   "password_set": true,
- *   "ap_sleep_time": 300,
+ *   "ap_sleep_time": 600,
  *   "ip_address": "192.168.4.1"
  * }
  */
@@ -783,15 +783,18 @@ aicam_result_t network_wifi_config_handler(http_handler_context_t *ctx) {
         }
     }
     
-    // Extract AP sleep time (optional, only for AP mode)
+    // Extract AP sleep time (optional, only for AP mode) — fixed choices
+    // matching the web UI: never (0) / 10 / 20 / 30 minutes (seconds).
     uint32_t ap_sleep_time = 0;
     if (strcmp(interface_str, "ap") == 0) {
         cJSON* sleep_time_item = cJSON_GetObjectItem(request_json, "ap_sleep_time");
         if (sleep_time_item && cJSON_IsNumber(sleep_time_item)) {
             ap_sleep_time = (uint32_t)cJSON_GetNumberValue(sleep_time_item);
-            if (ap_sleep_time > 3600) { // Max 1 hour
+            if (ap_sleep_time != 0 && ap_sleep_time != 600 &&
+                ap_sleep_time != 1200 && ap_sleep_time != 1800) {
                 cJSON_Delete(request_json);
-                return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "AP sleep time must be <= 3600 seconds");
+                return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
+                                          "AP sleep time must be 0 (never), 600, 1200 or 1800 seconds");
             }
         }
         network_service_config.ap_sleep_time = ap_sleep_time;
@@ -935,12 +938,16 @@ aicam_result_t network_wifi_region_get_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE, "Communication service is not running");
     }
 
-    /* Configured (pending next-boot) region from NVS; fall back to active runtime region. */
+    /* Configured (pending next-boot) region from NVS; fall back to active runtime region.
+     * Canonicalized: a legacy/imported "CN" must not read as forever-pending against
+     * the canonical lowercase active region. */
     cfg_buf[0] = '\0';
     if (json_config_get_network_service_config(&sys_net) == AICAM_OK && sys_net.wifi_country_code[0] != '\0') {
-        strncpy(cfg_buf, sys_net.wifi_country_code, sizeof(cfg_buf) - 1U);
-        cfg_buf[sizeof(cfg_buf) - 1U] = '\0';
-    } else {
+        if (sl_net_wifi_region_canonicalize(sys_net.wifi_country_code, cfg_buf, sizeof(cfg_buf)) != 0) {
+            cfg_buf[0] = '\0'; /* stored value is not a supported region */
+        }
+    }
+    if (cfg_buf[0] == '\0') {
         (void)sl_net_wifi_get_region_code(cfg_buf, sizeof(cfg_buf));
     }
     region = (cfg_buf[0] != '\0') ? cfg_buf : "us";
@@ -1011,6 +1018,17 @@ aicam_result_t network_wifi_region_set_handler(http_handler_context_t *ctx) {
     }
     if (set_ret == SL_STATUS_OK) {
         restart_required = AICAM_FALSE;
+    }
+
+    /* Store the CANONICAL lowercase form: the pending/active badge compares the
+     * stored string against the canonical active region, so a raw "CN" payload
+     * would leave the UI showing "takes effect after restart" forever. */
+    {
+        char canon_buf[NETIF_WIFI_COUNTRY_CODE_LEN];
+        if (sl_net_wifi_region_canonicalize(region_buf, canon_buf, sizeof(canon_buf)) == 0) {
+            strncpy(region_buf, canon_buf, sizeof(region_buf) - 1U);
+            region_buf[sizeof(region_buf) - 1U] = '\0';
+        }
     }
 
     if (json_config_get_network_service_config(&sys_net) != AICAM_OK) {
@@ -1647,6 +1665,114 @@ aicam_result_t network_halow_sta_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     return api_response_success(ctx, json_string, "HaLow STA retrieved successfully");
+}
+
+/**
+ * @brief GET /api/v1/system/network/halow/info - Get HaLow STA detailed information
+ *
+ * Mirrors /wifi/info: live link-layer data (SSID/BSSID/RSSI/channel/security)
+ * plus full IP configuration (ip/netmask/gateway/DNS/MAC).
+ */
+aicam_result_t network_halow_info_handler(http_handler_context_t *ctx)
+{
+    if (!ctx) return AICAM_ERROR_INVALID_PARAM;
+
+    if (!web_api_verify_method(ctx, "GET")) {
+        return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only GET method is allowed");
+    }
+
+    if (!communication_is_running()) {
+        return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE, "Communication service is not running");
+    }
+
+    cJSON* response_json = cJSON_CreateObject();
+    if (!response_json) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to create response");
+    }
+
+    netif_info_t hw_info;
+    memset(&hw_info, 0, sizeof(hw_info));
+    aicam_result_t result = nm_get_netif_info(NETIF_NAME_WIFI_HALOW, &hw_info);
+
+    if (result == AICAM_OK) {
+        aicam_bool_t connected = (hw_info.state == NETIF_STATE_UP) ? AICAM_TRUE : AICAM_FALSE;
+
+        // Link-layer info
+        cJSON_AddBoolToObject(response_json, "connected", connected);
+        cJSON_AddStringToObject(response_json, "ssid", hw_info.wireless_cfg.ssid);
+        {
+            char bssid_str[18] = {0};
+            if (NETIF_MAC_IS_UNICAST(hw_info.wireless_cfg.bssid)) {
+                snprintf(bssid_str, sizeof(bssid_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                         hw_info.wireless_cfg.bssid[0], hw_info.wireless_cfg.bssid[1],
+                         hw_info.wireless_cfg.bssid[2], hw_info.wireless_cfg.bssid[3],
+                         hw_info.wireless_cfg.bssid[4], hw_info.wireless_cfg.bssid[5]);
+            }
+            cJSON_AddStringToObject(response_json, "bssid", bssid_str);
+        }
+        cJSON_AddNumberToObject(response_json, "rssi", hw_info.rssi);
+        /* wireless_cfg.channel is never written for HaLow; the live value is
+         * the auto-learned join channel (updated on every successful join,
+         * persisted in NVS). 0 = auto / not learned yet. */
+        cJSON_AddNumberToObject(response_json, "channel", hw_info.halow_cfg.join_channel);
+        cJSON_AddStringToObject(response_json, "security",
+                                get_security_type_string(hw_info.wireless_cfg.security));
+
+        // IP configuration (live values from the lwip netif)
+        cJSON_AddStringToObject(response_json, "ip_mode",
+                                (hw_info.ip_mode == NETIF_IP_MODE_DHCP) ? "dhcp" : "static");
+        {
+            char ip_str[16];
+            char mask_str[16];
+            char gw_str[16];
+            char mac_str[18];
+            snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d",
+                     hw_info.ip_addr[0], hw_info.ip_addr[1], hw_info.ip_addr[2], hw_info.ip_addr[3]);
+            snprintf(mask_str, sizeof(mask_str), "%d.%d.%d.%d",
+                     hw_info.netmask[0], hw_info.netmask[1], hw_info.netmask[2], hw_info.netmask[3]);
+            snprintf(gw_str, sizeof(gw_str), "%d.%d.%d.%d",
+                     hw_info.gw[0], hw_info.gw[1], hw_info.gw[2], hw_info.gw[3]);
+            snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                     hw_info.if_mac[0], hw_info.if_mac[1], hw_info.if_mac[2],
+                     hw_info.if_mac[3], hw_info.if_mac[4], hw_info.if_mac[5]);
+            cJSON_AddStringToObject(response_json, "ip_address", ip_str);
+            cJSON_AddStringToObject(response_json, "netmask", mask_str);
+            cJSON_AddStringToObject(response_json, "gateway", gw_str);
+            cJSON_AddStringToObject(response_json, "mac_address", mac_str);
+        }
+        {
+            // DNS servers come from the lwip resolver, not from the netif struct
+            uint8_t dns[4] = {0};
+            char dns_str[16];
+            if (nm_ctrl_get_dns_server(0, dns) == AICAM_OK &&
+                (dns[0] | dns[1] | dns[2] | dns[3]) != 0) {
+                snprintf(dns_str, sizeof(dns_str), "%d.%d.%d.%d", dns[0], dns[1], dns[2], dns[3]);
+                cJSON_AddStringToObject(response_json, "dns_primary", dns_str);
+            } else {
+                cJSON_AddStringToObject(response_json, "dns_primary", "");
+            }
+            memset(dns, 0, sizeof(dns));
+            if (nm_ctrl_get_dns_server(1, dns) == AICAM_OK &&
+                (dns[0] | dns[1] | dns[2] | dns[3]) != 0) {
+                snprintf(dns_str, sizeof(dns_str), "%d.%d.%d.%d", dns[0], dns[1], dns[2], dns[3]);
+                cJSON_AddStringToObject(response_json, "dns_secondary", dns_str);
+            } else {
+                cJSON_AddStringToObject(response_json, "dns_secondary", "");
+            }
+        }
+    } else {
+        cJSON_AddBoolToObject(response_json, "connected", AICAM_FALSE);
+        cJSON_AddStringToObject(response_json, "error", "Failed to get HaLow info");
+    }
+
+    char* json_string = cJSON_Print(response_json);
+    cJSON_Delete(response_json);
+
+    if (!json_string) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
+    }
+
+    return api_response_success(ctx, json_string, "HaLow info retrieved successfully");
 }
 
 /**
@@ -4178,6 +4304,13 @@ static const api_route_t network_module_routes[] = {
         .path = API_PATH_PREFIX"/system/network/halow/sta",
         .method = "GET",
         .handler = network_halow_sta_handler,
+        .require_auth = AICAM_TRUE,
+        .user_data = NULL
+    },
+    {
+        .path = API_PATH_PREFIX"/system/network/halow/info",
+        .method = "GET",
+        .handler = network_halow_info_handler,
         .require_auth = AICAM_TRUE,
         .user_data = NULL
     },

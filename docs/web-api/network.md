@@ -207,14 +207,16 @@ switch (current_comm_type) {
     "state": "up",
     "ssid": "AICamera_AP",
     "password_set": true,
-    "security": "wpa2_psk",
+    "security": "open",
     "channel": 6,
     "ip_address": "192.168.4.1",
     "mac_address": "AA:BB:CC:DD:EE:FF",
-    "ap_sleep_time": 300
+    "ap_sleep_time": 1800
   }
 }
 ```
+
+> **Note**: the AP no longer supports a password in this firmware version — it always runs open (a WiFi-chip firmware limitation: with a password set on the AP, the STA can no longer connect to networks). `password_set` only reports whether a password is stored in the configuration; it is not applied. `ap_sleep_time` accepts the fixed choices 0 (never) / 600 / 1200 / 1800 seconds.
 
 ---
 
@@ -238,9 +240,9 @@ switch (current_comm_type) {
 |-------|------|----------|-------------|
 | interface | string | yes | `wl` = client (STA), `ap` = hotspot |
 | ssid | string | yes | network name (1-31 chars) |
-| password | string | no | password (8-63 chars; omit for open networks) |
+| password | string | no | STA: password (8-63 chars; omit for open networks). AP: accepted and stored but **not applied** — the hotspot always runs open in this firmware version |
 | bssid | string | no | target BSSID |
-| ap_sleep_time | number | no | hotspot sleep time (AP mode only) |
+| ap_sleep_time | number | no | hotspot idle sleep time (AP mode only): only 0 (never) / 600 / 1200 / 1800 seconds; other values are rejected |
 
 ---
 

@@ -34,7 +34,7 @@
 
 #define OTA_WRITE_BUF_SIZE 1024
 #define OTA_PRECHECK_DATA_SIZE 2048  // 2KB: 1KB OTA header + 1KB model package header
-#define OTA_TIMEOUT_MS (5 * 60 * 1000)  // 5 minutes timeout for OTA upload
+#define OTA_TIMEOUT_MS (3 * 60 * 1000)  // idle timeout for OTA upload (no data received)
 #define OTA_BUNDLE_TIMEOUT_MS (10 * 60 * 1000)  // idle timeout for a bundle session (gaps between sub-uploads)
 /* ==================== Global Variables ==================== */
 static aicam_bool_t g_ota_upgrade_in_progress = AICAM_FALSE;
@@ -369,7 +369,13 @@ static int process_ota_header(ota_upload_ctx_t *ctx) {
     // (e.g. an NE302 build on an NE301) is rejected before any flash is
     // touched — this covers BOTH the normal and the bundle-direct paths.
     // 0 = unstamped (legacy packages): allowed.
-    if (header->device_model != 0 && header->device_model != OTA_DEVICE_MODEL) {
+    // EXCEPTION — AI model packages are cross-model compatible within the N6
+    // family (same NPU, same NN runtime): their compatibility is guaranteed by
+    // the 'N6M1' package magic + version gate, not by the device model, so the
+    // model stamp is deliberately not enforced here. Firmware-class packages
+    // (APP/FSBL/WEB/WIFI/CONFIG) stay hard-gated.
+    if (header->fw_type != OTA_FW_TYPE_AI_MODEL &&
+        header->device_model != 0 && header->device_model != OTA_DEVICE_MODEL) {
         LOG_SVC_ERROR("Firmware model mismatch: package 0x%04X, device 0x%04X",
                       (unsigned)header->device_model, (unsigned)OTA_DEVICE_MODEL);
         return -1;
@@ -538,8 +544,14 @@ static aicam_result_t ota_precheck_header(const uint8_t *header_data, size_t dat
         return AICAM_ERROR_INVALID_PARAM;
     }
 
-    // 1.5 Device-model gate (early feedback; the upload re-checks)
-    if (header->device_model != 0 && header->device_model != OTA_DEVICE_MODEL) {
+    // 1.5 Device-model gate (early feedback; the upload re-checks).
+    // AI model packages are exempt: they are cross-model compatible within the
+    // N6 family (same NPU/NN runtime) — the 'N6M1' magic + version gate below
+    // is their compatibility contract, so an NE302-stamped model uploads fine
+    // on an NE301. Firmware-class packages stay hard-gated. Keyed on the
+    // header's own fw_type so this gate and the upload gate decide identically.
+    if (header->fw_type != OTA_FW_TYPE_AI_MODEL &&
+        header->device_model != 0 && header->device_model != OTA_DEVICE_MODEL) {
         LOG_SVC_ERROR("Pre-check failed: firmware model mismatch (package 0x%04X, device 0x%04X)",
                       (unsigned)header->device_model, (unsigned)OTA_DEVICE_MODEL);
         return AICAM_ERROR_INVALID_PARAM;
@@ -826,8 +838,12 @@ aicam_result_t ota_bundle_precheck_handler(http_handler_context_t *ctx)
 
     /* Device-model gate — before anything with side effects (bundle/begin
      * erases OTA info): a bundle built for another model is rejected here.
-     * Each embedded sub-package carries the same stamp and is re-checked at
-     * upload time. 0 = unstamped (legacy bundles): allowed. */
+     * NOT exempted for AI content, unlike the single-package path: a bundle
+     * always carries firmware-class partitions (FSBL/APP/...), so a whole
+     * cross-model bundle stays hard-rejected; extracting just its AI sub-
+     * package and uploading that single file still works (AI model gate is
+     * bypassed there). Each embedded sub-package carries the same stamp and
+     * is re-checked at upload time. 0 = unstamped (legacy bundles): allowed. */
     if (g_bundle_session.header.device_model != 0 &&
         g_bundle_session.header.device_model != OTA_DEVICE_MODEL) {
         bundle_session_clear();
@@ -1410,6 +1426,17 @@ void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data)
     // data processing (buffer header + write)
     // -----------------------------
     if (ctx && ctx->initialized && !ctx->failed && c->recv.len > 0) {
+        /* Late data after this upload was declared dead (idle timeout or state
+         * reset ran while the zombie connection lingered — a Wi-Fi-layer peer
+         * loss never delivers TCP close). The recovery already restarted
+         * camera/MQTT, so resuming the burn now would recreate the XSPI/network
+         * contention the OTA-time stop was for. Discard and close instead. */
+        if (!g_ota_upgrade_in_progress) {
+            LOG_SVC_WARN("OTA upload already timed out, discarding late data");
+            ctx->failed = AICAM_TRUE;
+            c->is_closing = 1;
+            return;
+        }
         g_ota_last_activity_tick = osKernelGetTickCount();  // update activity timestamp
 
         /* Streaming data IS web activity: keep refreshing the AP sleep /
@@ -1820,7 +1847,11 @@ aicam_result_t ota_export_firmware_handler(http_handler_context_t *ctx)
     ctx->conn->fn_data = export_ctx;
     
     LOG_SVC_INFO("Firmware export started: %s, %u bytes", export_filename, (unsigned int)export_ctx->remaining_size);
-    
+
+    // The streaming callback owns the connection from here (response headers
+    // already sent above): mark the response sent so the dispatcher does not
+    // append a JSON envelope onto the firmware stream.
+    ctx->response.sent = AICAM_TRUE;
     return AICAM_ERROR_NOT_SENT_AGAIN;
 }
 

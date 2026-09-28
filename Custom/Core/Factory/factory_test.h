@@ -140,6 +140,14 @@ int factory_generate_serial_number(char *buffer, size_t size);
 int factory_generate_mac_address(uint8_t *mac);
 
 /**
+ * @brief Get the factory-burned WiFi MAC address
+ * @param mac Output buffer (6 bytes)
+ * @return 0 if a valid unicast MAC is burned in the FACTORY partition,
+ *         -1 if not burned (system falls back to the chip-reported MAC)
+ */
+int factory_mac_get_burned(uint8_t *mac);
+
+/**
  * @brief Mark factory test as passed
  * @return 0 on success, negative on error
  */

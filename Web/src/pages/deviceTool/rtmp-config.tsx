@@ -393,14 +393,14 @@ export default function RtmpConfig() {
                   }
                 >
                 <div className="flex flex-col gap-2">
-                  <div className="flex justify-between gap-2 flex-1 pr-0">
+                  <div className="flex flex-col sm:flex-row sm:justify-between gap-2 flex-1 pr-0">
                     <Label className="text-sm text-text-primary shrink-0">
                       {' '}
                       {i18n._('sys.device_tool.url')}
                     </Label>
                     <Input
                       variant="ghost"
-                      placeholder={i18n._('common.please_enter')}
+                      placeholder={i18n._('sys.device_tool.url_placeholder')}
                       type="text"
                       value={rtmpConfig.config.url}
                       onChange={e => setRtmpConfig({

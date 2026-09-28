@@ -56,6 +56,22 @@ type HalowRadioLimits = {
     scan_dwell_ms: { min: number; max: number; default: number };
 };
 
+type HalowDetailInfo = {
+    connected: boolean;
+    ssid: string;
+    bssid: string;
+    rssi: number;
+    channel: number;
+    security: string;
+    ip_mode: string;
+    ip_address: string;
+    netmask: string;
+    gateway: string;
+    dns_primary: string;
+    dns_secondary: string;
+    mac_address: string;
+};
+
 const RADIO_AUTO = 'auto';
 
 const HALOW_RADIO_LIMITS_DEFAULT: HalowRadioLimits = {
@@ -80,6 +96,7 @@ export default function HalowNetworkPage() {
     const isMobile = useIsMobile();
     const {
         getHalowStaReq,
+        getHalowInfoReq,
         setHalowRegionReq,
         scanHalow,
         setHalow,
@@ -131,6 +148,30 @@ export default function HalowNetworkPage() {
     const [radioSaving, setRadioSaving] = useState(false);
     const [radioRefreshing, setRadioRefreshing] = useState(false);
     const [radioLimits, setRadioLimits] = useState<HalowRadioLimits>(HALOW_RADIO_LIMITS_DEFAULT);
+    const [isConnMenuOpen, setIsConnMenuOpen] = useState(false);
+    const [isDetailOpen, setIsDetailOpen] = useState(false);
+    const [isDetailLoading, setIsDetailLoading] = useState(false);
+    const [detailInfo, setDetailInfo] = useState<HalowDetailInfo | null>(null);
+
+    const handleGetHalowInfo = async () => {
+        try {
+            setIsDetailLoading(true);
+            const res = await getHalowInfoReq();
+            setDetailInfo(res.data);
+        } catch (error) {
+            // eslint-disable-next-line no-console
+            console.error('handleGetHalowInfo', error);
+        } finally {
+            setIsDetailLoading(false);
+        }
+    };
+
+    const openHalowDetailDialog = () => {
+        setIsConnMenuOpen(false);
+        setDetailInfo(null);
+        setIsDetailOpen(true);
+        handleGetHalowInfo();
+    };
 
     const applyStaResponse = useCallback((data: any) => {
         if (data.region) {
@@ -882,14 +923,16 @@ export default function HalowNetworkPage() {
                                             <p className="text-sm text-green-500">{i18n._('common.connected')}</p>
                                         </div>
                                         <SvgIcon icon={currentHalowData.rssi >= -55 ? 'wifi' : currentHalowData.rssi >= -75 ? 'wifi_middle' : 'wifi_low'} className="w-4 h-4 text-[#272E3B]" />
-                                        <Popover>
+                                        <Popover open={isConnMenuOpen} onOpenChange={setIsConnMenuOpen}>
                                             <PopoverTrigger onClick={(e: any) => e.stopPropagation()}>
                                                 <SvgIcon icon="more" className="w-4 h-4 text-white cursor-pointer" />
                                             </PopoverTrigger>
                                             <PopoverContent className="w-auto p-0">
-                                                <div className="flex flex-col m-1">
+                                                <div className="flex flex-col gap-2 mx-2 py-2">
+                                                    <div className="text-sm px-4 py-1 cursor-pointer hover:bg-gray-100 hover:rounded-md" onClick={openHalowDetailDialog}>{i18n._('common.details')}</div>
+                                                    <Separator />
                                                     <div className="text-sm px-4 py-1 cursor-pointer hover:bg-gray-100 hover:rounded-md" onClick={() => handleDisconnect()}>{i18n._('sys.system_management.disconnect')}</div>
-                                                    <Separator className="my-1" />
+                                                    <Separator />
                                                     <div className="text-sm px-4 py-1 cursor-pointer hover:bg-gray-100 hover:rounded-md" onClick={() => setIsForgetDialogOpen(true)}>{i18n._('sys.system_management.halow_forget_network')}</div>
                                                 </div>
                                             </PopoverContent>
@@ -948,6 +991,79 @@ export default function HalowNetworkPage() {
             )}
             {connectDialog()}
             {forgetNetworkDialog()}
+            <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>{i18n._('common.details')}</DialogTitle>
+                    </DialogHeader>
+                    <div className="mt-4">
+                        {isDetailLoading && <CommunicationSkeleton />}
+                        {!isDetailLoading && (
+                            <div className="flex flex-col gap-2 bg-gray-100 p-4 rounded-lg">
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">SSID</Label>
+                                    <p>{detailInfo?.ssid || '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">BSSID</Label>
+                                    <p>{detailInfo?.bssid || '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.rssi')}</Label>
+                                    <p>{detailInfo ? `${detailInfo.rssi} dBm` : '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.channel')}</Label>
+                                    <p>{detailInfo ? (detailInfo.channel || '-') : '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.security')}</Label>
+                                    <p>{detailInfo?.security || '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.ip_mode')}</Label>
+                                    <p>{detailInfo ? (detailInfo.ip_mode === 'static' ? i18n._('sys.system_management.static') : i18n._('sys.system_management.dhcp')) : '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.ip_address')}</Label>
+                                    <p>{detailInfo?.ip_address || '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.netmask')}</Label>
+                                    <p>{detailInfo?.netmask || '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.gateway')}</Label>
+                                    <p>{detailInfo?.gateway || '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.dns_primary')}</Label>
+                                    <p>{detailInfo?.dns_primary || '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.dns_secondary')}</Label>
+                                    <p>{detailInfo?.dns_secondary || '-'}</p>
+                                </div>
+                                <Separator />
+                                <div className="flex justify-between my-2">
+                                    <Label className="text-sm text-text-primary shrink-0">{i18n._('sys.system_management.mac_address')}</Label>
+                                    <p>{detailInfo?.mac_address || '-'}</p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </DialogContent>
+            </Dialog>
             {showReloadMask && <WifiReloadMask loadingText={loadingText} isLoading={isReloading} />}
         </div>
     );

@@ -74,8 +74,6 @@ const systemSettings = {
     // common
     getNetworkTypesReq: () => request.get('/api/v1/system/network/comm/types'),
     switchNetworkTypeReq: (data: SwitchNetworkTypeReq) => request.post('/api/v1/system/network/comm/switch', data),
-    prefetchNetworkConfigReq: () => request.post('/api/v1/system/network/comm/prefetch'),
-    prioritizeNetworkReq: (data: { interface: string }) => request.post('/api/v1/system/network/comm/prioritize', data),
 
     // wifi
     getNetworkSTAReq: (config?: { skipErrorToast?: boolean; signal?: AbortSignal }) => request.get('/api/v1/system/network/wifi/sta', config),
@@ -95,7 +93,6 @@ const systemSettings = {
     getCellularInfoReq: () => request.get('/api/v1/system/network/cellular/info'),
     connectCellularReq: () => request.post('/api/v1/system/network/cellular/connect'),
     disconnectCellularReq: () => request.post('/api/v1/system/network/cellular/disconnect'),
-    deleteCellularReq: () => request.post('/api/v1/system/network/cellular/delete'),
     saveCellularReq: (data: SetCellularReq) => request.post('/api/v1/system/network/cellular/settings', data),
     refreshCellularReq: () => request.post('/api/v1/system/network/cellular/refresh'),
     atCmdCellularReq: (data: atCmdCellularReq) => request.post('/api/v1/system/network/cellular/at', data),
@@ -113,6 +110,7 @@ const systemSettings = {
 
     // halow
     getHalowStaReq: () => request.get('/api/v1/system/network/halow/sta'),
+    getHalowInfoReq: () => request.get('/api/v1/system/network/halow/info'),
     getHalowRegionReq: () => request.get('/api/v1/system/network/halow/region'),
     setHalowRegionReq: (data: { region: string }) => request.put('/api/v1/system/network/halow/region', data),
     scanHalow: () => request.post('/api/v1/system/network/halow/scan', {}),

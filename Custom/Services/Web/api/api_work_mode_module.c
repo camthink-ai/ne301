@@ -871,14 +871,14 @@ static aicam_result_t work_mode_triggers_set_handler(http_handler_context_t* ctx
             config.timer_trigger.interval_mode = AICAM_TIMER_INTERVAL_MODE_NORMAL;
         }
 
-        // Parse start_time (new field, "HH:MM" format)
+        // Parse start_time ("HH:MM" or seconds-of-day; absent = keep stored,
+        // same as end_time/anchor). start/end are the SCHEDULED-mode window;
+        // normal mode runs on anchor_time and must not clobber them.
         cJSON* start_time_item = cJSON_GetObjectItem(timer_trigger, "start_time");
         if (start_time_item && cJSON_IsString(start_time_item)) {
             config.timer_trigger.start_time = parse_time_node(cJSON_GetStringValue(start_time_item));
         } else if (start_time_item && cJSON_IsNumber(start_time_item)) {
             config.timer_trigger.start_time = (uint32_t)cJSON_GetNumberValue(start_time_item);
-        } else {
-            config.timer_trigger.start_time = 0;
         }
 
         // Parse end_time ("HH:MM" or seconds-of-day; absent = keep stored).

@@ -652,15 +652,17 @@ aicam_result_t device_sys_clk_config_handler(http_handler_context_t *ctx) {
             return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "sys_clk_profile is required (number)");
         }
 
-        uint32_t profile = (uint32_t)cJSON_GetNumberValue(prof_item);
-        if (profile != FSBL_APP_SYSCLK_PROFILE_HSE_200MHZ &&
-            profile != FSBL_APP_SYSCLK_PROFILE_HSE_400MHZ &&
-            profile != FSBL_APP_SYSCLK_PROFILE_HSI_800MHZ &&
-            profile != FSBL_APP_SYSCLK_PROFILE_HSE_800MHZ) {
+        /* Validate on the double before the uint32 cast (ARM saturates
+         * negatives to 0 and truncates fractions into valid profiles). */
+        double profile_d = cJSON_GetNumberValue(prof_item);
+        if (profile_d < (double)FSBL_APP_SYSCLK_PROFILE_HSE_200MHZ
+            || profile_d > (double)FSBL_APP_SYSCLK_PROFILE_HSE_800MHZ
+            || profile_d != (double)(uint32_t)profile_d) {
             cJSON_Delete(request_json);
             return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
                                       "sys_clk_profile must be 1 (HSE 200), 2 (HSE 400), 3 (HSI 800), or 4 (HSE 800)");
         }
+        uint32_t profile = (uint32_t)profile_d;
 
         sys_clk_config_t cfg = {0};
         cfg.sys_clk_profile = profile;
@@ -1347,12 +1349,15 @@ aicam_result_t system_logs_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only GET method is allowed");
     }
     
-    // Read logs from the log file
+    /* aicam.log lives on the internal-flash LittleFS (the log writer is bound
+     * to it via flash_lfs_*). Don't use file_fopen() here: it follows the
+     * "current" FS instance, which an inserted SD card switches away from
+     * flash — reads would then look for the log on the SD card. */
     const char* log_filename = "aicam.log"; // Default log file name
-    void* log_file = file_fopen(log_filename, "r");
+    void* log_file = flash_lfs_fopen(log_filename, "r");
     if (!log_file) {
         // If main log file doesn't exist, try rotated files
-        log_file = file_fopen("aicam.log.1", "r");
+        log_file = flash_lfs_fopen("aicam.log.1", "r");
         if (!log_file) {
             cJSON* response_json = cJSON_CreateObject();
             if (!response_json) {
@@ -1373,32 +1378,32 @@ aicam_result_t system_logs_handler(http_handler_context_t *ctx) {
     int bytes_read;
     
     // First pass: calculate total size
-    while ((bytes_read = file_fread(log_file, buffer, sizeof(buffer))) > 0) {
+    while ((bytes_read = flash_lfs_fread(log_file, buffer, sizeof(buffer))) > 0) {
         log_size += bytes_read;
     }
-    
+
     if (log_size == 0) {
-        file_fclose(log_file);
+        flash_lfs_fclose(log_file);
         return api_response_error(ctx, API_ERROR_NOT_FOUND, "Log file is empty");
     }
-    
+
     // Allocate memory for log content
     log_content = buffer_calloc(1, log_size + 1);
     if (!log_content) {
-        file_fclose(log_file);
+        flash_lfs_fclose(log_file);
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to allocate memory for log content");
     }
-    
+
     // Second pass: read content
-    file_fseek(log_file, 0, SEEK_SET);
+    flash_lfs_fseek(log_file, 0, SEEK_SET);
     size_t total_read = 0;
-    while ((bytes_read = file_fread(log_file, buffer, sizeof(buffer))) > 0) {
+    while ((bytes_read = flash_lfs_fread(log_file, buffer, sizeof(buffer))) > 0) {
         memcpy(log_content + total_read, buffer, bytes_read);
         total_read += bytes_read;
     }
     log_content[log_size] = '\0';
-    
-    file_fclose(log_file);
+
+    flash_lfs_fclose(log_file);
     
     // Create simple response JSON
     cJSON* response_json = cJSON_CreateObject();
@@ -1476,45 +1481,45 @@ aicam_result_t system_logs_export_handler(http_handler_context_t *ctx) {
     for (int i = 0; i < total_files; i++) {
         const char* filename = log_files[i];
         
-        // Try to open the log file
-        void* log_file = file_fopen(filename, "r");
+        // Try to open the log file (flash-bound, see system_logs_handler)
+        void* log_file = flash_lfs_fopen(filename, "r");
         if (!log_file) {
             // File doesn't exist, skip it
             continue;
         }
-        
+
         // Get file size
         size_t file_size = 0;
         char buffer[1024];
         int bytes_read;
-        
+
         // First pass: calculate file size
-        while ((bytes_read = file_fread(log_file, buffer, sizeof(buffer))) > 0) {
+        while ((bytes_read = flash_lfs_fread(log_file, buffer, sizeof(buffer))) > 0) {
             file_size += bytes_read;
         }
-        
+
         if (file_size == 0) {
-            file_fclose(log_file);
+            flash_lfs_fclose(log_file);
             continue;
         }
-        
+
         // Allocate memory for file content
         char* file_content = buffer_calloc(1, file_size + 1);
         if (!file_content) {
-            file_fclose(log_file);
+            flash_lfs_fclose(log_file);
             continue;
         }
-        
+
         // Second pass: read content
-        file_fseek(log_file, 0, SEEK_SET);
+        flash_lfs_fseek(log_file, 0, SEEK_SET);
         size_t total_read = 0;
-        while ((bytes_read = file_fread(log_file, buffer, sizeof(buffer))) > 0) {
+        while ((bytes_read = flash_lfs_fread(log_file, buffer, sizeof(buffer))) > 0) {
             memcpy(file_content + total_read, buffer, bytes_read);
             total_read += bytes_read;
         }
         file_content[file_size] = '\0';
-        
-        file_fclose(log_file);
+
+        flash_lfs_fclose(log_file);
         
         // Create log file entry
         cJSON* log_file_entry = cJSON_CreateObject();
@@ -1710,6 +1715,16 @@ aicam_result_t device_config_export_handler(http_handler_context_t *ctx) {
     // Parse the serialized config and add as "config" object
     cJSON* config_obj = cJSON_Parse(json_buffer);
     if (config_obj) {
+        /* Work frequency (sys clock profile) lives in the FSBL config area,
+         * not in json_config — attach it so an export restores it too.
+         * Only a real 1..4 selection carries intent: profile 0 = never
+         * modified (FSBL "no override" / GET handler not-set sentinel), so
+         * it is omitted — import then keeps the target's current profile. */
+        sys_clk_config_t sysclk_cfg = {0};
+        if (fsbl_app_read_sys_clk_config(&sysclk_cfg) == 0
+            && sysclk_cfg.sys_clk_profile >= FSBL_APP_SYSCLK_PROFILE_HSE_200MHZ
+            && sysclk_cfg.sys_clk_profile <= FSBL_APP_SYSCLK_PROFILE_HSE_800MHZ)
+            cJSON_AddNumberToObject(config_obj, "sys_clk_profile", (double)sysclk_cfg.sys_clk_profile);
         cJSON_AddItemToObject(response_json, "config", config_obj);
     } else {
         // Fallback: add as raw string if parsing fails
@@ -1776,6 +1791,39 @@ aicam_result_t device_config_import_handler(http_handler_context_t *ctx) {
         cJSON_Delete(request_json);
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Missing 'config' or 'config_raw' field");
     }
+
+    /* Work frequency rides along in the config JSON but is applied through
+     * the FSBL config area (same write path as the dedicated web setter).
+     * An absent key keeps the device's current profile (merge semantics);
+     * 0 (never modified on the exporting device) is treated the same. */
+    int sys_clk_profile = -1;   /* -1 = not present in the file */
+    {
+        cJSON* cfg_root = cJSON_Parse(config_json_str);
+        if (cfg_root) {
+            cJSON* prof_item = cJSON_GetObjectItem(cfg_root, "sys_clk_profile");
+            if (prof_item) {
+                /* Validate on the double BEFORE any uint32 cast: ARM's
+                 * float->unsigned conversion saturates, so -2 becomes 0 and
+                 * would silently slip into the keep-current path instead of
+                 * being rejected; a fractional value would truncate into a
+                 * valid profile. A present-but-wrong-typed value is file
+                 * corruption, not absence. Only integral 0..4 are valid. */
+                double profile = cJSON_IsNumber(prof_item) ? cJSON_GetNumberValue(prof_item) : -1.0;
+                if (profile < 0
+                    || profile > (double)FSBL_APP_SYSCLK_PROFILE_HSE_800MHZ
+                    || profile != (double)(uint32_t)profile) {
+                    cJSON_Delete(cfg_root);
+                    cJSON_Delete(request_json);
+                    if (should_free_config_str) cJSON_free(config_json_str);
+                    return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
+                                              "sys_clk_profile must be 0 (keep current), 1 (HSE 200), 2 (HSE 400), 3 (HSI 800), or 4 (HSE 800)");
+                }
+                if (profile != 0)
+                    sys_clk_profile = (int)profile;
+            }
+            cJSON_Delete(cfg_root);
+        }
+    }
     
     // Parse configuration from JSON string
     aicam_global_config_t new_config;
@@ -1800,6 +1848,11 @@ aicam_result_t device_config_import_handler(http_handler_context_t *ctx) {
     
     // Update timestamp and recalculate checksum
     new_config.timestamp = rtc_get_timeStamp();
+    /* Pin the schema version AFTER validation: the file's marker was
+     * already gate-checked (> CURRENT rejected); the merged struct is
+     * this firmware's schema, so importing an older file must not
+     * downgrade the persisted version marker. */
+    new_config.config_version = JSON_CONFIG_VERSION_CURRENT;
     uint32_t new_checksum;
     json_config_calculate_checksum(&new_config, &new_checksum);
     new_config.checksum = new_checksum;
@@ -1808,6 +1861,17 @@ aicam_result_t device_config_import_handler(http_handler_context_t *ctx) {
     result = json_config_set_config(&new_config);
     if (result != AICAM_OK) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to apply configuration");
+    }
+
+    /* Apply the work frequency only after the config import succeeded: FSBL
+     * picks it up on the next boot, same as the dedicated web setter. */
+    if (sys_clk_profile > 0) {
+        sys_clk_config_t sysclk_cfg = {0};
+        sysclk_cfg.sys_clk_profile = (uint32_t)sys_clk_profile;
+        if (fsbl_app_write_sys_clk_config(&sysclk_cfg) != 0) {
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR,
+                                      "Config imported but failed to save sys_clk_profile");
+        }
     }
     
     // Create success response
@@ -1876,7 +1940,9 @@ aicam_result_t device_pref_stream_tab_handler(http_handler_context_t *ctx) {
     }
     json_config_nvs_write_string(NVS_KEY_PREF_STREAM_TAB, tab);
     cJSON_Delete(req);
-    return api_response_success(ctx, "{}", "Preference saved");
+    /* "{}" is a rodata literal — use the borrowed variant so the dispatcher
+     * does not free() non-heap storage */
+    return api_response_success_static(ctx, "{}", "Preference saved");
 }
 
 /**

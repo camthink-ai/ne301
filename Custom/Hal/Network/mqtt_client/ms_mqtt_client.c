@@ -1050,7 +1050,8 @@ int ms_mqtt_client_start(ms_mqtt_client_handle_t client)
     if (client->task_handle != NULL) {
         LOG_LIB_ERROR("MQTT client task already exists!");
         MS_MQTT_CLIENT_UNLOCK(client); 
-        return MQTT_ERR_INVALID_STATE;
+        // return MQTT_ERR_INVALID_STATE;
+        return MQTT_ERR_OK;
     }
 
     if (xTaskCreate(ms_mqtt_client_task, "mqtt_task", client->config->task.stack_size, client, client->config->task.priority, &client->task_handle) != pdTRUE) {

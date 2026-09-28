@@ -90,11 +90,15 @@
  /**
   * @brief Unified API response format
   */
+#define WEB_API_MESSAGE_MAX 256
  typedef struct {
      int code;                         ///< Response code (200=success, non-200=error)
      int error_code;                   ///< Error code (0=no error, non-0=error)
-     char* message;                ///< Response message
-     char* data;                       ///< Response data (JSON string)
+     char message[WEB_API_MESSAGE_MAX]; ///< Response message (owned copy, safe after handler returns)
+     char* data;                       ///< Response data (JSON string; freed by the dispatcher unless data_borrowed)
+     aicam_bool_t data_borrowed;       ///< data points at rodata/static/caller-owned storage — dispatcher must NOT free it
+     aicam_bool_t prepared;            ///< envelope composed via api_response_* — dispatcher sends it even if the handler returns an error
+     aicam_bool_t sent;                ///< http_send_response already ran — handlers that self-send suppress the dispatcher's send
      uint32_t timestamp;               ///< Timestamp
      char request_id[64];              ///< Request ID
      char* headers;                    ///< Custom headers
@@ -316,10 +320,24 @@ typedef struct {
  * @param message Response message (can be NULL, will use "success" as default)
  * @return Operation result
  */
-aicam_result_t api_response_success(http_handler_context_t* ctx, 
-                                   const char* data, 
+aicam_result_t api_response_success(http_handler_context_t* ctx,
+                                   const char* data,
                                    const char* message);
- 
+
+/**
+ * @brief Generate a success response with borrowed data
+ * @details Same envelope as api_response_success, but data points at storage
+ *          the caller owns or that is not heap-allocated (string literal,
+ *          static buffer): the dispatcher will NOT free it.
+ * @param ctx Handler context
+ * @param data Response data (borrowed, can be NULL)
+ * @param message Response message (can be NULL, will use "success" as default)
+ * @return Operation result
+ */
+aicam_result_t api_response_success_static(http_handler_context_t* ctx,
+                                   const char* data,
+                                   const char* message);
+
 /**
  * @brief Generate an error response
  * @param ctx Handler context
@@ -330,6 +348,22 @@ aicam_result_t api_response_success(http_handler_context_t* ctx,
 aicam_result_t api_response_error(http_handler_context_t* ctx,
                                   api_error_code_t error_code,
                                   const char* message);
+
+/**
+ * @brief Generate an error response that still carries a data payload
+ * @details For endpoints whose failure detail lives in data (e.g. per-field
+ *          results). data follows the same ownership rule as
+ *          api_response_success: heap (cJSON) memory freed by the dispatcher.
+ * @param ctx Handler context
+ * @param error_code Business error code (e.g., 400, 500, 504)
+ * @param message Error message
+ * @param data Response data (JSON string, can be NULL)
+ * @return Operation result
+ */
+aicam_result_t api_response_error_data(http_handler_context_t* ctx,
+                                  api_error_code_t error_code,
+                                  const char* message,
+                                  const char* data);
 
  
  /**

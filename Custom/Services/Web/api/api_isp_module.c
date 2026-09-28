@@ -70,11 +70,16 @@ static int isp_status_to_error_code(ISP_StatusTypeDef status) {
 
 /**
  * @brief Set error response
+ * @return AICAM_OK so handlers can `return set_isp_error_response(...)`
+ *         directly. The dispatcher sends the composed envelope regardless of
+ *         the handler's return code, so the accurate per-callsite error code
+ *         rides in ctx->response.error_code, not in the return value.
  */
-static void set_isp_error_response(http_handler_context_t *ctx, int error_code, const char *message) {
+static aicam_result_t set_isp_error_response(http_handler_context_t *ctx, int error_code, const char *message) {
     ctx->response.code = 400;
     ctx->response.error_code = error_code;
-    ctx->response.message = (char *)message;
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "%s", message ? message : "");
+    return AICAM_OK;
 }
 
 /**
@@ -105,15 +110,13 @@ static void add_param_meta(cJSON *parent, const char *name, const char *type,
 aicam_result_t api_isp_get_sensor_info(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     ISP_SensorInfoTypeDef sensorInfo;
     ISP_StatusTypeDef status = ISP_SVC_Sensor_GetInfo(hIsp, &sensorInfo);
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get sensor info");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get sensor info");
     }
 
     cJSON *data = cJSON_CreateObject();
@@ -146,8 +149,7 @@ aicam_result_t api_isp_get_sensor_info(http_handler_context_t *ctx) {
 aicam_result_t api_isp_get_aec(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     uint8_t aec_enable = 0;
@@ -212,14 +214,12 @@ aicam_result_t api_isp_get_aec(http_handler_context_t *ctx) {
 aicam_result_t api_isp_set_aec(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     cJSON *json = web_api_parse_body(ctx);
     if (json == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
     }
 
     ISP_StatusTypeDef status = ISP_OK;
@@ -230,8 +230,7 @@ aicam_result_t api_isp_set_aec(http_handler_context_t *ctx) {
         status = ISP_SetAECState(hIsp, cJSON_IsTrue(enable) ? 1 : 0);
         if (status != ISP_OK) {
             cJSON_Delete(json);
-            set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set AEC state");
-            return AICAM_ERROR;
+            return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set AEC state");
         }
     }
 
@@ -241,20 +240,18 @@ aicam_result_t api_isp_set_aec(http_handler_context_t *ctx) {
         int comp_val = exp_comp->valueint;
         if (comp_val < -4 || comp_val > 4) {
             cJSON_Delete(json);
-            set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, 
+            return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, 
                 "exposure_compensation must be between -4 and 4");
-            return AICAM_ERROR_INVALID_PARAM;
         }
         status = ISP_SetExposureTarget(hIsp, (ISP_ExposureCompTypeDef)comp_val);
         if (status != ISP_OK) {
             cJSON_Delete(json);
-            set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set exposure target");
-            return AICAM_ERROR;
+            return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set exposure target");
         }
     }
 
     cJSON_Delete(json);
-    ctx->response.message = "AEC parameters updated";
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "AEC parameters updated");
     return AICAM_OK;
 }
 
@@ -263,21 +260,18 @@ aicam_result_t api_isp_set_aec(http_handler_context_t *ctx) {
 aicam_result_t api_isp_get_manual_exposure(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     ISP_SensorGainTypeDef gain;
     ISP_SensorExposureTypeDef exposure;
     ISP_StatusTypeDef status = ISP_SVC_Sensor_GetGain(hIsp, &gain);
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get sensor gain");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get sensor gain");
     }
     status = ISP_SVC_Sensor_GetExposure(hIsp, &exposure);
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get sensor exposure");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get sensor exposure");
     }
 
     ISP_SensorInfoTypeDef sensorInfo;
@@ -316,14 +310,12 @@ aicam_result_t api_isp_get_manual_exposure(http_handler_context_t *ctx) {
 aicam_result_t api_isp_set_manual_exposure(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     cJSON *json = web_api_parse_body(ctx);
     if (json == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
     }
 
     ISP_SensorInfoTypeDef sensorInfo;
@@ -335,15 +327,13 @@ aicam_result_t api_isp_set_manual_exposure(http_handler_context_t *ctx) {
         uint32_t g = (uint32_t)gain_item->valuedouble;
         if (g < sensorInfo.gain_min || g > sensorInfo.gain_max) {
             cJSON_Delete(json);
-            set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "gain out of sensor range");
-            return AICAM_ERROR_INVALID_PARAM;
+            return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "gain out of sensor range");
         }
         ISP_SensorGainTypeDef gain = { .gain = g };
         ISP_StatusTypeDef status = ISP_SVC_Sensor_SetGain(hIsp, &gain);
         if (status != ISP_OK) {
             cJSON_Delete(json);
-            set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set sensor gain");
-            return AICAM_ERROR;
+            return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set sensor gain");
         }
         /* Align with isp_cmd_parser: update IQ param cache (sensorGainStatic) */
         if (iqParam) {
@@ -356,15 +346,13 @@ aicam_result_t api_isp_set_manual_exposure(http_handler_context_t *ctx) {
         uint32_t e = (uint32_t)exp_item->valuedouble;
         if (e < sensorInfo.exposure_min || e > sensorInfo.exposure_max) {
             cJSON_Delete(json);
-            set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "exposure out of sensor range");
-            return AICAM_ERROR_INVALID_PARAM;
+            return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "exposure out of sensor range");
         }
         ISP_SensorExposureTypeDef exposure = { .exposure = e };
         ISP_StatusTypeDef status = ISP_SVC_Sensor_SetExposure(hIsp, &exposure);
         if (status != ISP_OK) {
             cJSON_Delete(json);
-            set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set sensor exposure");
-            return AICAM_ERROR;
+            return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set sensor exposure");
         }
         /* Align with isp_cmd_parser: update IQ param cache (sensorExposureStatic) */
         if (iqParam) {
@@ -373,7 +361,7 @@ aicam_result_t api_isp_set_manual_exposure(http_handler_context_t *ctx) {
     }
 
     cJSON_Delete(json);
-    ctx->response.message = "Manual exposure parameters updated";
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "Manual exposure parameters updated");
     return AICAM_OK;
 }
 
@@ -382,8 +370,7 @@ aicam_result_t api_isp_set_manual_exposure(http_handler_context_t *ctx) {
 aicam_result_t api_isp_get_awb(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     uint8_t awb_auto = 0;
@@ -500,21 +487,18 @@ aicam_result_t api_isp_get_awb(http_handler_context_t *ctx) {
 aicam_result_t api_isp_set_awb(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     cJSON *json = web_api_parse_body(ctx);
     if (json == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
     }
 
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
     if (iqParam == NULL) {
         cJSON_Delete(json);
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
     }
 
     // Handle enable
@@ -605,7 +589,7 @@ aicam_result_t api_isp_set_awb(http_handler_context_t *ctx) {
     }
 
     cJSON_Delete(json);
-    ctx->response.message = "AWB parameters updated";
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "AWB parameters updated");
     return AICAM_OK;
 }
 
@@ -614,14 +598,12 @@ aicam_result_t api_isp_set_awb(http_handler_context_t *ctx) {
 aicam_result_t api_isp_get_demosaicing(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
     if (iqParam == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
     }
 
     cJSON *data = cJSON_CreateObject();
@@ -658,14 +640,12 @@ aicam_result_t api_isp_get_demosaicing(http_handler_context_t *ctx) {
 aicam_result_t api_isp_set_demosaicing(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     cJSON *json = web_api_parse_body(ctx);
     if (json == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
     }
 
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
@@ -690,13 +670,12 @@ aicam_result_t api_isp_set_demosaicing(http_handler_context_t *ctx) {
 
     ISP_StatusTypeDef status = ISP_SVC_ISP_SetDemosaicing(hIsp, &config);
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set demosaicing");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set demosaicing");
     }
     /* Align with isp_cmd_parser: update IQ param cache so algo/restart use it */
     iqParam->demosaicing = config;
 
-    ctx->response.message = "Demosaicing parameters updated";
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "Demosaicing parameters updated");
     return AICAM_OK;
 }
 
@@ -705,14 +684,12 @@ aicam_result_t api_isp_set_demosaicing(http_handler_context_t *ctx) {
 aicam_result_t api_isp_get_stat_removal(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
     if (iqParam == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
     }
 
     cJSON *data = cJSON_CreateObject();
@@ -734,21 +711,18 @@ aicam_result_t api_isp_get_stat_removal(http_handler_context_t *ctx) {
 aicam_result_t api_isp_set_stat_removal(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     cJSON *json = web_api_parse_body(ctx);
     if (json == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
     }
 
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
     if (iqParam == NULL) {
         cJSON_Delete(json);
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
     }
 
     cJSON *enable = cJSON_GetObjectItem(json, "enable");
@@ -761,8 +735,7 @@ aicam_result_t api_isp_set_stat_removal(http_handler_context_t *ctx) {
         int v = head->valueint;
         if (v < 0 || v > (int)ISP_STATREMOVAL_HEADLINES_MAX) {
             cJSON_Delete(json);
-            set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "head_lines out of range");
-            return AICAM_ERROR_INVALID_PARAM;
+            return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "head_lines out of range");
         }
         iqParam->statRemoval.nbHeadLines = (uint32_t)v;
     }
@@ -772,8 +745,7 @@ aicam_result_t api_isp_set_stat_removal(http_handler_context_t *ctx) {
         int v = valid->valueint;
         if (v < 0 || v > (int)ISP_STATREMOVAL_VALIDLINES_MAX) {
             cJSON_Delete(json);
-            set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "valid_lines out of range");
-            return AICAM_ERROR_INVALID_PARAM;
+            return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "valid_lines out of range");
         }
         iqParam->statRemoval.nbValidLines = (uint32_t)v;
     }
@@ -782,11 +754,10 @@ aicam_result_t api_isp_set_stat_removal(http_handler_context_t *ctx) {
     cJSON_Delete(json);
 
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set stat removal");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set stat removal");
     }
 
-    ctx->response.message = "Stat removal parameters updated";
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "Stat removal parameters updated");
     return AICAM_OK;
 }
 
@@ -795,15 +766,13 @@ aicam_result_t api_isp_set_stat_removal(http_handler_context_t *ctx) {
 aicam_result_t api_isp_get_black_level(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     ISP_BlackLevelTypeDef blackLevel;
     ISP_StatusTypeDef status = ISP_SVC_ISP_GetBlackLevel(hIsp, &blackLevel);
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get black level");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get black level");
     }
 
     cJSON *data = cJSON_CreateObject();
@@ -828,14 +797,12 @@ aicam_result_t api_isp_get_black_level(http_handler_context_t *ctx) {
 aicam_result_t api_isp_set_black_level(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     cJSON *json = web_api_parse_body(ctx);
     if (json == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
     }
 
     ISP_BlackLevelTypeDef blackLevel;
@@ -850,8 +817,7 @@ aicam_result_t api_isp_set_black_level(http_handler_context_t *ctx) {
     if (r && cJSON_IsNumber(r)) {
         if (r->valueint < 0 || r->valueint > 255) {
             cJSON_Delete(json);
-            set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "r must be 0-255");
-            return AICAM_ERROR_INVALID_PARAM;
+            return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "r must be 0-255");
         }
         blackLevel.BLCR = (uint8_t)r->valueint;
     }
@@ -860,8 +826,7 @@ aicam_result_t api_isp_set_black_level(http_handler_context_t *ctx) {
     if (g && cJSON_IsNumber(g)) {
         if (g->valueint < 0 || g->valueint > 255) {
             cJSON_Delete(json);
-            set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "g must be 0-255");
-            return AICAM_ERROR_INVALID_PARAM;
+            return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "g must be 0-255");
         }
         blackLevel.BLCG = (uint8_t)g->valueint;
     }
@@ -870,8 +835,7 @@ aicam_result_t api_isp_set_black_level(http_handler_context_t *ctx) {
     if (b && cJSON_IsNumber(b)) {
         if (b->valueint < 0 || b->valueint > 255) {
             cJSON_Delete(json);
-            set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "b must be 0-255");
-            return AICAM_ERROR_INVALID_PARAM;
+            return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "b must be 0-255");
         }
         blackLevel.BLCB = (uint8_t)b->valueint;
     }
@@ -880,8 +844,7 @@ aicam_result_t api_isp_set_black_level(http_handler_context_t *ctx) {
     cJSON_Delete(json);
 
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set black level");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set black level");
     }
     /* Align with isp_cmd_parser: update IQ param cache so it takes effect on restart/reload */
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
@@ -894,7 +857,7 @@ aicam_result_t api_isp_set_black_level(http_handler_context_t *ctx) {
         }
     }
 
-    ctx->response.message = "Black level updated";
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "Black level updated");
     return AICAM_OK;
 }
 
@@ -903,15 +866,13 @@ aicam_result_t api_isp_set_black_level(http_handler_context_t *ctx) {
 aicam_result_t api_isp_get_bad_pixel(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     ISP_BadPixelTypeDef badPixel;
     ISP_StatusTypeDef status = ISP_SVC_ISP_GetBadPixel(hIsp, &badPixel);
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get bad pixel config");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get bad pixel config");
     }
 
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
@@ -953,14 +914,12 @@ aicam_result_t api_isp_get_bad_pixel(http_handler_context_t *ctx) {
 aicam_result_t api_isp_set_bad_pixel(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     cJSON *json = web_api_parse_body(ctx);
     if (json == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
     }
 
     ISP_BadPixelTypeDef badPixel;
@@ -975,8 +934,7 @@ aicam_result_t api_isp_set_bad_pixel(http_handler_context_t *ctx) {
     if (strength && cJSON_IsNumber(strength)) {
         if (strength->valueint < 0 || strength->valueint > ISP_API_BADPIXEL_STRENGTH_MAX) {
             cJSON_Delete(json);
-            set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "strength must be 0-7");
-            return AICAM_ERROR_INVALID_PARAM;
+            return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "strength must be 0-7");
         }
         badPixel.strength = (uint8_t)strength->valueint;
     }
@@ -984,8 +942,7 @@ aicam_result_t api_isp_set_bad_pixel(http_handler_context_t *ctx) {
     ISP_StatusTypeDef status = ISP_SVC_ISP_SetBadPixel(hIsp, &badPixel);
     if (status != ISP_OK) {
         cJSON_Delete(json);
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set bad pixel config");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set bad pixel config");
     }
 
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
@@ -1007,7 +964,7 @@ aicam_result_t api_isp_set_bad_pixel(http_handler_context_t *ctx) {
     }
 
     cJSON_Delete(json);
-    ctx->response.message = "Bad pixel config updated";
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "Bad pixel config updated");
     return AICAM_OK;
 }
 
@@ -1016,15 +973,13 @@ aicam_result_t api_isp_set_bad_pixel(http_handler_context_t *ctx) {
 aicam_result_t api_isp_get_gain(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     ISP_ISPGainTypeDef ispGain;
     ISP_StatusTypeDef status = ISP_SVC_ISP_GetGain(hIsp, &ispGain);
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get ISP gain");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get ISP gain");
     }
 
     cJSON *data = cJSON_CreateObject();
@@ -1059,14 +1014,12 @@ aicam_result_t api_isp_get_gain(http_handler_context_t *ctx) {
 aicam_result_t api_isp_set_gain(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     cJSON *json = web_api_parse_body(ctx);
     if (json == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
     }
 
     ISP_ISPGainTypeDef ispGain;
@@ -1082,8 +1035,7 @@ aicam_result_t api_isp_set_gain(http_handler_context_t *ctx) {
         uint32_t val = (uint32_t)r->valuedouble;
         if (val > ISP_API_GAIN_MAX) {
             cJSON_Delete(json);
-            set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "r gain exceeds max");
-            return AICAM_ERROR_INVALID_PARAM;
+            return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "r gain exceeds max");
         }
         ispGain.ispGainR = val;
     }
@@ -1093,8 +1045,7 @@ aicam_result_t api_isp_set_gain(http_handler_context_t *ctx) {
         uint32_t val = (uint32_t)g->valuedouble;
         if (val > ISP_API_GAIN_MAX) {
             cJSON_Delete(json);
-            set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "g gain exceeds max");
-            return AICAM_ERROR_INVALID_PARAM;
+            return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "g gain exceeds max");
         }
         ispGain.ispGainG = val;
     }
@@ -1104,8 +1055,7 @@ aicam_result_t api_isp_set_gain(http_handler_context_t *ctx) {
         uint32_t val = (uint32_t)b->valuedouble;
         if (val > ISP_API_GAIN_MAX) {
             cJSON_Delete(json);
-            set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "b gain exceeds max");
-            return AICAM_ERROR_INVALID_PARAM;
+            return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "b gain exceeds max");
         }
         ispGain.ispGainB = val;
     }
@@ -1114,8 +1064,7 @@ aicam_result_t api_isp_set_gain(http_handler_context_t *ctx) {
     cJSON_Delete(json);
 
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set ISP gain");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set ISP gain");
     }
     /* Align with isp_cmd_parser: update IQ param cache (ispGainStatic) */
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
@@ -1128,7 +1077,7 @@ aicam_result_t api_isp_set_gain(http_handler_context_t *ctx) {
         }
     }
 
-    ctx->response.message = "ISP gain updated";
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "ISP gain updated");
     return AICAM_OK;
 }
 
@@ -1137,15 +1086,13 @@ aicam_result_t api_isp_set_gain(http_handler_context_t *ctx) {
 aicam_result_t api_isp_get_color_conv(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     ISP_ColorConvTypeDef colorConv;
     ISP_StatusTypeDef status = ISP_SVC_ISP_GetColorConv(hIsp, &colorConv);
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get color conversion");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get color conversion");
     }
 
     cJSON *data = cJSON_CreateObject();
@@ -1180,14 +1127,12 @@ aicam_result_t api_isp_get_color_conv(http_handler_context_t *ctx) {
 aicam_result_t api_isp_set_color_conv(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     cJSON *json = web_api_parse_body(ctx);
     if (json == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
     }
 
     ISP_ColorConvTypeDef colorConv;
@@ -1209,8 +1154,7 @@ aicam_result_t api_isp_set_color_conv(http_handler_context_t *ctx) {
                         int32_t coeff = (int32_t)val->valuedouble;
                         if (coeff < -ISP_API_COLORCONV_MAX || coeff > ISP_API_COLORCONV_MAX) {
                             cJSON_Delete(json);
-                            set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "Matrix coeff out of range");
-                            return AICAM_ERROR_INVALID_PARAM;
+                            return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "Matrix coeff out of range");
                         }
                         colorConv.coeff[i][j] = coeff;
                     }
@@ -1223,8 +1167,7 @@ aicam_result_t api_isp_set_color_conv(http_handler_context_t *ctx) {
     cJSON_Delete(json);
 
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set color conversion");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set color conversion");
     }
     /* Align with isp_cmd_parser: update IQ param cache (colorConvStatic) */
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
@@ -1235,7 +1178,7 @@ aicam_result_t api_isp_set_color_conv(http_handler_context_t *ctx) {
         }
     }
 
-    ctx->response.message = "Color conversion updated";
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "Color conversion updated");
     return AICAM_OK;
 }
 
@@ -1244,14 +1187,12 @@ aicam_result_t api_isp_set_color_conv(http_handler_context_t *ctx) {
 aicam_result_t api_isp_get_contrast(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
     if (iqParam == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
     }
 
     cJSON *data = cJSON_CreateObject();
@@ -1288,14 +1229,12 @@ aicam_result_t api_isp_get_contrast(http_handler_context_t *ctx) {
 aicam_result_t api_isp_set_contrast(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     cJSON *json = web_api_parse_body(ctx);
     if (json == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
     }
 
     ISP_ContrastTypeDef contrast = {0};
@@ -1321,8 +1260,7 @@ aicam_result_t api_isp_set_contrast(http_handler_context_t *ctx) {
             if (val && cJSON_IsNumber(val)) {
                 if (val->valueint < 0 || val->valueint > ISP_API_CONTRAST_COEFF_MAX) {
                     cJSON_Delete(json);
-                    set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "LUT value out of range (0-394)");
-                    return AICAM_ERROR_INVALID_PARAM;
+                    return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "LUT value out of range (0-394)");
                 }
                 *coeffs[i] = (uint32_t)val->valueint;
             }
@@ -1333,15 +1271,14 @@ aicam_result_t api_isp_set_contrast(http_handler_context_t *ctx) {
     cJSON_Delete(json);
 
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set contrast");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set contrast");
     }
     /* Align with isp_cmd_parser: update IQ param cache */
     if (iqParam) {
         iqParam->contrast = contrast;
     }
 
-    ctx->response.message = "Contrast updated";
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "Contrast updated");
     return AICAM_OK;
 }
 
@@ -1350,8 +1287,7 @@ aicam_result_t api_isp_set_contrast(http_handler_context_t *ctx) {
 aicam_result_t api_isp_get_gamma(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
@@ -1376,14 +1312,12 @@ aicam_result_t api_isp_get_gamma(http_handler_context_t *ctx) {
 aicam_result_t api_isp_set_gamma(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     cJSON *json = web_api_parse_body(ctx);
     if (json == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
     }
 
     ISP_GammaTypeDef gamma = {0};
@@ -1396,8 +1330,7 @@ aicam_result_t api_isp_set_gamma(http_handler_context_t *ctx) {
     cJSON_Delete(json);
 
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set gamma");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set gamma");
     }
     /* Align with isp_cmd_parser: update IQ param cache */
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
@@ -1405,7 +1338,7 @@ aicam_result_t api_isp_set_gamma(http_handler_context_t *ctx) {
         iqParam->gamma = gamma;
     }
 
-    ctx->response.message = "Gamma updated";
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "Gamma updated");
     return AICAM_OK;
 }
 
@@ -1414,15 +1347,13 @@ aicam_result_t api_isp_set_gamma(http_handler_context_t *ctx) {
 aicam_result_t api_isp_get_stat_area(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     ISP_StatAreaTypeDef statArea;
     ISP_StatusTypeDef status = ISP_GetStatArea(hIsp, &statArea);
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get stat area");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get stat area");
     }
 
     ISP_SensorInfoTypeDef sensorInfo;
@@ -1457,14 +1388,12 @@ aicam_result_t api_isp_get_stat_area(http_handler_context_t *ctx) {
 aicam_result_t api_isp_set_stat_area(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     cJSON *json = web_api_parse_body(ctx);
     if (json == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
     }
 
     ISP_StatAreaTypeDef statArea;
@@ -1488,22 +1417,19 @@ aicam_result_t api_isp_set_stat_area(http_handler_context_t *ctx) {
     // Validate constraints
     if (statArea.XSize < ISP_API_STATWINDOW_MIN || statArea.YSize < ISP_API_STATWINDOW_MIN) {
         cJSON_Delete(json);
-        set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "Width/height must be >= 4");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "Width/height must be >= 4");
     }
     if (statArea.X0 + statArea.XSize > sensorInfo.width || 
         statArea.Y0 + statArea.YSize > sensorInfo.height) {
         cJSON_Delete(json);
-        set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "Stat area exceeds sensor bounds");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "Stat area exceeds sensor bounds");
     }
 
     ISP_StatusTypeDef status = ISP_SetStatArea(hIsp, &statArea);
     cJSON_Delete(json);
 
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set stat area");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to set stat area");
     }
     /* Align with isp_cmd_parser: update IQ param cache and handle statArea so algo/stat use it */
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
@@ -1512,7 +1438,7 @@ aicam_result_t api_isp_set_stat_area(http_handler_context_t *ctx) {
     }
     hIsp->statArea = statArea;
 
-    ctx->response.message = "Stat area updated";
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "Stat area updated");
     return AICAM_OK;
 }
 
@@ -1521,14 +1447,12 @@ aicam_result_t api_isp_set_stat_area(http_handler_context_t *ctx) {
 aicam_result_t api_isp_get_lux_ref(http_handler_context_t *ctx) {
   ISP_HandleTypeDef *hIsp = get_isp_handle();
   if (hIsp == NULL) {
-    set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-    return AICAM_ERROR_NOT_INITIALIZED;
+    return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
   }
 
   ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
   if (iqParam == NULL) {
-    set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
-    return AICAM_ERROR_NOT_INITIALIZED;
+    return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
   }
 
   cJSON *data = cJSON_CreateObject();
@@ -1579,21 +1503,18 @@ aicam_result_t api_isp_get_lux_ref(http_handler_context_t *ctx) {
 aicam_result_t api_isp_set_lux_ref(http_handler_context_t *ctx) {
   ISP_HandleTypeDef *hIsp = get_isp_handle();
   if (hIsp == NULL) {
-    set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-    return AICAM_ERROR_NOT_INITIALIZED;
+    return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
   }
 
   cJSON *json = web_api_parse_body(ctx);
   if (json == NULL) {
-    set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
-    return AICAM_ERROR_INVALID_PARAM;
+    return set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
   }
 
   ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
   if (iqParam == NULL) {
     cJSON_Delete(json);
-    set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
-    return AICAM_ERROR_NOT_INITIALIZED;
+    return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
   }
 
   cJSON *high = cJSON_GetObjectItem(json, "high_lux");
@@ -1615,8 +1536,7 @@ aicam_result_t api_isp_set_lux_ref(http_handler_context_t *ctx) {
       int val = v->valueint;
       if (val < 0 || val > 255) {
         cJSON_Delete(json);
-        set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "High lux lum1 must be 0-255");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "High lux lum1 must be 0-255");
       }
       iqParam->luxRef.HL_Lum1 = (uint8_t)val;
     }
@@ -1631,8 +1551,7 @@ aicam_result_t api_isp_set_lux_ref(http_handler_context_t *ctx) {
       int val = v->valueint;
       if (val < 0 || val > 255) {
         cJSON_Delete(json);
-        set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "High lux lum2 must be 0-255");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "High lux lum2 must be 0-255");
       }
       iqParam->luxRef.HL_Lum2 = (uint8_t)val;
     }
@@ -1657,8 +1576,7 @@ aicam_result_t api_isp_set_lux_ref(http_handler_context_t *ctx) {
       int val = v->valueint;
       if (val < 0 || val > 255) {
         cJSON_Delete(json);
-        set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "Low lux lum1 must be 0-255");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "Low lux lum1 must be 0-255");
       }
       iqParam->luxRef.LL_Lum1 = (uint8_t)val;
     }
@@ -1673,8 +1591,7 @@ aicam_result_t api_isp_set_lux_ref(http_handler_context_t *ctx) {
       int val = v->valueint;
       if (val < 0 || val > 255) {
         cJSON_Delete(json);
-        set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "Low lux lum2 must be 0-255");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_PARAM_OUT_OF_RANGE, "Low lux lum2 must be 0-255");
       }
       iqParam->luxRef.LL_Lum2 = (uint8_t)val;
     }
@@ -1686,7 +1603,7 @@ aicam_result_t api_isp_set_lux_ref(http_handler_context_t *ctx) {
   }
 
   cJSON_Delete(json);
-  ctx->response.message = "Lux reference parameters updated";
+  snprintf(ctx->response.message, sizeof(ctx->response.message), "Lux reference parameters updated");
   return AICAM_OK;
 }
 
@@ -1695,14 +1612,12 @@ aicam_result_t api_isp_set_lux_ref(http_handler_context_t *ctx) {
 aicam_result_t api_isp_get_sensor_delay(http_handler_context_t *ctx) {
   ISP_HandleTypeDef *hIsp = get_isp_handle();
   if (hIsp == NULL) {
-    set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-    return AICAM_ERROR_NOT_INITIALIZED;
+    return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
   }
 
   ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
   if (iqParam == NULL) {
-    set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
-    return AICAM_ERROR_NOT_INITIALIZED;
+    return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
   }
 
   cJSON *data = cJSON_CreateObject();
@@ -1724,21 +1639,18 @@ aicam_result_t api_isp_get_sensor_delay(http_handler_context_t *ctx) {
 aicam_result_t api_isp_set_sensor_delay(http_handler_context_t *ctx) {
   ISP_HandleTypeDef *hIsp = get_isp_handle();
   if (hIsp == NULL) {
-    set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-    return AICAM_ERROR_NOT_INITIALIZED;
+    return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
   }
 
   cJSON *json = web_api_parse_body(ctx);
   if (json == NULL) {
-    set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
-    return AICAM_ERROR_INVALID_PARAM;
+    return set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
   }
 
   ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
   if (iqParam == NULL) {
     cJSON_Delete(json);
-    set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
-    return AICAM_ERROR_NOT_INITIALIZED;
+    return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
   }
 
   cJSON *delay_item = cJSON_GetObjectItem(json, "delay");
@@ -1747,7 +1659,7 @@ aicam_result_t api_isp_set_sensor_delay(http_handler_context_t *ctx) {
   }
 
   cJSON_Delete(json);
-  ctx->response.message = "Sensor delay updated";
+  snprintf(ctx->response.message, sizeof(ctx->response.message), "Sensor delay updated");
   return AICAM_OK;
 }
 
@@ -1756,15 +1668,13 @@ aicam_result_t api_isp_set_sensor_delay(http_handler_context_t *ctx) {
 aicam_result_t api_isp_get_statistics(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     ISP_SVC_StatStateTypeDef stats;
     ISP_StatusTypeDef status = ISP_SVC_Stats_GetLatest(hIsp, &stats);
     if (status != ISP_OK) {
-        set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get statistics");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, isp_status_to_error_code(status), "Failed to get statistics");
     }
 
     uint32_t lux = 0;
@@ -1809,14 +1719,12 @@ aicam_result_t api_isp_get_statistics(http_handler_context_t *ctx) {
 aicam_result_t api_isp_get_all_params(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
     if (iqParam == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "IQ params not available");
     }
 
     cJSON *data = cJSON_CreateObject();
@@ -2021,8 +1929,7 @@ aicam_result_t api_isp_module_deinit(void) {
 aicam_result_t api_isp_save_config(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     // Get current ISP parameters and save to config
@@ -2130,26 +2037,23 @@ aicam_result_t api_isp_save_config(http_handler_context_t *ctx) {
     // Save to NVS
     aicam_result_t result = json_config_set_isp_config(&isp_config);
     if (result != AICAM_OK) {
-        set_isp_error_response(ctx, API_ISP_ERROR_HAL_ERROR, "Failed to save ISP config to NVS");
-        return AICAM_ERROR;
+        return set_isp_error_response(ctx, API_ISP_ERROR_HAL_ERROR, "Failed to save ISP config to NVS");
     }
 
-    ctx->response.message = "ISP configuration saved successfully";
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "ISP configuration saved successfully");
     return AICAM_OK;
 }
 
 aicam_result_t api_isp_load_config(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     isp_config_t isp_config;
     aicam_result_t result = json_config_get_isp_config(&isp_config);
     if (result != AICAM_OK || !isp_config.valid) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "No saved ISP configuration found");
-        return AICAM_ERROR_NOT_FOUND;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "No saved ISP configuration found");
     }
 
     // Apply ISP configuration
@@ -2159,7 +2063,7 @@ aicam_result_t api_isp_load_config(http_handler_context_t *ctx) {
     //     return AICAM_ERROR;
     // }
 
-    ctx->response.message = "ISP configuration loaded and applied";
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "ISP configuration loaded and applied");
     return AICAM_OK;
 }
 
@@ -2168,14 +2072,12 @@ aicam_result_t api_isp_load_config(http_handler_context_t *ctx) {
 aicam_result_t api_isp_export_config(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
     if (!iqParam) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP IQ parameters not available");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP IQ parameters not available");
     }
 
     // Build JSON response with all ISP parameters
@@ -2321,35 +2223,31 @@ aicam_result_t api_isp_export_config(http_handler_context_t *ctx) {
     ctx->response.data = json_str;
     cJSON_Delete(data);
 
-    ctx->response.message = "ISP configuration exported successfully";
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "ISP configuration exported successfully");
     return AICAM_OK;
 }
 
 aicam_result_t api_isp_import_config(http_handler_context_t *ctx) {
     ISP_HandleTypeDef *hIsp = get_isp_handle();
     if (hIsp == NULL) {
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP not initialized");
     }
 
     cJSON *body = cJSON_Parse(ctx->request.body);
     if (!body) {
-        set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Invalid JSON body");
     }
 
     cJSON *config = cJSON_GetObjectItem(body, "config");
     if (!config) {
         cJSON_Delete(body);
-        set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Missing 'config' field");
-        return AICAM_ERROR_INVALID_PARAM;
+        return set_isp_error_response(ctx, API_ISP_ERROR_INVALID_PARAM, "Missing 'config' field");
     }
 
     ISP_IQParamTypeDef *iqParam = ISP_SVC_IQParam_Get(hIsp);
     if (!iqParam) {
         cJSON_Delete(body);
-        set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP IQ parameters not available");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        return set_isp_error_response(ctx, API_ISP_ERROR_NOT_INITIALIZED, "ISP IQ parameters not available");
     }
 
     // Parse and apply each section
@@ -2539,7 +2437,7 @@ aicam_result_t api_isp_import_config(http_handler_context_t *ctx) {
         }
     }
 
-    ctx->response.message = "ISP configuration imported and applied successfully";
+    snprintf(ctx->response.message, sizeof(ctx->response.message), "ISP configuration imported and applied successfully");
     return AICAM_OK;
 }
 

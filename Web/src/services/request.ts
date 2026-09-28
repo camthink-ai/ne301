@@ -169,7 +169,15 @@ request.interceptors.response.use(
       return Promise.reject(response)
     }
     if (!response.config?.skipErrorToast) {
-      toast.error(i18n._(`errors.business.${data.error_code}`) + apiTag(response.config))
+      // Localized error-code label as the headline, then the backend's
+      // specific message ("Missing 'config' field") appended when present.
+      // lingui returns the lookup key itself for ids missing from the
+      // catalogue, which must never reach the toast.
+      const key = `errors.business.${data.error_code}`
+      const label = i18n._(key)
+      const codeText = label !== key ? label : String(data.error_code || 'Request failed')
+      const text = data.message ? `${codeText}: ${data.message}` : codeText
+      toast.error(text + apiTag(response.config))
     }
     return Promise.reject(response)
   },

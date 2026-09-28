@@ -88,6 +88,7 @@ aicam_result_t network_wifi_region_set_handler(http_handler_context_t *ctx);
 
 #if NETIF_WIFI_HALOW_IS_ENABLE
 aicam_result_t network_halow_sta_handler(http_handler_context_t *ctx);
+aicam_result_t network_halow_info_handler(http_handler_context_t *ctx);
 aicam_result_t network_halow_region_get_handler(http_handler_context_t *ctx);
 aicam_result_t network_halow_region_set_handler(http_handler_context_t *ctx);
 aicam_result_t network_halow_scan_handler(http_handler_context_t *ctx);
