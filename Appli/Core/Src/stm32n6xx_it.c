@@ -855,6 +855,15 @@ void EXTI0_IRQHandler(void)
 
 /* USER CODE BEGIN 1 */
 /**
+  * @brief IWDG early-wakeup interrupt: freeze forensics (see iwdg.c).
+  */
+void IWDG_IRQHandler(void)
+{
+    extern IWDG_HandleTypeDef hiwdg;
+    HAL_IWDG_IRQHandler(&hiwdg);
+}
+
+/**
   * @brief This function handles EXTI8 global interrupt.
   */
 void EXTI5_IRQHandler(void)

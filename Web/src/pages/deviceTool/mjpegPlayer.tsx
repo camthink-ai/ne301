@@ -74,6 +74,7 @@ export default function MjpegPlayer({ status }: MjpegPlayerProps) {
   const [liveFps, setLiveFps] = useState<number | null>(null);
   const [webFps, setWebFps] = useState<number | null>(null);
   const [imgSrc, setImgSrc] = useState<string | null>(null);
+  const [streamDown, setStreamDown] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
   const frameCountRef = useRef(0);
   /* last decoded frame dimensions: naturalWidth reads 0 transiently while
@@ -247,57 +248,106 @@ export default function MjpegPlayer({ status }: MjpegPlayerProps) {
      * frames on SOI/EOI markers - Chromium fires <img> load only once for
      * multipart streams, so per-frame counting needs explicit parsing */
     const ctrl = new AbortController();
+    /* idle watchdog: a device-side stall keeps the TCP stream OPEN but
+     * delivers no frames - the fetch neither ends nor errors, so the
+     * end/error reconnect below never fires (observed: fps badge stuck
+     * at 0). Abort the current connection after 15s without a complete
+     * frame and let the reconnect loop take over. 15s, not less: during
+     * captures the encode (Realtime priority) legitimately starves the
+     * web task for 5-10s and the stream resumes on its own - reconnecting
+     * there just churned the 2-connection budget (observed at 5s). */
+    let curConn: AbortController | null = null;
+    let lastFrameAt = Date.now();
+    const idle = window.setInterval(() => {
+      if (curConn !== null && Date.now() - lastFrameAt > 15000) {
+        curConn.abort();
+      }
+    }, 1000);
+    ctrl.signal.addEventListener('abort', () => curConn?.abort(), { once: true });
     (async () => {
-      let buf = new Uint8Array(0);
       let curUrl: string | null = null;
-      let prevSig = -1;
-      try {
-        const res = await fetch('/uvc.mjpg', { signal: ctrl.signal });
-        const reader = res.body?.getReader();
-        if (!reader) return;
-        /* eslint-disable no-await-in-loop -- sequential stream reads */
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const merged = new Uint8Array(buf.length + value.length);
-          merged.set(buf);
-          merged.set(value, buf.length);
-          buf = merged;
+      let backoffMs = 1000;
+      /* the device closes the stream on reboot/sleep/resolution switch and
+       * the fetch dies silently - without this loop the player froze on the
+       * last frame forever; mirror the WS channel reconnect behavior */
+      /* eslint-disable no-await-in-loop -- sequential stream reads */
+      while (!ctrl.signal.aborted) {
+        let gotFrame = false;
+        let buf = new Uint8Array(0);
+        let prevSig = -1;
+        const conn = new AbortController();
+        curConn = conn;
+        lastFrameAt = Date.now();
+        try {
+          const res = await fetch('/uvc.mjpg', { signal: conn.signal });
+          if (!res.ok || !res.body) throw new Error(`mjpeg ${res.status}`);
+          const reader = res.body.getReader();
           for (;;) {
-            let soi = -1;
-            for (let i = 0; i + 1 < buf.length; i++) {
-              if (buf[i] === 0xFF && buf[i + 1] === 0xD8) { soi = i; break; }
+            const { done, value } = await reader.read();
+            if (done) break;
+            const merged = new Uint8Array(buf.length + value.length);
+            merged.set(buf);
+            merged.set(value, buf.length);
+            buf = merged;
+            for (;;) {
+              let soi = -1;
+              for (let i = 0; i + 1 < buf.length; i++) {
+                if (buf[i] === 0xFF && buf[i + 1] === 0xD8) { soi = i; break; }
+              }
+              if (soi < 0) { buf = new Uint8Array(0); break; }
+              if (soi > 0) buf = buf.slice(soi);
+              /* marker-aware EOI: a raw FFD9 can legitimately appear inside
+               * DQT/DHT segment bytes - walking the segment structure (and
+               * FF00 stuffing inside the scan) splits frames exactly once */
+              const eoi = findJpegEoi(buf);
+              if (eoi < 0) break;
+              const frame = buf.slice(0, eoi);
+              buf = buf.slice(eoi);
+              gotFrame = true;
+              lastFrameAt = Date.now();
+              setStreamDown(false);
+              /* dedupe: the device resends the last frame at low
+               * resolutions (web fps showed 2x dev) - identical frames are
+               * neither counted nor re-rendered (saves a decode) */
+              let sig = frame.length;
+              for (let i = 0; i < 8 && i < frame.length; i++) {
+                sig = (sig * 33 + frame[i]) >>> 0;
+              }
+              for (let i = frame.length - 8; i < frame.length; i++) {
+                if (i >= 0) sig = (sig * 33 + frame[i]) >>> 0;
+              }
+              if (sig === prevSig) continue;
+              prevSig = sig;
+              frameCountRef.current += 1;
+              const url = URL.createObjectURL(new Blob([frame], { type: 'image/jpeg' }));
+              setImgSrc(url);
+              if (curUrl) URL.revokeObjectURL(curUrl);
+              curUrl = url;
             }
-            if (soi < 0) { buf = new Uint8Array(0); break; }
-            if (soi > 0) buf = buf.slice(soi);
-            /* marker-aware EOI: a raw FFD9 can legitimately appear inside
-             * DQT/DHT segment bytes - walking the segment structure (and
-             * FF00 stuffing inside the scan) splits frames exactly once */
-            const eoi = findJpegEoi(buf);
-            if (eoi < 0) break;
-            const frame = buf.slice(0, eoi);
-            buf = buf.slice(eoi);
-            /* dedupe: the device resends the last frame at low
-             * resolutions (web fps showed 2x dev) - identical frames are
-             * neither counted nor re-rendered (saves a decode) */
-            let sig = frame.length;
-            for (let i = 0; i < 8 && i < frame.length; i++) {
-              sig = (sig * 33 + frame[i]) >>> 0;
-            }
-            for (let i = frame.length - 8; i < frame.length; i++) {
-              if (i >= 0) sig = (sig * 33 + frame[i]) >>> 0;
-            }
-            if (sig === prevSig) continue;
-            prevSig = sig;
-            frameCountRef.current += 1;
-            const url = URL.createObjectURL(new Blob([frame], { type: 'image/jpeg' }));
-            setImgSrc(url);
-            if (curUrl) URL.revokeObjectURL(curUrl);
-            curUrl = url;
           }
+        } catch {
+          /* aborted (idle watchdog / unmount) or stream failed: fall
+           * through to the reconnect pacing */
         }
-      } catch {
-        /* aborted or stream failed - imgError badge covers it */
+        curConn = null;
+        if (ctrl.signal.aborted) return;
+        setStreamDown(true);
+        /* the device-side session dies with the connection - re-arm it
+         * before reconnecting (same as the WS channel's onopen re-arm) */
+        deviceTool.startVideoStreamReq().catch(() => { /* already active */ });
+        const waitMs = backoffMs;
+        await new Promise<void>((resolve) => {
+          const t = window.setTimeout(resolve, waitMs);
+          ctrl.signal.addEventListener('abort', () => {
+            window.clearTimeout(t);
+            resolve();
+          }, { once: true });
+        });
+        if (ctrl.signal.aborted) return;
+        /* a connection that delivered frames was healthy: retry fast; a
+         * dead device (or the 2-connection budget held by other tabs)
+         * backs off progressively instead of hammering */
+        backoffMs = gotFrame ? 1000 : Math.min(backoffMs * 2, 8000);
       }
     })();
     /* meter: 1s window over the local frame counter, no network */
@@ -327,6 +377,7 @@ export default function MjpegPlayer({ status }: MjpegPlayerProps) {
       stop = true;
       halt();
       window.clearInterval(meter);
+      window.clearInterval(idle);
       ctrl.abort();
       document.removeEventListener('visibilitychange', onVis);
     };
@@ -369,6 +420,11 @@ export default function MjpegPlayer({ status }: MjpegPlayerProps) {
         {imgError && (
           <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-white/80 text-sm">
             MJPEG stream unavailable
+          </div>
+        )}
+        {!imgError && streamDown && (
+          <div className="absolute left-1/2 bottom-4 -translate-x-1/2 bg-gray-800/60 text-white/80 px-3 py-1 rounded text-sm">
+            stream lost, reconnecting…
           </div>
         )}
       </div>

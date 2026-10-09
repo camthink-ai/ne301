@@ -2419,6 +2419,21 @@ aicam_result_t ai_single_image_inference(const model_validation_config_t *model_
         .chroma_subsampling = JPEG_420_SUBSAMPLING,
         .quality = model_validation_config->ai_image_quality};
 
+    /* the form-declared dims/css are client guesses; a mismatch either
+     * aborts in jpegc (W/H) or over-reads the raster allocation (css) -
+     * override both from the actual stream, same policy as the capture
+     * path's SOF correction */
+    {
+        uvc_jpeg_info_t vi = {0};
+        if (uvc_jpeg_parse_header(ai_jpeg_data_copy,
+                                  model_validation_config->ai_image_size,
+                                  &vi) == 0 && vi.width != 0) {
+            ai_decode_config.width = vi.width;
+            ai_decode_config.height = vi.height;
+            ai_decode_config.chroma_subsampling = vi.chroma_subsampling;
+        }
+    }
+
     ret = ai_jpeg_decode(ai_jpeg_data_copy, model_validation_config->ai_image_size,
                          &ai_decode_config, &ai_raw_data, &ai_raw_size);
     if (ret != AICAM_OK)
@@ -2463,6 +2478,18 @@ aicam_result_t ai_single_image_inference(const model_validation_config_t *model_
         .height = model_validation_config->draw_image_height,
         .chroma_subsampling = JPEG_420_SUBSAMPLING,
         .quality = model_validation_config->draw_image_quality};
+
+    /* see the ai_image override above: trust the stream, not the form */
+    {
+        uvc_jpeg_info_t vi = {0};
+        if (uvc_jpeg_parse_header(draw_jepg_data_copy,
+                                  model_validation_config->draw_image_size,
+                                  &vi) == 0 && vi.width != 0) {
+            draw_decode_config.width = vi.width;
+            draw_decode_config.height = vi.height;
+            draw_decode_config.chroma_subsampling = vi.chroma_subsampling;
+        }
+    }
 
     draw_jepg_data_copy = buffer_calloc(1, model_validation_config->draw_image_size);
     if (!draw_jepg_data_copy)

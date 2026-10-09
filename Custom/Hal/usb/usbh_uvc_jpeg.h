@@ -36,4 +36,13 @@ int uvc_jpeg_decode_ycbcr(const uint8_t *jpeg, uint32_t len,
 int uvc_jpeg_raster_trylock(uint32_t timeout_ms);
 void uvc_jpeg_raster_unlock(void);
 
+/* Append four EOI markers past the frame end (in-place), returning the
+ * extended length; no-op without room (cap < len+8). Reduces the JPEG
+ * core's end-of-stream wedge ~10x on this camera (stale tail bytes vs an
+ * explicit EOI in the core's post-MCU window). ONLY for buffers that are
+ * never persisted or transmitted verbatim - the padded length must not
+ * reach storage (the AI task's private decode buffer qualifies; the
+ * capture buffer does NOT). */
+uint32_t uvc_jpeg_pad_tail(uint8_t *jpeg, uint32_t len, uint32_t cap);
+
 #endif /* USBH_UVC_JPEG_H */

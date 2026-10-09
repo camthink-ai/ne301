@@ -70,6 +70,21 @@ void uvc_jpeg_raster_unlock(void)
     }
 }
 
+uint32_t uvc_jpeg_pad_tail(uint8_t *jpeg, uint32_t len, uint32_t cap)
+{
+    /* end-of-stream edge aid: after finishing the last MCU the core scans
+     * its tail window for the EOI - stale bytes there (a reused buffer's
+     * previous frame) wedge it ~1% of frames, explicit EOI markers cure
+     * ~10x of those (measured 0/700 vs 9/977; rare patterns still wedge,
+     * the jpegc tail-salvage covers those). Storage-safe callers only:
+     * the padded length flows into whatever consumes the buffer. */
+    if (jpeg == NULL || len < 2 || len + 8 > cap) {
+        return len;
+    }
+    memcpy(jpeg + len, "\xFF\xD9\xFF\xD9\xFF\xD9\xFF\xD9", 8);
+    return len + 8;
+}
+
 static device_t *uvc_jpeg_dev(void)
 {
     if (s_jpeg_dev == NULL) {
@@ -142,6 +157,70 @@ int uvc_jpeg_parse_header(const uint8_t *jpeg, uint32_t len, uvc_jpeg_info_t *in
     return -1;
 }
 
+/* Failure forensics: 4KB-granular content hashes of the decode input,
+ * captured right before the HW decode starts and re-checked on failure.
+ * PSRAM is write-through in the default map, so CPU writes cannot leave
+ * stale bytes behind - a changed chunk means a foreign writer hit the
+ * frame buffer between snapshot and decode (with the offset of the
+ * damage); unchanged hashes mean the damage predates this call or the
+ * DMA read bad bytes off the bus. */
+#define UVCJPG_SIG_CHUNK 4096u
+#define UVCJPG_SIG_MAX   128u
+static uint32_t s_sig[UVCJPG_SIG_MAX];
+static int s_sig_cnt;
+
+static uint32_t uvcjpg_hash_chunk(const uint8_t *p, uint32_t n)
+{
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < n; i++) {
+        h = (h ^ p[i]) * 16777619u;
+    }
+    return h;
+}
+
+static void uvcjpg_sig_capture(const uint8_t *jpeg, uint32_t len)
+{
+    s_sig_cnt = 0;
+    for (uint32_t off = 0; off < len && s_sig_cnt < UVCJPG_SIG_MAX;
+         off += UVCJPG_SIG_CHUNK) {
+        uint32_t sz = len - off;
+        if (sz > UVCJPG_SIG_CHUNK) {
+            sz = UVCJPG_SIG_CHUNK;
+        }
+        s_sig[s_sig_cnt++] = uvcjpg_hash_chunk(jpeg + off, sz);
+    }
+}
+
+/* returns 1 when every chunk still matches (no foreign writer), 0 when the
+ * content changed since capture (also prints the damage location) */
+static int uvcjpg_sig_check(const uint8_t *jpeg, uint32_t len)
+{
+    int changed = 0;
+    int first = -1;
+    for (int i = 0; i < s_sig_cnt; i++) {
+        uint32_t off = (uint32_t)i * UVCJPG_SIG_CHUNK;
+        uint32_t sz = len - off;
+        if (sz > UVCJPG_SIG_CHUNK) {
+            sz = UVCJPG_SIG_CHUNK;
+        }
+        if (uvcjpg_hash_chunk(jpeg + off, sz) != s_sig[i]) {
+            if (first < 0) {
+                first = i;
+            }
+            changed++;
+        }
+    }
+    if (changed == 0) {
+        printf("[uvcjpg] input unchanged since decode start (%d chunks)\r\n",
+               s_sig_cnt);
+        return 1;
+    }
+    printf("[uvcjpg] INPUT CHANGED: %d/%d chunks (first +%uKB) - foreign writer\r\n",
+           changed, s_sig_cnt,
+           (unsigned)((uint32_t)first * (UVCJPG_SIG_CHUNK / 1024u)));
+    return 0;
+}
+
 int uvc_jpeg_decode_ycbcr(const uint8_t *jpeg, uint32_t len,
                           uint8_t **ycbcr, uint32_t *ycbcr_len,
                           uvc_jpeg_info_t *info)
@@ -164,6 +243,12 @@ int uvc_jpeg_decode_ycbcr(const uint8_t *jpeg, uint32_t len,
         return -1; /* jpegc SET_DEC_PARAM constraint */
     }
 
+    /* one free retry for the decisive experiment: if the frame bytes are
+     * provably unchanged when the HW decode fails, re-decoding them splits
+     * "transient bus/DMA read corruption" (retry succeeds) from "frame data
+     * was already bad before the copy" (retry fails identically) */
+    int dec_attempt = 0;
+retry_decode:
     if (parsed.width != s_dec_w || parsed.height != s_dec_h) {
         jpegc_params_t dp = {0};
         dp.ImageWidth = parsed.width;
@@ -182,6 +267,9 @@ int uvc_jpeg_decode_ycbcr(const uint8_t *jpeg, uint32_t len,
     }
 
     {
+        if (dec_attempt == 0) {
+            uvcjpg_sig_capture(jpeg, len);
+        }
         int ret = device_ioctl(dev, JPEGC_CMD_INPUT_DEC_BUFFER, (uint8_t *)jpeg, len);
         if (ret != 0) {
             /* GET_STATE writes exactly ONE byte (jpegc mode fits in it) */
@@ -233,6 +321,13 @@ int uvc_jpeg_decode_ycbcr(const uint8_t *jpeg, uint32_t len,
         printf("[uvcjpg] output_dec -> %d (info %ux%u css=%u q=%u)\r\n", n,
                (unsigned)di.ImageWidth, (unsigned)di.ImageHeight,
                (unsigned)di.ChromaSubsampling, (unsigned)di.ImageQuality);
+        int unchanged = uvcjpg_sig_check(jpeg, len);
+        if (dec_attempt == 0 && unchanged == 1) {
+            dec_attempt = 1;
+            printf("[uvcjpg] re-decoding the unchanged input once "
+                   "(attempt 2)\r\n");
+            goto retry_decode;
+        }
         return -1;
     }
     *ycbcr = out;

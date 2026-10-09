@@ -19,6 +19,7 @@
 #include "json_config_mgr.h"
 #include "mem_map.h"
 #include "usbh_uvc_service.h"
+#include "usbh_uvc_jpeg.h"
 #include "ai_service.h"
 #include "websocket_stream_server.h"
 #include "ai_uvc_task.h"
@@ -125,6 +126,10 @@ static void ai_uvc_thread(void *arg)
             continue;
         }
         memcpy(g_ai_uvc_frame, p, len);
+        /* EOI tail aid for the core's post-MCU window (uvc_jpeg_pad_tail):
+         * this buffer is decode-only - never stored or uploaded - so the
+         * padded length stays internal */
+        len = uvc_jpeg_pad_tail(g_ai_uvc_frame, len, sizeof(g_ai_uvc_frame));
 
         /* Resource guard: above 1080P the decode path is skipped entirely
          * (the 4K raster + full-frame convert would exhaust the external
