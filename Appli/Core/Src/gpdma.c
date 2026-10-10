@@ -57,11 +57,11 @@ void MX_GPDMA1_Init(void)
     HAL_NVIC_SetPriority(GPDMA1_Channel6_IRQn, 7, 0);
     HAL_NVIC_EnableIRQ(GPDMA1_Channel6_IRQn);
 
-    // SPI4
-    HAL_NVIC_SetPriority(GPDMA1_Channel8_IRQn, 6, 0);
-    HAL_NVIC_EnableIRQ(GPDMA1_Channel8_IRQn);
-    HAL_NVIC_SetPriority(GPDMA1_Channel9_IRQn, 6, 0);
-    HAL_NVIC_EnableIRQ(GPDMA1_Channel9_IRQn);
+    // SPI4 (unused: SPI4 DMA moved back to HPDMA1 Ch2/3 - see spi.c)
+    // HAL_NVIC_SetPriority(GPDMA1_Channel8_IRQn, 6, 0);
+    // HAL_NVIC_EnableIRQ(GPDMA1_Channel8_IRQn);
+    // HAL_NVIC_SetPriority(GPDMA1_Channel9_IRQn, 6, 0);
+    // HAL_NVIC_EnableIRQ(GPDMA1_Channel9_IRQn);
 
     // SPI2
     // HAL_NVIC_SetPriority(GPDMA1_Channel10_IRQn, 5, 0);
