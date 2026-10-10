@@ -1,10 +1,10 @@
 {
   "base_path": "/api/v1",
-  "total_endpoints": 176,
+  "total_endpoints": 180,
   "modules": {
     "ai_management": {
       "source": "Custom/Services/Web/api/api_ai_management_module.c",
-      "source_sha256": "835b997bd3f82087",
+      "source_sha256": "a1f2182fde0768f8",
       "routes": [
         {
           "method": "GET",
@@ -58,6 +58,36 @@
           "method": "POST",
           "path": "/api/v1/change-password",
           "handler": "change_password_handler",
+          "require_auth": true
+        }
+      ]
+    },
+    "camera": {
+      "source": "Custom/Services/Web/api/api_camera_module.c",
+      "source_sha256": "e1da252bfb776f6f",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/camera/list",
+          "handler": "camera_list_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/camera/detect",
+          "handler": "camera_detect_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/camera/config",
+          "handler": "camera_config_get_handler",
+          "require_auth": true
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/camera/config",
+          "handler": "camera_config_set_handler",
           "require_auth": true
         }
       ]
@@ -976,7 +1006,7 @@
     },
     "rtmp": {
       "source": "Custom/Services/Web/api/api_rtmp_module.c",
-      "source_sha256": "339723c43ada66cb",
+      "source_sha256": "84d5f9b0ed0a3865",
       "routes": [
         {
           "method": "GET",
@@ -1012,7 +1042,7 @@
     },
     "rtsp": {
       "source": "Custom/Services/Web/api/api_rtsp_module.c",
-      "source_sha256": "d628e00a80da84c4",
+      "source_sha256": "0c99e4d0f02343e6",
       "routes": [
         {
           "method": "GET",

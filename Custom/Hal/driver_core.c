@@ -13,7 +13,6 @@
 #include "codec.h"
 #include "cat1.h"
 #include "sd_file.h"
-// #include "usb_host_video.h"
 #include "netif_manager.h"
 #include "wdg.h"
 #include "jpegc.h"
@@ -23,6 +22,7 @@
 #include "mem.h"
 #include "u0_module.h"
 #include "quick_snapshot.h"
+#include "quick_storage.h"
 #include "system_top.h"
 #include "upgrade_manager.h"
 #include "json_config_internal.h"
@@ -53,7 +53,13 @@ bool driver_core_init(void)
     misc_register();
     rtc_register();
 #if !defined(POWER_MODULE_TEST) || !POWER_MODULE_TEST
-    camera_register();
+    /* Boot pruning: register (and power up + I2C-probe) the native camera
+     * only when it is the selected image source. With the UVC source the
+     * camera-detect API registers it on demand for a probe. storage_register
+     * above provides the NVS read (no json_config init at this point). */
+    if (quick_storage_get_camera_source() != 1u) {
+        camera_register();
+    }
     jpegc_register();
     draw_register();
     NPURam_enable();

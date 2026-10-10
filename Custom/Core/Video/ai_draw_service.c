@@ -137,6 +137,130 @@ aicam_result_t ai_draw_service_deinit(void)
     return AICAM_OK;
 }
 
+
+/* Draw OD boxes directly on a planar YCbCr raster (decode output layout):
+ * box stroke + label bar on the Y plane, neutral chroma (128) inside the
+ * stroke so boxes render white. No text rendering on YCbCr yet (v1) - the
+ * class/confidence travel in the upload JSON. Returns boxes drawn. */
+int ai_draw_results_ycbcr(uint8_t *ycbcr, uint32_t w, uint32_t h, uint32_t css,
+                          const nn_result_t *result)
+{
+    if (!ycbcr || !result || !result->is_valid || w == 0 || h == 0) {
+        return 0;
+    }
+    if (css == JPEG_420_SUBSAMPLING) {
+        return 0; /* chroma plane is halved in both axes - keep to RGB path */
+    }
+
+    uint32_t cw = (css == JPEG_444_SUBSAMPLING) ? w : w / 2u;
+    uint8_t *yp = ycbcr;
+    uint8_t *cbp = ycbcr + (size_t)w * h;
+    uint8_t *crp = cbp + (size_t)cw * h;
+    int drawn = 0;
+
+    for (uint8_t i = 0; result->od.detects && i < result->od.nb_detect; i++) {
+        const od_detect_t *d = &result->od.detects[i];
+        int32_t x0 = (int32_t)(d->x * (float)w);
+        int32_t y0 = (int32_t)(d->y * (float)h);
+        int32_t bw = (int32_t)(d->width * (float)w);
+        int32_t bh = (int32_t)(d->height * (float)h);
+        if (x0 < 0) x0 = 0;
+        if (y0 < 0) y0 = 0;
+        if (x0 + bw > (int32_t)w) bw = (int32_t)w - x0;
+        if (y0 + bh > (int32_t)h) bh = (int32_t)h - y0;
+        if (bw < 8 || bh < 8) {
+            continue;
+        }
+
+        uint32_t stroke = 3u;
+        if (bw < 24u || bh < 24u) {
+            stroke = 1u;
+        }
+        int32_t x1 = x0 + bw - 1;
+        int32_t y1 = y0 + bh - 1;
+
+        /* horizontal strokes */
+        for (uint32_t t = 0; t < stroke; t++) {
+            int32_t ry0 = y0 + (int32_t)t;
+            int32_t ry1 = y1 - (int32_t)t;
+            for (int32_t x = x0; x <= x1; x++) {
+                yp[(size_t)ry0 * w + x] = 0xFFu;
+                yp[(size_t)ry1 * w + x] = 0xFFu;
+                cbp[(size_t)ry0 * cw + (x >> 1)] = 0x80u;
+                crp[(size_t)ry0 * cw + (x >> 1)] = 0x80u;
+                cbp[(size_t)ry1 * cw + (x >> 1)] = 0x80u;
+                crp[(size_t)ry1 * cw + (x >> 1)] = 0x80u;
+            }
+        }
+        /* vertical strokes */
+        for (uint32_t t = 0; t < stroke; t++) {
+            int32_t rx0 = x0 + (int32_t)t;
+            int32_t rx1 = x1 - (int32_t)t;
+            for (int32_t y = y0; y <= y1; y++) {
+                yp[(size_t)y * w + rx0] = 0xFFu;
+                yp[(size_t)y * w + rx1] = 0xFFu;
+                cbp[(size_t)y * cw + (rx0 >> 1)] = 0x80u;
+                crp[(size_t)y * cw + (rx0 >> 1)] = 0x80u;
+                cbp[(size_t)y * cw + (rx1 >> 1)] = 0x80u;
+                crp[(size_t)y * cw + (rx1 >> 1)] = 0x80u;
+            }
+        }
+        /* label: dark strip at the top inside the box + class/conf text
+         * (same "%s %5.2f" format as the RGB565 path), rendered straight
+         * into the Y plane with neutral chroma = white glyphs */
+        if (g_ai_draw_service.font_16.data == NULL) {
+            ai_draw_config_t fc;
+            ai_draw_get_default_config(&fc);
+            fc.image_width = w;
+            fc.image_height = h;
+            (void)ai_draw_service_init(&fc);
+        }
+        const DRAW_Font_t *f = &g_ai_draw_service.font_16;
+        int32_t bar_h = (f->data && f->height > 0) ? (int32_t)f->height + 6 : 22;
+        if (bar_h > bh / 2) bar_h = bh / 2;
+        for (int32_t y = y0 + (int32_t)stroke; y < y0 + (int32_t)stroke + bar_h; y++) {
+            for (int32_t x = x0 + (int32_t)stroke; x <= x1 - (int32_t)stroke; x++) {
+                yp[(size_t)y * w + x] = 0x20u;
+                cbp[(size_t)y * cw + (x >> 1)] = 0x80u;
+                crp[(size_t)y * cw + (x >> 1)] = 0x80u;
+            }
+        }
+        if (f->data) {
+            char label[48];
+            snprintf(label, sizeof(label), "%s %5.2f",
+                     d->class_name ? d->class_name : "?", (double)d->conf);
+            int32_t tx = x0 + (int32_t)stroke + 3;
+            int32_t ty = y0 + (int32_t)stroke + 3;
+            int32_t avail = (x1 - (int32_t)stroke) - tx;
+            for (const char *pc = label; *pc != 0 && f->width > 0; pc++) {
+                if (*pc < ' ' || *pc > '~' || avail < f->width) {
+                    break;
+                }
+                const uint32_t *glyph = (const uint32_t *)
+                    (f->data + (size_t)(*pc - ' ') * f->width * f->height * 4u);
+                for (uint32_t gy = 0; gy < f->height; gy++) {
+                    int32_t py = ty + (int32_t)gy;
+                    if (py >= y0 + (int32_t)stroke + bar_h) break;
+                    if (py < 0 || py >= (int32_t)h) continue;
+                    for (uint32_t gx = 0; gx < f->width; gx++) {
+                        int32_t px = tx + (int32_t)gx;
+                        if (px < 0 || px >= (int32_t)w) continue;
+                        if (glyph[(size_t)gy * f->width + gx] == 0xFFFFFFFFUL) {
+                            yp[(size_t)py * w + px] = 0xFFu;
+                            cbp[(size_t)py * cw + (px >> 1)] = 0x80u;
+                            crp[(size_t)py * cw + (px >> 1)] = 0x80u;
+                        }
+                    }
+                }
+                tx += f->width;
+                avail -= f->width;
+            }
+        }
+        drawn++;
+    }
+    return drawn;
+}
+
 aicam_result_t ai_draw_results(uint8_t *fb, 
                                uint32_t fb_width, 
                                uint32_t fb_height, 

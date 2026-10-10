@@ -43,13 +43,8 @@ typedef enum {
 
 #define PIPE1_DEFAULT_WIDTH 1280
 #define PIPE1_DEFAULT_HEIGHT 720
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-#define PIPE1_DEFAULT_FORMAT DCMIPP_PIXEL_PACKER_FORMAT_ARGB8888
-#define PIPE1_DEFAULT_BPP 4
-#else
 #define PIPE1_DEFAULT_FORMAT DCMIPP_PIXEL_PACKER_FORMAT_RGB565_1
 #define PIPE1_DEFAULT_BPP 2
-#endif
 
 #define PIPE2_DEFAULT_WIDTH 224
 #define PIPE2_DEFAULT_HEIGHT 224
@@ -58,11 +53,7 @@ typedef enum {
 #define PIPE2_MAX_WIDTH     480
 #define PIPE2_MAX_HEIGHT    480
 
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
 #define CAPTURE_BUFFER_NB (CAPTURE_DELAY + 2)
-#else
-#define CAPTURE_BUFFER_NB (CAPTURE_DELAY + 2)
-#endif
 #define NN_BUFFER_NB 3
 
 #define CAMERA_CTRL_PIPE1_BIT (1<<1)
@@ -201,6 +192,9 @@ typedef struct {
 
 int camera_register(void);
 int camera_deinit_but_not_unregister(void);
+/* Sensor identity string ("CMW_OS04C10", ...) once the camera device is
+ * initialized; -1 when not initialized. */
+int camera_get_sensor_name(char *name, size_t name_len);
 void camera_free_unshared_buffer(uint8_t *buffer);
 int camera_unregister(void);
 

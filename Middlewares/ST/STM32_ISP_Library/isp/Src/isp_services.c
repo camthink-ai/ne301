@@ -19,9 +19,6 @@
 /* Includes ------------------------------------------------------------------*/
 #include "isp_core.h"
 #include "isp_services.h"
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-#include "isp_cmd_parser.h"
-#endif
 
 /* Private types -------------------------------------------------------------*/
 typedef enum {
@@ -1341,11 +1338,7 @@ ISP_StatusTypeDef ISP_SVC_Misc_GetFirmwareConfig(ISP_FirmwareConfigTypeDef *pCon
   /* Sensor Delay support status */
   pConfig->hasSensorDelay = 1;
   /* UVC streaming support */
-#ifdef ISP_ENABLE_UVC
-  pConfig->hasUVC = 1;
-#else
   pConfig->hasUVC = 0;
-#endif
   /* ST 2A algorithms support */
   pConfig->hasSTAlgo = 1;
   return ISP_OK;
@@ -1491,13 +1484,9 @@ bool ISP_SVC_Misc_SensorDelayMeasureIsRunning()
   */
 ISP_StatusTypeDef ISP_SVC_Misc_SendSensorDelayMeasure(ISP_HandleTypeDef *hIsp, ISP_SensorDelayTypeDef *pSensorDelay)
 {
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-  return ISP_CmdParser_SendSensorDelayMeasure(hIsp, pSensorDelay);
-#else
   (void)hIsp; /* unused */
   (void)pSensorDelay; /* unused */
   return ISP_OK;
-#endif
 }
 
 /**

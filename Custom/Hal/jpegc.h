@@ -99,4 +99,7 @@ typedef struct {
 int jpegc_register(void);
 int jpegc_unregister(void);
 
+/* EXPERIMENT->PROD: encode from planar YCbCr directly (skip RGB convert) */
+void jpegc_encode_set_raw_yuv(int on);
+
 #endif

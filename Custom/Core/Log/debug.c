@@ -814,18 +814,23 @@ static aicam_result_t debug_init_ymodem(void)
     return AICAM_OK;
 }
 
+/* USB CDC-ACM console tee (weak no-op defined in Gcc/Src/console.c). */
+extern void usb_console_output_hook(const char *data, int len);
+
 static void debug_uart_output(char c)
 {
     /* Direct UART, not printf: stdout is line-buffered (newlib _fstat returns
      * S_IFCHR), so printf("%c") holds each byte until a '\n' flush. Echo must
      * appear per-keystroke, so bypass stdio and write the UART directly. */
     HAL_UART_Transmit(&H_UART, (uint8_t*)&c, 1, 10);
+    usb_console_output_hook(&c, 1);
 }
 
 static void debug_uart_output_str(const char* str)
 {
     if (str) {
         HAL_UART_Transmit(&H_UART, (uint8_t*)str, strlen(str), 100);
+        usb_console_output_hook(str, (int)strlen(str));
     }
 }
 

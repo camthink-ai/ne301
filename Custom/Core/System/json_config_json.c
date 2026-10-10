@@ -295,6 +295,23 @@ static void parse_device_service(cJSON *json, device_service_config_t *cfg)
         parse_isp_config(isp_cfg, &cfg->isp_config);
 }
 
+static void parse_camera_config(cJSON *json, camera_source_config_t *cfg)
+{
+    uint32_t temp_uint32;
+
+    json_get_uint32(json, "source", &temp_uint32);
+    if (temp_uint32 <= (uint32_t)CAMERA_SOURCE_UVC)
+        cfg->source = (camera_source_t)temp_uint32;
+
+    json_get_uint32(json, "native_stream_res", &temp_uint32);
+    if (temp_uint32 <= CAMERA_NATIVE_RES_1080P)
+        cfg->native_stream_res = temp_uint32;
+
+    json_get_uint32(json, "uvc_stream_width", &cfg->uvc_stream_width);
+    json_get_uint32(json, "uvc_stream_height", &cfg->uvc_stream_height);
+    json_get_uint32(json, "uvc_stream_fps", &cfg->uvc_stream_fps);
+}
+
 static void parse_network_service(cJSON *json, network_service_config_t *cfg)
 {
     /* Hotspot idle sleep follows the web UI's fixed choices (never / 10 / 20 /
@@ -1062,6 +1079,17 @@ static cJSON *serialize_device_service(const device_service_config_t *cfg)
     return json;
 }
 
+static cJSON *serialize_camera_config(const camera_source_config_t *cfg)
+{
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddNumberToObject(json, "source", (double)cfg->source);
+    cJSON_AddNumberToObject(json, "native_stream_res", cfg->native_stream_res);
+    cJSON_AddNumberToObject(json, "uvc_stream_width", cfg->uvc_stream_width);
+    cJSON_AddNumberToObject(json, "uvc_stream_height", cfg->uvc_stream_height);
+    cJSON_AddNumberToObject(json, "uvc_stream_fps", cfg->uvc_stream_fps);
+    return json;
+}
+
 static cJSON *serialize_network_service(const network_service_config_t *cfg)
 {
     cJSON *json = cJSON_CreateObject();
@@ -1489,6 +1517,10 @@ aicam_result_t json_config_parse_json_object(const char *json_str, aicam_global_
     if (cJSON_IsObject(dev_svc))
         parse_device_service(dev_svc, &config->device_service);
 
+    cJSON *cam_cfg = cJSON_GetObjectItem(root, "camera_config");
+    if (cJSON_IsObject(cam_cfg))
+        parse_camera_config(cam_cfg, &config->camera_config);
+
     cJSON *net_svc = cJSON_GetObjectItem(root, "network_service");
     if (cJSON_IsObject(net_svc))
         parse_network_service(net_svc, &config->network_service);
@@ -1546,6 +1578,7 @@ aicam_result_t json_config_serialize_json_object(const aicam_global_config_t *co
     cJSON_AddItemToObject(root, "power_mode_config", serialize_power_mode(&config->power_mode_config));
     cJSON_AddItemToObject(root, "device_info", serialize_device_info(&config->device_info));
     cJSON_AddItemToObject(root, "device_service", serialize_device_service(&config->device_service));
+    cJSON_AddItemToObject(root, "camera_config", serialize_camera_config(&config->camera_config));
     cJSON_AddItemToObject(root, "network_service", serialize_network_service(&config->network_service));
     cJSON_AddItemToObject(root, "mqtt_service", serialize_mqtt_service(&config->mqtt_service));
     cJSON_AddItemToObject(root, "work_mode_config", serialize_work_mode(&config->work_mode_config));

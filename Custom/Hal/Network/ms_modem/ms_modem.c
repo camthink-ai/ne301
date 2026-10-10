@@ -881,6 +881,24 @@ int modem_device_check_and_enable_ecm(void)
     return ret;
 }
 
+int modem_device_check_and_enable_rndis(void)
+{
+    int ret = MODEM_OK;
+    char **rsp_bufs = NULL;
+
+    rsp_bufs = modem_device_malloc_rsp_bufs(2);
+    if (rsp_bufs == NULL) return MODEM_ERR_MEM;
+    ret = modem_at_cmd_wait_rsp(&modem_at_handle, "AT+QCFG=\"usbnet\"\r\n", rsp_bufs, 2, 500);
+    if (ret == 2 && strstr(rsp_bufs[0], "+QCFG: \"usbnet\",3") != NULL) {
+        modem_device_free_rsp_bufs(rsp_bufs, 2);
+        return MODEM_OK;
+    }
+    ret = modem_at_cmd_wait_ok(&modem_at_handle, "AT+QCFG=\"usbnet\",3\r\n", 500);
+
+    modem_device_free_rsp_bufs(rsp_bufs, 2);
+    return ret;
+}
+
 int modem_device_get_info(modem_info_t *info, uint8_t is_update_all)
 {
     char **rsp_bufs = NULL;

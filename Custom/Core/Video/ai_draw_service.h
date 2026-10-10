@@ -75,6 +75,12 @@ aicam_result_t ai_draw_service_deinit(void);
  * @param result AI detection result
  * @return aicam_result_t Operation result
  */
+/* Draw OD boxes directly on a planar YCbCr raster (white strokes + dark
+ * label bar on Y, neutral chroma). Returns boxes drawn; 420 falls back
+ * (returns 0) - use the RGB path for it. */
+int ai_draw_results_ycbcr(uint8_t *ycbcr, uint32_t w, uint32_t h, uint32_t css,
+                          const nn_result_t *result);
+
 aicam_result_t ai_draw_results(uint8_t *fb, 
                                uint32_t fb_width, 
                                uint32_t fb_height, 

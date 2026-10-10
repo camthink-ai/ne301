@@ -278,6 +278,13 @@ void ms_bridging_recv(ms_bridging_handler_t *handler, uint8_t *buf, uint16_t len
     for (; i < len; i++) {
         if (handler->is_ready == 0) return;
         if (handler->input_frame_len == 0 && buf[i] != MS_BR_FRAME_SOF) return;
+        /* header.len is wire-controlled: a desynced/garbage stream can
+         * claim 64KB - cap it the moment the header is complete so no
+         * allocation or write bound trusts a wild value */
+        if (handler->input_frame_len == MS_BR_FRAME_HEADER_LEN &&
+            handler->input_frame.header.len > MS_BR_BUF_MAX_SIZE) {
+            goto ms_bridging_recv_err;
+        }
         if (handler->input_frame_len > MS_BR_BUF_MAX_SIZE) goto ms_bridging_recv_err;
         if (handler->input_frame_len < MS_BR_FRAME_HEADER_LEN) {
             ((uint8_t *)&(handler->input_frame.header))[handler->input_frame_len] = buf[i];

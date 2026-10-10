@@ -719,6 +719,19 @@ static void ws_frame_fifo_drain(void)
                 continue;
             }
 
+            /* Standalone metadata (AI JSON) is self-describing: deliver it
+             * immediately, including to late joiners still waiting for their
+             * first H264 keyframe (which never arrives on the MJPEG source). */
+            if (size >= sizeof(websocket_frame_header_t)) {
+                const websocket_frame_header_t *peek =
+                    (const websocket_frame_header_t *) data;
+                if (peek->magic == WS_TO_NETWORK_32(WS_FRAME_MAGIC) &&
+                    peek->frame_type == WS_FRAME_TYPE_METADATA) {
+                    mg_ws_send(conn, data, size, WEBSOCKET_OP_BINARY);
+                    continue;
+                }
+            }
+
             if (!client->sps_synced) {
                 /* Late joiner: hold P-frames until a keyframe, then send
                  * SPS/PPS + that keyframe as one frame. Without this the

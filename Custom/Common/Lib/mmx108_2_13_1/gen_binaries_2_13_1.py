@@ -20,7 +20,7 @@ FGH200 v12 BCF). Overrides used so far:
   morse_firmware_check_compatibility() requires chip major == 57, and the
   legacy firmware reports 56.17.0, so that combination cannot init either.
 
-- Official-BCF build (v4.3.1.50+): bcf_mf15457_official_v13.mbin. The FGH200
+- Official-BCF build (v4.3.1.50+): bcf_FGH200MAAMD_2.13.1.mbin. The FGH200
   BCF's own board_desc says it is a modified copy of the mm8108-mf15457 module
   BCF, so the official v13 mf15457 BCF is the same module design's certified
   upstream build. Used until Quectel ships a v13 FGH200 BCF. Caveat: regdoms
@@ -32,7 +32,7 @@ import sys
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 MM8108_FW = sys.argv[1] if len(sys.argv) > 1 else "mm8108b2-rl.mbin"
-MM8108_BCF = sys.argv[2] if len(sys.argv) > 2 else "bcf_bin/bcf_FGH200MAAMD.mbin"
+MM8108_BCF = sys.argv[2] if len(sys.argv) > 2 else "bcf_bin/bcf_FGH200MAAMD_2.13.1.mbin"
 
 
 def symbol_for(path):

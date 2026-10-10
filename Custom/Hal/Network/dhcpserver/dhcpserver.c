@@ -749,6 +749,17 @@ void dhcps_start(struct netif *netif)
 {
     if (netif == NULL) return;
 
+    /* Single-instance server: the lease table, pool cursor and pcb are
+     * file-scope state. Refuse to silently steal the server from another
+     * netif (e.g. AP up + USB device 'ud' start would otherwise break the
+     * AP's clients). */
+    if (dhcps_pcb != NULL && dhcps_netif != NULL && dhcps_netif != netif) {
+        DHCPS_INFO("start on %c%c%d refused: already serving %c%c%d\r\n",
+                   netif->name[0], netif->name[1], netif->num,
+                   dhcps_netif->name[0], dhcps_netif->name[1], dhcps_netif->num);
+        return;
+    }
+
     dhcps_netif = netif;
 
     if (s_lease_mutex == NULL) {
@@ -792,13 +803,20 @@ void dhcps_start(struct netif *netif)
 
 void dhcps_stop(struct netif *netif)
 {
-    (void)netif;
+    /* Only the owner may stop the single-instance server. */
+    if (dhcps_netif != NULL && netif != NULL && dhcps_netif != netif) {
+        DHCPS_INFO("stop on %c%c%d ignored: server owned by %c%c%d\r\n",
+                   netif->name[0], netif->name[1], netif->num,
+                   dhcps_netif->name[0], dhcps_netif->name[1], dhcps_netif->num);
+        return;
+    }
 
     if (dhcps_pcb != NULL) {
         udp_disconnect(dhcps_pcb);
         udp_remove(dhcps_pcb);
         dhcps_pcb = NULL;
     }
+    dhcps_netif = NULL;
 
     lease_lock();
     memset(dhcps_client, 0, sizeof(dhcps_client));

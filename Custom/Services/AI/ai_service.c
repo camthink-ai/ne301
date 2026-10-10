@@ -25,6 +25,11 @@
 #include "drtc.h"
 #include "common_utils.h"
 #include "cbor_enc.h"
+#include "usbh_uvc_jpeg.h"
+#include "image_utils.h"
+#include "gpu_resize.h"
+#include "usbh_uvc_service.h"
+#include "ai_uvc_task.h"
 
 /* ==================== AI Service Context ==================== */
 
@@ -181,7 +186,23 @@ aicam_result_t ai_service_start(void)
     }
     
     LOG_SVC_INFO("Starting AI Service...");
-    
+
+    /* UVC image source: no native pipeline (that would bring up the DCMIPP
+     * camera + H.264 encoder); inference runs from the MJPEG stream via the
+     * dedicated uvc task instead. Config-direct check: ai_service starts
+     * BEFORE device_service_init brings the uvc service up. */
+    if (usbh_uvc_service_source_selected()) {
+        if (ai_uvc_task_start() != 0) {
+            LOG_SVC_ERROR("Failed to start the UVC AI task");
+            return AICAM_ERROR;
+        }
+        g_ai_service.running = AICAM_TRUE;
+        g_ai_service.state = SERVICE_STATE_RUNNING;
+        g_ai_service.stats.start_time_ms = osKernelGetTickCount();
+        LOG_SVC_INFO("AI Service started (UVC MJPEG path)");
+        return AICAM_OK;
+    }
+
     // Initialize pipeline
     aicam_result_t result = ai_pipeline_init(&g_ai_service.config);
     if (result != AICAM_OK) {
@@ -385,6 +406,13 @@ aicam_result_t ai_pipeline_init(ai_service_config_t *config)
 
 aicam_result_t ai_pipeline_start(void)
 {
+    if (usbh_uvc_service_source_selected()) {
+        /* UVC source: the native pipeline does not exist this boot; callers
+         * that react to subscribers (hub, ota) just want "AI is running" —
+         * the uvc task is idempotent here. */
+        return AICAM_OK;
+    }
+
     if (!g_ai_service.camera_pipeline_initialized || !g_ai_service.ai_pipeline_initialized) {
         LOG_SVC_ERROR("AI pipelines not initialized");
         return AICAM_ERROR_NOT_INITIALIZED;
@@ -733,10 +761,27 @@ static aicam_result_t ai_create_camera_pipeline_nodes(const ai_service_config_t 
     camera_config.format = config->format;
     camera_config.ai_enabled = config->ai_enabled;
     camera_config.overlay_results = config->overlay_results;
-    
+
+    /* Native stream resolution switch (reboot-apply): 1080P retargets pipe1
+     * (preview/encode/draw canvas); the AI pipe still follows the model. */
+    {
+        camera_source_config_t cc;
+        if (json_config_get_camera_config(&cc) == AICAM_OK &&
+            cc.source == CAMERA_SOURCE_NATIVE &&
+            cc.native_stream_res == CAMERA_NATIVE_RES_1080P) {
+            camera_config.width = 1920;
+            camera_config.height = 1080;
+        }
+    }
+
     // Create encoder node configuration
     video_encoder_config_t encoder_config;
     video_encoder_get_default_config(&encoder_config);
+    encoder_config.width = camera_config.width;
+    encoder_config.height = camera_config.height;
+    if (encoder_config.height >= 1080 && encoder_config.bitrate < 4000) {
+        encoder_config.bitrate = 4000; /* kbps, keeps 1080P from starving */
+    }
     
     // Create camera and encoder nodes
     g_ai_service.camera_node = video_camera_node_create("CameraPipelineCamera", &camera_config);
@@ -1016,30 +1061,29 @@ aicam_result_t ai_set_nms_threshold(uint32_t threshold)
         LOG_SVC_ERROR("Invalid confidence threshold: %d", threshold);
         return AICAM_ERROR_INVALID_PARAM;
     }
-    
-    if (!g_ai_service.ai_pipeline_initialized || !g_ai_service.ai_node) {
-        LOG_SVC_ERROR("AI pipeline not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
-    }
-    
-    // Update configuration
+
+    /* Update configuration */
     g_ai_service.config.nms_threshold = threshold;
-    
-    // Update AI node configuration
-    video_ai_config_t ai_config;
-    aicam_result_t result = video_ai_node_get_config(g_ai_service.ai_node, &ai_config);
-    if (result != AICAM_OK) {
-        LOG_SVC_ERROR("Failed to get AI node config: %d", result);
-        return result;
+
+    if (g_ai_service.ai_pipeline_initialized && g_ai_service.ai_node) {
+        /* Update AI node configuration (native pipeline path) */
+        video_ai_config_t ai_config;
+        aicam_result_t result = video_ai_node_get_config(g_ai_service.ai_node, &ai_config);
+        if (result != AICAM_OK) {
+            LOG_SVC_ERROR("Failed to get AI node config: %d", result);
+            return result;
+        }
+
+        ai_config.nms_threshold = threshold;
+        result = video_ai_node_set_config(g_ai_service.ai_node, &ai_config);
+        if (result != AICAM_OK) {
+            LOG_SVC_ERROR("Failed to set AI node config: %d", result);
+            return result;
+        }
     }
-    
-    ai_config.nms_threshold = threshold;
-    result = video_ai_node_set_config(g_ai_service.ai_node, &ai_config);
-    if (result != AICAM_OK) {
-        LOG_SVC_ERROR("Failed to set AI node config: %d", result);
-        return result;
-    }
-    
+    /* UVC (MJPEG) source: no native pipeline exists; the continuous task
+     * reads the thresholds from json_config on every inference. */
+
     // Update NN module if available
     nn_state_t nn_state = nn_get_state();
     if (nn_state == NN_STATE_READY || nn_state == NN_STATE_RUNNING) {
@@ -1049,9 +1093,9 @@ aicam_result_t ai_set_nms_threshold(uint32_t threshold)
 
     // update to json config
     json_config_set_nms_threshold(threshold);
-    
+
     LOG_SVC_INFO("AI NMS threshold set to %d", threshold);
-    
+
     return AICAM_OK;
 }
 
@@ -1070,10 +1114,18 @@ aicam_result_t ai_set_confidence_threshold(uint32_t threshold)
     }
     
     if (!g_ai_service.ai_pipeline_initialized || !g_ai_service.ai_node) {
-        LOG_SVC_ERROR("AI pipeline not initialized");
-        return AICAM_ERROR_NOT_INITIALIZED;
+        /* UVC (MJPEG) source: no native pipeline; the continuous task
+         * reads thresholds from json_config on every inference. */
+        g_ai_service.config.confidence_threshold = threshold;
+        nn_state_t nn_state = nn_get_state();
+        if (nn_state == NN_STATE_READY || nn_state == NN_STATE_RUNNING) {
+            nn_set_confidence_threshold((float)threshold / 100.0f);
+        }
+        json_config_set_confidence_threshold(threshold);
+        LOG_SVC_INFO("AI confidence threshold set to %d (headless)", threshold);
+        return AICAM_OK;
     }
-    
+
     // Update configuration
     g_ai_service.config.confidence_threshold = threshold;
     
@@ -2104,12 +2156,23 @@ aicam_result_t ai_jpeg_encode(const uint8_t *raw_data,
         return result;
     }
     
-    // Input raw data for encoding
-    result = device_ioctl(jpeg_dev, JPEGC_CMD_INPUT_ENC_BUFFER, 
-                         (uint8_t *)raw_data, raw_size);
-    if (result != AICAM_OK) {
-        LOG_SVC_ERROR("Failed to input JPEG encode buffer: %d", result);
-        return result;
+    // Input raw data for encoding. The codec is shared with the continuous
+    // UVC decode loop: a busy codec (-2) is transient - retry briefly
+    // instead of failing the whole capture.
+    {
+        int input_ret = -1;
+        for (int i = 0; i < 10; i++) {
+            input_ret = device_ioctl(jpeg_dev, JPEGC_CMD_INPUT_ENC_BUFFER,
+                                     (uint8_t *)raw_data, raw_size);
+            if (input_ret == AICAM_OK) {
+                break;
+            }
+            osDelay(30);
+        }
+        if (input_ret != AICAM_OK) {
+            LOG_SVC_ERROR("Failed to input JPEG encode buffer: %d", input_ret);
+            return AICAM_ERROR;
+        }
     }
     
     // Get encoded JPEG data
@@ -2219,6 +2282,92 @@ aicam_result_t ai_color_convert(const uint8_t *src_data,
     return AICAM_OK;
 }
 
+aicam_result_t ai_uvc_frame_to_model_input(const uint8_t *jpeg_data,
+                                           uint32_t jpeg_size,
+                                           uint8_t *model_buf,
+                                           uint32_t model_w,
+                                           uint32_t model_h)
+{
+    uint8_t *ycbcr = NULL;
+    uint8_t *rgb888 = NULL;
+    uint32_t ycbcr_len = 0;
+    uvc_jpeg_info_t info = {0};
+    aicam_result_t ret = AICAM_ERROR;
+
+    if (!jpeg_data || jpeg_size == 0 || !model_buf || model_w == 0 || model_h == 0) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    /* Resource guard: above 1080P the decode raster + full-frame RGB888
+     * intermediate no longer fit the external pool (4K needs ~24MB each).
+     * Do not decode at all - callers surface "insufficient resources". */
+    if (uvc_jpeg_parse_header(jpeg_data, jpeg_size, &info) == 0 &&
+        info.width * info.height > 1920u * 1080u) {
+        LOG_SVC_WARN("uvc: %ux%u exceeds the 1080P decode budget, skipping AI",
+                     (unsigned)info.width, (unsigned)info.height);
+        return AICAM_ERROR_UNAVAILABLE;
+    }
+
+    /* 1. hardware decode + 2. color convert under the raster lock: the
+     * jpegc raster is shared with the capture overlay path; the convert
+     * reads it, so no new decode may start in between. On lock timeout the
+     * decode is SKIPPED - proceeding unlocked would reconfigure jpegc under
+     * another consumer and wedge the codec (observed as -6 BUSY loops).
+     * Output format follows the resize engine: the GPU2D wants RGBA8888
+     * (R,G,B,A byte order -> rb_swap=1 with ARGB8888) and packs to RGB888
+     * through the GFXMMU window; the software fallback wants RGB888. */
+    int use_gpu = gpu_resize_is_available();
+    if (uvc_jpeg_raster_trylock(5000) != 0) {
+        LOG_SVC_WARN("uvc: raster lock timeout, skipping AI frame");
+        return AICAM_ERROR_TIMEOUT;
+    }
+    int dec_ok = (uvc_jpeg_decode_ycbcr(jpeg_data, jpeg_size, &ycbcr, &ycbcr_len, &info) == 0);
+    if (dec_ok) {
+        ret = ai_color_convert(ycbcr, info.width, info.height,
+                               DMA2D_INPUT_YCBCR, 1, info.chroma_subsampling,
+                               &rgb888, &ycbcr_len,
+                               use_gpu ? DMA2D_OUTPUT_ARGB8888 : DMA2D_OUTPUT_RGB888);
+    }
+    uvc_jpeg_raster_unlock();
+
+    /* The YCbCr raster stays owned by jpegc (RETURN_DEC_BUFFER would FREE
+     * it and force a full re-allocation on every call - the continuous AI
+     * path would churn MBs per inference). The next decode overwrites it. */
+    if (!dec_ok) {
+        LOG_SVC_ERROR("uvc: MJPEG decode failed");
+        return AICAM_ERROR;
+    }
+
+    if (ret != AICAM_OK) {
+        LOG_SVC_ERROR("uvc: YCbCr->RGB888 convert failed: %d", ret);
+        return ret;
+    }
+
+    /* 3. resize into the model input: GPU2D bilinear blit (RGBA8888 src,
+     * GFXMMU-packed RGB888 dst) with a software-bilinear fallback when the
+     * GPU is unavailable. A runtime GPU failure latches "unavailable", so
+     * the next frame automatically takes the software path. */
+    if (use_gpu) {
+        if (gpu_resize_rgba8888_packed(rgb888, info.width, info.height,
+                                       model_buf, model_w, model_h) == 0) {
+            ret = AICAM_OK;
+        } else {
+            ret = AICAM_ERROR;
+        }
+    } else {
+        ret = image_resize(rgb888, info.width, info.height, DMA2D_INPUT_RGB888,
+                           model_buf, model_w, model_h, DMA2D_INPUT_RGB888);
+    }
+    buffer_free(rgb888);
+    rgb888 = NULL;
+
+    if (ret != AICAM_OK) {
+        LOG_SVC_ERROR("uvc: model input resize failed: %d", ret);
+        return ret;
+    }
+    return AICAM_OK;
+}
+
 aicam_result_t ai_single_image_inference(const model_validation_config_t *model_validation_config,
                                          ai_single_inference_result_t *result)
 {
@@ -2270,6 +2419,21 @@ aicam_result_t ai_single_image_inference(const model_validation_config_t *model_
         .chroma_subsampling = JPEG_420_SUBSAMPLING,
         .quality = model_validation_config->ai_image_quality};
 
+    /* the form-declared dims/css are client guesses; a mismatch either
+     * aborts in jpegc (W/H) or over-reads the raster allocation (css) -
+     * override both from the actual stream, same policy as the capture
+     * path's SOF correction */
+    {
+        uvc_jpeg_info_t vi = {0};
+        if (uvc_jpeg_parse_header(ai_jpeg_data_copy,
+                                  model_validation_config->ai_image_size,
+                                  &vi) == 0 && vi.width != 0) {
+            ai_decode_config.width = vi.width;
+            ai_decode_config.height = vi.height;
+            ai_decode_config.chroma_subsampling = vi.chroma_subsampling;
+        }
+    }
+
     ret = ai_jpeg_decode(ai_jpeg_data_copy, model_validation_config->ai_image_size,
                          &ai_decode_config, &ai_raw_data, &ai_raw_size);
     if (ret != AICAM_OK)
@@ -2314,6 +2478,18 @@ aicam_result_t ai_single_image_inference(const model_validation_config_t *model_
         .height = model_validation_config->draw_image_height,
         .chroma_subsampling = JPEG_420_SUBSAMPLING,
         .quality = model_validation_config->draw_image_quality};
+
+    /* see the ai_image override above: trust the stream, not the form */
+    {
+        uvc_jpeg_info_t vi = {0};
+        if (uvc_jpeg_parse_header(draw_jepg_data_copy,
+                                  model_validation_config->draw_image_size,
+                                  &vi) == 0 && vi.width != 0) {
+            draw_decode_config.width = vi.width;
+            draw_decode_config.height = vi.height;
+            draw_decode_config.chroma_subsampling = vi.chroma_subsampling;
+        }
+    }
 
     draw_jepg_data_copy = buffer_calloc(1, model_validation_config->draw_image_size);
     if (!draw_jepg_data_copy)

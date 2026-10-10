@@ -68,6 +68,38 @@ static aicam_result_t qs_nvs_read_int32(const char *key, int32_t *value)
     return AICAM_ERROR;
 }
 
+/* Camera source for Quick Bootstrap: reads the same NVS key json_config
+ * writes (NVS_KEY_CAMERA_SOURCE "cam_src"), no json_config init.
+ * Falls back to CAMERA_SOURCE_NATIVE when the key is absent. */
+uint32_t quick_storage_get_camera_source(void)
+{
+    uint32_t source = 0;
+    if (qs_nvs_read_uint32(NVS_KEY_CAMERA_SOURCE, &source) != AICAM_OK) {
+        return 0; /* CAMERA_SOURCE_NATIVE */
+    }
+    if (source > 1u) {
+        return 0;
+    }
+    return source;
+}
+
+/* Configured UVC stream selection (cam_uvc_w/cam_uvc_h); 0/0 = auto. */
+void quick_storage_get_uvc_resolution(uint32_t *w, uint32_t *h)
+{
+    uint32_t v = 0;
+    if (w == NULL || h == NULL) {
+        return;
+    }
+    *w = 0;
+    *h = 0;
+    if (qs_nvs_read_uint32(NVS_KEY_CAMERA_UVC_W, &v) == AICAM_OK) {
+        *w = v;
+    }
+    if (qs_nvs_read_uint32(NVS_KEY_CAMERA_UVC_H, &v) == AICAM_OK) {
+        *h = v;
+    }
+}
+
 /* Load `isp_config_t` from user NVS (same layout as json_config_load path). */
 static void qs_load_isp_config_from_nvs(isp_config_t *isp)
 {

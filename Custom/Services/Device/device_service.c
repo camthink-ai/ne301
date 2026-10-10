@@ -30,6 +30,9 @@
 #include "system_service.h"
 #include "nn.h"
 #include "json_config_mgr.h"
+#include "usbh_uvc_service.h"
+#include "ai_service.h"
+#include "quick_snapshot.h"
 #include "fsbl_app_common.h"
 #include "mem_map.h"
 #include "pixel_format_map.h"
@@ -974,9 +977,21 @@ aicam_result_t device_service_init(void *config)
     g_device_service.initialized = AICAM_TRUE;
     g_device_service.state = SERVICE_STATE_INITIALIZED;
 
-    //init camera
-    device_service_camera_init();
-    
+    /* UVC image source: bring up the MJPEG session service before anything
+     * else looks at a camera. When the source is native this is a no-op. */
+    {
+        aicam_result_t uvc_ret = usbh_uvc_service_init();
+        if (uvc_ret != AICAM_OK) {
+            LOG_SVC_WARN("UVC camera service init: %d", uvc_ret);
+        }
+    }
+
+    //init camera (native only: with the UVC source the DCMIPP camera stays
+    //uninitialized for this boot)
+    if (!usbh_uvc_service_is_active()) {
+        device_service_camera_init();
+    }
+
     LOG_SVC_INFO("Device Service initialized successfully");
     
     return AICAM_OK;
@@ -1790,9 +1805,160 @@ aicam_result_t device_service_camera_set_config(const camera_config_t *config)
     return AICAM_OK;
 }
 
+/* ==================== UVC (MJPEG) capture path ==================== */
+
+/* The camera delivers final JPEGs; captures reuse this PSRAM buffer. One
+ * capture at a time (the service serializes capture requests), and
+ * device_service_camera_free_jpeg_buffer() recognizes the pointer. */
+static uint8_t g_uvc_cap_buf[512 * 1024] ALIGN_32 IN_PSRAM;
+
+static aicam_result_t device_service_uvc_capture(uint8_t **buffer, int *out_len,
+                                                 aicam_bool_t need_ai_inference, nn_result_t *nn_result, uint32_t *frame_id)
+{
+    uint8_t *model_input = NULL;
+    aicam_bool_t light_on = AICAM_FALSE;
+    aicam_result_t result = AICAM_ERROR;
+
+    if (!buffer || !out_len) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if (need_ai_inference && !nn_result) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    /* 1. light control: identical policy to the native path (board PWM,
+     *    independent of the image source). */
+    if (!g_device_service.light_config.fill_light_while_streaming)
+    {
+        if (g_device_service.light_config.mode == LIGHT_MODE_AUTO &&
+            g_device_service.light_config.auto_trigger_enabled)
+        {
+            light_on = AICAM_TRUE;
+        }
+        else if (g_device_service.light_config.mode == LIGHT_MODE_CUSTOM)
+        {
+            light_on = light_custom_schedule_active_now(&g_device_service.light_config);
+        }
+        if (light_on)
+        {
+            light_pwm_on();
+        }
+    }
+
+    /* 2. capture the next intact MJPEG frame (skip 2 for AE settle) */
+    uint32_t len = 0;
+    uint16_t w = 0, h = 0;
+    int cap = usbh_uvc_service_capture(g_uvc_cap_buf, sizeof(g_uvc_cap_buf), 2, 3000, &len, &w, &h);
+    if (cap == -2) {
+        LOG_SVC_ERROR("[UVC] capture: frame larger than buffer");
+        goto out;
+    }
+    if (cap != 0) {
+        LOG_SVC_ERROR("[UVC] capture: no intact frame (timeout)");
+        result = AICAM_ERROR_TIMEOUT;
+        goto out;
+    }
+
+    /* 3. keep the jpegc encoder params in sync with the actual frame: the
+     *    upload metadata and the inference-image (decode config) both read
+     *    them, and the overlay variant re-encodes at these dimensions. */
+    {
+        device_t *jpeg_dev = g_device_service.jpeg_device;
+        if (jpeg_dev == NULL) {
+            jpeg_dev = device_find_pattern(JPEG_DEVICE_NAME, DEV_TYPE_VIDEO);
+            g_device_service.jpeg_device = jpeg_dev;
+        }
+        if (jpeg_dev != NULL) {
+            jpegc_params_t jp = {0};
+            if (device_ioctl(jpeg_dev, JPEGC_CMD_GET_ENC_PARAM, (uint8_t *)&jp, sizeof(jp)) == 0 &&
+                (jp.ImageWidth != w || jp.ImageHeight != h)) {
+                jp.ImageWidth = w;
+                jp.ImageHeight = h;
+                (void)device_ioctl(jpeg_dev, JPEGC_CMD_SET_ENC_PARAM, (uint8_t *)&jp, sizeof(jp));
+            }
+        }
+    }
+
+    /* 4. AI inference: decode -> RGB888 -> resize -> NPU */
+    if (need_ai_inference && nn_result) {
+        nn_model_info_t model_info = {0};
+        nn_state_t nn_state = nn_get_state();
+        if (nn_state == NN_STATE_UNINIT || nn_state == NN_STATE_INIT) {
+            uintptr_t model_ptr = json_config_get_ai_1_active() ? AI_2_BASE + 1024 : AI_1_BASE + 1024;
+            if (nn_load_model(model_ptr) != 0) {
+                LOG_SVC_ERROR("[UVC] AI model load failed");
+                result = AICAM_ERROR;
+                goto out;
+            }
+        }
+        if (nn_get_model_info(&model_info) != AICAM_OK ||
+            model_info.input_width == 0 || model_info.input_height == 0) {
+            LOG_SVC_ERROR("[UVC] AI model info unavailable");
+            result = AICAM_ERROR;
+            goto out;
+        }
+
+        model_input = buffer_malloc_aligned(
+            (size_t)model_info.input_width * model_info.input_height * 3u, 32);
+        if (model_input == NULL) {
+            LOG_SVC_ERROR("[UVC] model input alloc failed");
+            result = AICAM_ERROR_NO_MEMORY;
+            goto out;
+        }
+
+        aicam_result_t ai_ret = ai_uvc_frame_to_model_input(g_uvc_cap_buf, len, model_input,
+                                                            model_info.input_width, model_info.input_height);
+        if (ai_ret == AICAM_ERROR_UNAVAILABLE) {
+            /* frame exceeds the decode budget (>1080P): keep the capture,
+             * skip the AI result */
+            LOG_SVC_WARN("[UVC] AI skipped: frame exceeds the decode budget");
+            buffer_free(model_input);
+            model_input = NULL;
+            goto ai_done;
+        }
+        if (ai_ret != AICAM_OK) {
+            LOG_SVC_ERROR("[UVC] frame -> model input failed");
+            result = AICAM_ERROR;
+            goto out;
+        }
+
+        memset(nn_result, 0, sizeof(nn_result_t));
+        if (nn_inference_frame(model_input,
+                               model_info.input_width * model_info.input_height * 3u,
+                               nn_result) != 0) {
+            LOG_SVC_ERROR("[UVC] inference failed");
+            result = AICAM_ERROR;
+            goto out;
+        }
+        buffer_free(model_input);
+        model_input = NULL;
+    }
+ai_done:
+
+    *buffer = g_uvc_cap_buf;
+    *out_len = (int)len;
+    if (frame_id != NULL) {
+        *frame_id = 0;
+    }
+    result = AICAM_OK;
+
+out:
+    if (model_input != NULL) {
+        buffer_free(model_input);
+    }
+    if (light_on) {
+        light_pwm_off();
+    }
+    return result;
+}
+
 aicam_result_t device_service_camera_capture(uint8_t **buffer, int *out_len,
                                              aicam_bool_t need_ai_inference, nn_result_t *nn_result, uint32_t *frame_id)
 {
+    if (usbh_uvc_service_is_active()) {
+        return device_service_uvc_capture(buffer, out_len, need_ai_inference, nn_result, frame_id);
+    }
+
     if (!g_device_service.camera_initialized || !g_device_service.camera_device)
     {
         return AICAM_ERROR_NOT_INITIALIZED;
@@ -1981,6 +2147,15 @@ aicam_result_t device_service_camera_free_jpeg_buffer(uint8_t *buffer)
     if (!buffer) {
         return AICAM_ERROR_INVALID_PARAM;
     }
+    if (buffer == g_uvc_cap_buf) {
+        /* UVC captures alias the service-owned reuse buffer: nothing to free,
+         * the next capture overwrites it. */
+        return AICAM_OK;
+    }
+    if (buffer == quick_snapshot_uvc_cap_buf()) {
+        /* UVC quick-snapshot wake captures alias their own reuse buffer. */
+        return AICAM_OK;
+    }
     if (!g_device_service.jpeg_device) {
         return AICAM_ERROR_NOT_FOUND;
     }
@@ -2003,6 +2178,10 @@ aicam_result_t device_service_camera_free_jpeg_buffer(uint8_t *buffer)
 aicam_result_t device_service_camera_capture_fast(uint8_t **buffer, int *out_len,
                                                   aicam_bool_t need_ai_inference, nn_result_t *nn_result, uint32_t *frame_id)
 {
+    if (usbh_uvc_service_is_active()) {
+        return device_service_uvc_capture(buffer, out_len, need_ai_inference, nn_result, frame_id);
+    }
+
     if (!buffer || !out_len) {
         return AICAM_ERROR_INVALID_PARAM;
     }

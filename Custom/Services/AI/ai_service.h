@@ -403,11 +403,29 @@ aicam_result_t ai_jpeg_decode(const uint8_t *jpeg_data,
  * @param jpeg_size Output JPEG buffer size
  * @return aicam_result_t Operation result
  */
-aicam_result_t ai_jpeg_encode(const uint8_t *raw_data, 
+aicam_result_t ai_jpeg_encode(const uint8_t *raw_data,
                               uint32_t raw_size,
                               const ai_jpeg_encode_config_t *encode_config,
-                              uint8_t **jpeg_buffer, 
+                              uint8_t **jpeg_buffer,
                               uint32_t *jpeg_size);
+
+/**
+ * @brief Prepare an arbitrary-size MJPEG frame (UVC camera) as NPU model input
+ * @details jpegc decode (raw YCbCr, dimensions parsed from the JPEG header)
+ *          -> YCbCr->RGB888 conversion -> bilinear resize to model_w x model_h
+ *          into the caller's buffer. Synchronous; serializes on jpegc.
+ * @param jpeg_data Camera MJPEG frame
+ * @param jpeg_size Frame size in bytes
+ * @param model_buf Caller-allocated RGB888 output (model_w*model_h*3 bytes)
+ * @param model_w Model input width
+ * @param model_h Model input height
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t ai_uvc_frame_to_model_input(const uint8_t *jpeg_data,
+                                           uint32_t jpeg_size,
+                                           uint8_t *model_buf,
+                                           uint32_t model_w,
+                                           uint32_t model_h);
 
 /**
  * @brief Convert color format using DMA2D

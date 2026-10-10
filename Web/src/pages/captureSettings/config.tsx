@@ -18,6 +18,7 @@ import captureSettings, {
 import hardwareManagement, { type SetHardwareInfoReq } from '@/services/api/hardware-management';
 import storageManagement from '@/services/api/storageManagement';
 import systemSettings from '@/services/api/systemSettings';
+import cameraApi, { type CameraConfigData } from '@/services/api/camera';
 
 const MINUTE_OPTIONS: { label: string; value: number }[] = [];
 for (let h = 0; h < 24; h++) {
@@ -37,6 +38,10 @@ export default function CaptureConfig() {
   const [saving, setSaving] = useState(false);
   const [uploadSectionOpen, setUploadSectionOpen] = useState(true);
   const [cameraSectionOpen, setCameraSectionOpen] = useState(true);
+
+  /* ---- camera source (read-only: gates the native-only fields; the
+   * source itself is configured on the hardware management page) ---- */
+  const [camCfg, setCamCfg] = useState<CameraConfigData | null>(null);
 
   /* ---- hardware capture params (local state, committed on global save) ---- */
   const [fastSkipFrames, setFastSkipFrames] = useState(0);
@@ -61,13 +66,17 @@ export default function CaptureConfig() {
   const load = async () => {
     setLoading(true);
     try {
-      const [res, hwRes, stRes, netRes] = await Promise.all([
+      const [res, hwRes, stRes, netRes, camRes] = await Promise.all([
         captureSettings.getUploadConfig(),
         hardwareManagement.getHardwareInfoReq(),
         storageManagement.getStorage(),
         systemSettings.getNetworkStatusReq(),
+        cameraApi.getCameraConfig().catch(() => null),
       ]);
       setCfg(res.data);
+      if (camRes?.data) {
+        setCamCfg(camRes.data);
+      }
       const arr = netRes?.data?.available_comm_types;
       setCommTypes(Array.isArray(arr) ? arr.map((t: any) => ({ type: t.type, display_name: t.display_name })) : []);
       const hw = hwRes.data;
@@ -97,10 +106,11 @@ export default function CaptureConfig() {
     setCfg((prev) => (prev ? { ...prev, [k]: v } : prev));
   };
 
-  /* Global save: commits BOTH upload config and camera params. The upload
-   * config is hot-reloaded (immediate); the wake-time camera params
-   * (fast_capture_* / capture_storage_ai) only take effect on next wake/reboot,
-   * so we warn only when those actually changed. */
+  /* Read-only camera source: gates the native-only capture fields. The
+   * source itself is configured on the hardware management page. */
+  const cameraSource = camCfg?.source ?? 'native';
+
+  /* Global save: commits upload config and camera params. */
   const saveAll = async () => {
     if (!cfg) return;
     const camChanged = fastSkipFrames !== initCam.fastSkipFrames
@@ -511,50 +521,55 @@ export default function CaptureConfig() {
             </div>
             <Separator />
 
-            {/* resolution */}
-            <div className="flex justify-between gap-4 items-center">
-              <Label>{i18n._('sys.hardware_management.fast_capture_resolution')}</Label>
-              <Select
-                value={String(fastResolution)}
-                onValueChange={(v) => setFastResolution(Number(v ?? '0'))}
-              >
-                <SelectTrigger className="border-0 shadow-none focus-visible:ring-0 w-32">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="0">1280x720</SelectItem>
-                  <SelectItem value="1">1920x1080</SelectItem>
-                  <SelectItem value="2">2688x1520</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <Separator />
+            {cameraSource !== 'uvc' && (
+              <>
+                {/* resolution (native sensor only: the UVC capture follows
+                 * the selected stream configuration) */}
+                <div className="flex justify-between gap-4 items-center">
+                  <Label>{i18n._('sys.hardware_management.fast_capture_resolution')}</Label>
+                  <Select
+                    value={String(fastResolution)}
+                    onValueChange={(v) => setFastResolution(Number(v ?? '0'))}
+                  >
+                    <SelectTrigger className="border-0 shadow-none focus-visible:ring-0 w-32">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="0">1280x720</SelectItem>
+                      <SelectItem value="1">1920x1080</SelectItem>
+                      <SelectItem value="2">2688x1520</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Separator />
 
-            {/* jpeg quality (with tooltip) */}
-            <div className="flex justify-between gap-4 items-center">
-              <div className="flex min-w-0 flex-1 items-center gap-2">
-                <Label className="shrink-0">
-                  {i18n._('sys.hardware_management.fast_capture_jpeg_quality')}
-                </Label>
-                <Tooltip mbEnhance>
-                  <TooltipTrigger>
-                    <div className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-gray-500">
-                      <SvgIcon className="h-4 w-4 text-gray-500" icon="info" />
-                    </div>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-80 text-pretty">
-                    <p>{i18n._('sys.hardware_management.capture_jpeg_quality_tip')}</p>
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-              <NumberField
-                className="w-24 text-right"
-                min={1}
-                max={100}
-                value={fastJpegQuality}
-                onCommit={setFastJpegQuality}
-              />
-            </div>
+                {/* jpeg quality (with tooltip) */}
+                <div className="flex justify-between gap-4 items-center">
+                  <div className="flex min-w-0 flex-1 items-center gap-2">
+                    <Label className="shrink-0">
+                      {i18n._('sys.hardware_management.fast_capture_jpeg_quality')}
+                    </Label>
+                    <Tooltip mbEnhance>
+                      <TooltipTrigger>
+                        <div className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-gray-500">
+                          <SvgIcon className="h-4 w-4 text-gray-500" icon="info" />
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-80 text-pretty">
+                        <p>{i18n._('sys.hardware_management.capture_jpeg_quality_tip')}</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                  <NumberField
+                    className="w-24 text-right"
+                    min={1}
+                    max={100}
+                    value={fastJpegQuality}
+                    onCommit={setFastJpegQuality}
+                  />
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>

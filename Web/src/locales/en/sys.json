@@ -190,7 +190,8 @@
         "copied": "Copied",
         "copy_failed": "Copy failed",
         "config_saved": "RTSP config saved"
-      }
+      },
+      "uvc_no_push": "RTMP/RTSP push is unavailable with the UVC (MJPEG) image source"
     },
     "model_verification": {
       "model_verification_title": "Model Validation",
@@ -351,7 +352,24 @@
       "fast_capture_resolution": "Resolution",
       "fast_capture_jpeg_quality": "JPEG quality",
       "capture_disable_comm": "Local storage only after capture",
-      "capture_storage_ai": "Save AI-drawn result image to storage"
+      "capture_storage_ai": "Save AI-drawn result image to storage",
+      "section_camera_source": "Camera Source",
+      "camera_source": "Image Source",
+      "camera_source_native": "Native Camera",
+      "camera_source_uvc": "UVC Camera (MJPEG)",
+      "camera_detect": "Detect",
+      "camera_detecting": "Detecting...",
+      "camera_not_detected": "Not detected",
+      "camera_auto": "Auto (highest resolution)",
+      "native_stream_res": "Stream Resolution",
+      "uvc_stream_cfg": "Stream Config",
+      "uvc_capture_hint": "UVC (MJPEG) encodes in-camera: no JPEG quality / capture resolution to configure",
+      "camera_source_title": "Camera Source",
+      "camera_pending_restart": "Saved source ({saved}) differs from the running one ({active}); reboot to apply",
+      "camera_active_now": "Active now:",
+      "camera_source_reboot_hint": "Camera source / resolution changes apply after reboot",
+      "camera_source_save_failed": "Save failed",
+      "camera_oversize_warn": "Selected resolution exceeds 1080P: AI inference and overlay are unavailable (captures still work)"
     },
     "system_management": {
       "communication_title": "Communications",

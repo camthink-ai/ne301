@@ -23,7 +23,6 @@
 #include "netif_manager.h"
 #include "cmw_camera.h"
 #include "debug.h"
-#include "usb_otg.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "spi.h"
@@ -77,6 +76,25 @@ static void fault_dump_frames(uint32_t exc_return, uint32_t entry_sp)
   uint32_t psp = __get_PSP();
   uint32_t *sps[2];
   int i;
+
+  /* name the faulting thread: without it a wild-jump dump (PC/LR all FF,
+   * junk backtrace) is unattributable - ThreadX knows who was running */
+  {
+    VOID *thr = tx_thread_identify();
+    if (thr != NULL) {
+      TX_THREAD *t = (TX_THREAD *)thr;
+      char name[16];
+      UINT k;
+      for (k = 0; k < sizeof(name) - 1 && t->tx_thread_name[k]; k++) {
+        name[k] = t->tx_thread_name[k];
+      }
+      name[k] = 0;
+      printf("  fault thread: %s (stack %p..%p)\r\n", name,
+             (void *)t->tx_thread_stack_start, (void *)t->tx_thread_stack_end);
+    } else {
+      printf("  fault thread: <handler/idle>\r\n");
+    }
+  }
 
   sps[0] = (uint32_t *)((exc_return & 0x4u) ? psp : entry_sp);
   sps[1] = (uint32_t *)((exc_return & 0x4u) ? entry_sp : psp);
@@ -138,16 +156,6 @@ extern UART_HandleTypeDef huart2;
 extern UART_HandleTypeDef huart3;
 extern UART_HandleTypeDef huart9;
 extern RTC_HandleTypeDef hrtc;
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-extern PCD_HandleTypeDef usbx_pcd_handle;
-#else
-#ifdef UX_HCD_ECM_USE_USB_OTG_HS1
-extern HCD_HandleTypeDef hhcd_USB_OTG_HS1;
-#else
-extern PCD_HandleTypeDef hpcd_USB_OTG_HS1;
-#endif
-#endif
-extern HCD_HandleTypeDef hhcd_USB_OTG_HS2;
 extern XSPI_HandleTypeDef hxspi1;
 extern XSPI_HandleTypeDef hxspi2;
 
@@ -810,19 +818,8 @@ void SDMMC1_IRQHandler(void)
   /* USER CODE END SDMMC1_IRQn 1 */
 }
 
-/**
-  * @brief This function handles USB1 OTG HS interrupt.
-  */
-void USB2_OTG_HS_IRQHandler(void)
-{
-  /* USER CODE BEGIN USB1_OTG_HS_IRQn 0 */
-
-  /* USER CODE END USB1_OTG_HS_IRQn 0 */
-  HAL_HCD_IRQHandler(&hhcd_USB_OTG_HS2);
-  /* USER CODE BEGIN USB1_OTG_HS_IRQn 1 */
-
-  /* USER CODE END USB1_OTG_HS_IRQn 1 */
-}
+/* USB1/USB2_OTG_HS_IRQHandler: CherryUSB DWC2 ISRs live in
+ * Custom/Hal/usb/usb_glue_stm32n6.c (vector names are N6-specific). */
 
 void XSPI2_IRQHandler(void)
 {
@@ -834,26 +831,6 @@ void XSPI2_IRQHandler(void)
 
     /* USER CODE END XSPI2_IRQn 1 */
 }
-/**
-  * @brief This function handles USB2 OTG HS interrupt.
-  */
-void USB1_OTG_HS_IRQHandler(void)
-{
-  /* USER CODE BEGIN USB2_OTG_HS_IRQn 0 */
-
-  /* USER CODE END USB2_OTG_HS_IRQn 0 */
-  // HAL_PCD_IRQHandler(&hpcd_USB_OTG_HS1);
-  /* USER CODE BEGIN USB2_OTG_HS_IRQn 1 */
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-  HAL_PCD_IRQHandler(&usbx_pcd_handle);
-#else
-#ifdef UX_HCD_ECM_USE_USB_OTG_HS1
-  HAL_HCD_IRQHandler(&hhcd_USB_OTG_HS1);
-#endif
-#endif
-  /* USER CODE END USB2_OTG_HS_IRQn 1 */
-}
-
 /**
   * @brief This function handles RTC secure interrupt.
   */
@@ -877,6 +854,15 @@ void EXTI0_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+/**
+  * @brief IWDG early-wakeup interrupt: freeze forensics (see iwdg.c).
+  */
+void IWDG_IRQHandler(void)
+{
+    extern IWDG_HandleTypeDef hiwdg;
+    HAL_IWDG_IRQHandler(&hiwdg);
+}
+
 /**
   * @brief This function handles EXTI8 global interrupt.
   */

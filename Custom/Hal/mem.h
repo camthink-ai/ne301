@@ -30,8 +30,11 @@ extern "C" {
 /* Configuration parameters */
 #define MEM_INTERNAL_SIZE   (512 * 1024)        /* 512KB internal pool */
 #if defined(BOARD_PSRAM_SIZE) && BOARD_PSRAM_SIZE == 64
-/* External PSRAM pool: keep below APP_EXT (56MB) to leave room for other IN_PSRAM data */
-#define MEM_EXTERNAL_SIZE   (52 * 1024 * 1024)  /* 52MB external pool */
+/* External PSRAM pool: keep below APP_EXT (56MB) to leave room for other IN_PSRAM data.
+ * 47MB: trimmed by 5MB to fund the 4K preview slots (+4.5MB in usbh_uvc_test.c);
+ * peak concurrent pool use (1080P raster 4.1M + RGB888 6.2M + enc/misc) sits
+ * well under 20MB - verify with the "top" report's Hal Large Memory line. */
+#define MEM_EXTERNAL_SIZE   (47 * 1024 * 1024)  /* 47MB external pool */
 #else
 #define MEM_EXTERNAL_SIZE   (24 * 1024 * 1024)  /* 24MB external pool */
 #endif

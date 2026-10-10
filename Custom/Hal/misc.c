@@ -13,8 +13,10 @@ static uint8_t key_read(void);
 static int light_get_value(uint8_t *rate);
 static int battery_get_value(void);
 
-static uint8_t bat_tread_stack[1024 * 2] ALIGN_32 IN_PSRAM;
-static uint8_t led_tread_stack[1024 * 2] ALIGN_32 IN_PSRAM;
+static uint8_t bat_tread_stack[1024 * 4] ALIGN_32 IN_PSRAM;
+/* 2KB was too tight: a HardFault (STKERR) landed with PSP 424 bytes
+ * from the top of this stack under full-load page switching */
+static uint8_t led_tread_stack[1024 * 4] ALIGN_32 IN_PSRAM;
 static uint8_t key_tread_stack[1024 * 16] ALIGN_32 IN_PSRAM;
 const osThreadAttr_t batTask_attributes = {
     .name = "batTask",

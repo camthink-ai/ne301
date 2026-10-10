@@ -6,6 +6,7 @@
 #include "api_rtsp_module.h"
 #include "web_api.h"
 #include "web_server.h"
+#include "usbh_uvc_service.h"
 #include "cJSON.h"
 #include "json_config_mgr.h"
 #include "rtsp_service.h"
@@ -127,6 +128,14 @@ static aicam_result_t rtsp_config_set_handler(http_handler_context_t* ctx)
     }
 
     cJSON_Delete(request);
+
+    /* MJPEG-only image source: no H.264 stream to serve. */
+    if (vs_config.rtsp_enable && usbh_uvc_service_is_active()) {
+        vs_config.rtsp_enable = AICAM_FALSE;
+        (void)json_config_set_video_stream_mode(&vs_config);
+        return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE,
+                                  "RTSP is unavailable with the UVC camera");
+    }
 
     /* Save to NVS */
     aicam_result_t result = json_config_set_video_stream_mode(&vs_config);

@@ -16,7 +16,6 @@
 #include "mm_halow_netif.h"
 #include "w5500_netif.h"
 #include "eg912u_gl_netif.h"
-#include "usb_ecm_netif.h"
 #include "cat1.h"
 #include "ms_modem.h"
 #include "drtc.h"
@@ -27,6 +26,8 @@
 #include "aws_capture.h"
 #include "icmp_client.h"
 #include "netif_manager.h"
+#include "usb_rndis_netif.h"
+#include "usb_cherry.h"
 #include "wifi.h"
 #include "sl_rsi_ble.h"
 #include "rtmp_push_test.h"
@@ -70,12 +71,11 @@ static const if_name_type_t if_name_type_list[] = {
 #if NETIF_4G_CAT1_IS_ENABLE
     {NETIF_NAME_4G_CAT1, NETIF_TYPE_4G},
 #endif
-#if NETIF_USB_ECM_IS_ENABLE
-#if NETIF_USB_ECM_IS_CAT1_MODULE
-    {NETIF_NAME_USB_ECM, NETIF_TYPE_4G},
-#else
-    {NETIF_NAME_USB_ECM, NETIF_TYPE_ETH},
+#if NETIF_USB_RNDIS_IS_ENABLE
+    {NETIF_NAME_USB_RNDIS, NETIF_TYPE_4G},
 #endif
+#if NETIF_USB_DEV_IS_ENABLE
+    {NETIF_NAME_USB_DEV, NETIF_TYPE_ETH},
 #endif
 #if NETIF_ETH_WAN_IS_ENABLE
     {NETIF_NAME_ETH_WAN, NETIF_TYPE_ETH},
@@ -358,8 +358,11 @@ static int netif_manager_cmd(int argc, char* argv[])
 #if NETIF_4G_CAT1_IS_ENABLE
     else if (strcmp(argv[1], NETIF_NAME_4G_CAT1) == 0) if_name = NETIF_NAME_4G_CAT1;
 #endif
-#if NETIF_USB_ECM_IS_ENABLE
-    else if (strcmp(argv[1], NETIF_NAME_USB_ECM) == 0) if_name = NETIF_NAME_USB_ECM;
+#if NETIF_USB_RNDIS_IS_ENABLE
+    else if (strcmp(argv[1], NETIF_NAME_USB_RNDIS) == 0) if_name = NETIF_NAME_USB_RNDIS;
+#endif
+#if NETIF_USB_DEV_IS_ENABLE
+    else if (strcmp(argv[1], NETIF_NAME_USB_DEV) == 0) if_name = NETIF_NAME_USB_DEV;
 #endif
     else {
         LOG_SIMPLE("Invalid netif name: %s\r\n", argv[1]);
@@ -788,6 +791,12 @@ void netif_manager_change_default_if(void)
         if_name = default_if_name;
     } else {
         for (; i > 0; i--) {
+#if NETIF_USB_DEV_IS_ENABLE
+            /* ud is the PC-facing downstream netif: it has no uplink and must
+             * never become the default route (it stays in this list only for
+             * nm_get_netif_list() visibility). */
+            if (strcmp(if_name_type_list[i - 1].if_name, NETIF_NAME_USB_DEV) == 0) continue;
+#endif
             state = nm_get_netif_state(if_name_type_list[i - 1].if_name);
             if (state == NETIF_STATE_UP) {
                 if_name = if_name_type_list[i - 1].if_name;
@@ -805,8 +814,8 @@ void netif_manager_change_default_if(void)
         if (strcmp(if_name, NETIF_NAME_4G_CAT1) == 0) default_if = eg912u_netif_ptr();
         else
 #endif
-#if NETIF_USB_ECM_IS_ENABLE
-        if (strcmp(if_name, NETIF_NAME_USB_ECM) == 0) default_if = usb_ecm_netif_ptr();
+#if NETIF_USB_RNDIS_IS_ENABLE
+        if (strcmp(if_name, NETIF_NAME_USB_RNDIS) == 0) default_if = usb_rndis_netif_ptr();
         else
 #endif
         if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0) default_if = sl_net_client_netif_ptr();
@@ -914,10 +923,15 @@ int netif_manager_ctrl(const char *if_name, netif_cmd_t cmd, void *param)
         w5500_netif_ctrl(if_name, NETIF_CMD_STATE, &last_state);
         ret = w5500_netif_ctrl(if_name, cmd, param);
 #endif
-#if NETIF_USB_ECM_IS_ENABLE
-    } else if (strcmp(if_name, NETIF_NAME_USB_ECM) == 0) {
-        usb_ecm_netif_ctrl(if_name, NETIF_CMD_STATE, &last_state);
-        ret = usb_ecm_netif_ctrl(if_name, cmd, param);
+#if NETIF_USB_RNDIS_IS_ENABLE
+    } else if (strcmp(if_name, NETIF_NAME_USB_RNDIS) == 0) {
+        usb_rndis_netif_ctrl(if_name, NETIF_CMD_STATE, &last_state);
+        ret = usb_rndis_netif_ctrl(if_name, cmd, param);
+#endif
+#if NETIF_USB_DEV_IS_ENABLE
+    } else if (strcmp(if_name, NETIF_NAME_USB_DEV) == 0) {
+        usb_dev_netif_ctrl(if_name, NETIF_CMD_STATE, &last_state);
+        ret = usb_dev_netif_ctrl(if_name, cmd, param);
 #endif
     } else if (strcmp(if_name, NETIF_NAME_LOCAL) == 0) {
         switch (cmd) {
@@ -1330,7 +1344,10 @@ static int nm_is_uplink_netif(const char *if_name)
             || strcmp(if_name, NETIF_NAME_ETH_WAN) == 0
             || strcmp(if_name, NETIF_NAME_WIFI_HALOW) == 0
             || strcmp(if_name, NETIF_NAME_4G_CAT1) == 0
-            || strcmp(if_name, NETIF_NAME_USB_ECM) == 0);
+#if NETIF_USB_RNDIS_IS_ENABLE
+            || strcmp(if_name, NETIF_NAME_USB_RNDIS) == 0
+#endif
+            );
 }
 
 /// @brief Reset lwip DNS servers to the boot defaults

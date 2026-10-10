@@ -189,7 +189,8 @@
         "copied": "已复制",
         "copy_failed": "复制失败",
         "config_saved": "RTSP 配置已保存"
-      }
+      },
+      "uvc_no_push": "UVC (MJPEG) 图像源不支持 RTMP/RTSP 推流"
     },
     "model_verification": {
       "model_verification_title": "模型验证",
@@ -350,7 +351,24 @@
       "fast_capture_resolution": "分辨率",
       "fast_capture_jpeg_quality": "JPEG 质量",
       "capture_disable_comm": "抓拍后仅存储本地",
-      "capture_storage_ai": "存储 AI 画框结果图"
+      "capture_storage_ai": "存储 AI 画框结果图",
+      "section_camera_source": "图像源",
+      "camera_source": "相机源",
+      "camera_source_native": "原生相机",
+      "camera_source_uvc": "UVC 相机 (MJPEG)",
+      "camera_detect": "检测",
+      "camera_detecting": "检测中...",
+      "camera_not_detected": "未检测到",
+      "camera_auto": "自动 (最高分辨率)",
+      "native_stream_res": "视频流分辨率",
+      "uvc_stream_cfg": "流配置",
+      "uvc_capture_hint": "UVC (MJPEG) 模式下相机内部编码，无 JPEG 质量/抓拍分辨率可配",
+      "camera_source_title": "相机源",
+      "camera_pending_restart": "已保存的图像源（{saved}）与当前生效源（{active}）不一致，重启后生效",
+      "camera_active_now": "当前生效：",
+      "camera_source_reboot_hint": "相机源/分辨率切换需重启后生效",
+      "camera_source_save_failed": "保存失败",
+      "camera_oversize_warn": "所选分辨率超过 1080P：设备资源不足，AI 推理与叠图将不可用（抓拍仍正常）"
     },
     "system_management": {
       "communication_title": "通讯管理",

@@ -22,10 +22,18 @@ static jpegc_t g_jpegc = {0};
 #define JPEGC_EVT_DEC_DONE        (1u << 4)
 #define JPEGC_EVT_ERROR           (1u << 5)
 
+static int s_enc_raw_yuv; /* EXPERIMENT: feed planar YCbCr directly, skip RGB convert */
+void jpegc_encode_set_raw_yuv(int on) { s_enc_raw_yuv = on; }
+
 static uint8_t jpegc_tread_stack[1024 * 4] ALIGN_32 IN_PSRAM;
 const osThreadAttr_t jpegcTask_attributes = {
     .name = "jpegcTask",
-    .priority = (osPriority_t) osPriorityHigh,
+    /* Realtime: the per-chunk feeder (RGB565->YCbCr software convert +
+     * submit) runs in ~1-2ms bursts per chunk; at High it queued behind
+     * the web/USB Realtime senders and a loaded 1080P encode stretched
+     * from ~1s to ~9s (65ms/chunk scheduling latency). Bursts are tiny,
+     * it cannot starve the senders in the same band. */
+    .priority = (osPriority_t) osPriorityRealtime,
     .stack_mem = jpegc_tread_stack,
     .stack_size = sizeof(jpegc_tread_stack),
 };
@@ -297,13 +305,27 @@ static int JPEG_Encode_DMA(JPEG_HandleTypeDef *hjpeg, jpegc_t *jpegc)
     /* Get max input lines based on chroma subsampling */
     uint32_t max_input_lines = jpegc_get_max_input_lines(Conf.ChromaSubsampling);
     DataBufferSize= Conf.ImageWidth * max_input_lines * BYTES_PER_PIXEL;
+    if (s_enc_raw_yuv) {
+        /* EXPERIMENT: source is already planar YCbCr (decode raster) -
+         * skip the RGB->YCbCr-MCU conversion, chunk memcpy only. */
+        pRGBToYCbCr_Convert_Function = 0;
+    }
     if(RGB_InputImageIndex < RGB_InputImageSize_Bytes)
     {
+        if (s_enc_raw_yuv) {
+            memcpy(Jpeg_IN_BufferTab.DataBuffer,
+                   (uint8_t *)(RGB_InputImageAddress + RGB_InputImageIndex), DataBufferSize);
+            Jpeg_IN_BufferTab.DataBufferSize = DataBufferSize;
+            Jpeg_IN_BufferTab.State = JPEG_BUFFER_FULL;
+            MCU_BlockIndex += (MCU_TotalNb * DataBufferSize) / RGB_InputImageSize_Bytes;
+            RGB_InputImageIndex += DataBufferSize;
+        } else {
         /* Pre-Processing */
         MCU_BlockIndex += pRGBToYCbCr_Convert_Function((uint8_t *)(RGB_InputImageAddress + RGB_InputImageIndex), Jpeg_IN_BufferTab.DataBuffer, 0, DataBufferSize,(uint32_t*)(&Jpeg_IN_BufferTab.DataBufferSize));
         Jpeg_IN_BufferTab.State = JPEG_BUFFER_FULL;
 
         RGB_InputImageIndex += DataBufferSize;
+        }
     }
 
     /* Fill Encoding Params */
@@ -392,6 +414,25 @@ static void JPEG_EncodeInputHandler(JPEG_HandleTypeDef *hjpeg)
         /* Read and reorder lines from RGB input and fill data buffer */
         if(RGB_InputImageIndex < RGB_InputImageSize_Bytes)
         {
+            if (s_enc_raw_yuv) {
+                uint32_t n = DataBufferSize;
+                if (RGB_InputImageIndex + n > RGB_InputImageSize_Bytes) {
+                    n = RGB_InputImageSize_Bytes - RGB_InputImageIndex;
+                }
+                memcpy(Jpeg_IN_BufferTab.DataBuffer,
+                       (uint8_t *)(RGB_InputImageAddress + RGB_InputImageIndex), n);
+                Jpeg_IN_BufferTab.DataBufferSize = n;
+                Jpeg_IN_BufferTab.State = JPEG_BUFFER_FULL;
+                MCU_BlockIndex += (MCU_TotalNb * n) / RGB_InputImageSize_Bytes;
+                RGB_InputImageIndex += n;
+                if(Input_Is_Paused == 1)
+                {
+                    Input_Is_Paused = 0;
+                    HAL_JPEG_ConfigInputBuffer(hjpeg,Jpeg_IN_BufferTab.DataBuffer, Jpeg_IN_BufferTab.DataBufferSize);
+                    HAL_JPEG_Resume(hjpeg, JPEG_PAUSE_RESUME_INPUT);
+                }
+                return;
+            }
             /* Pre-Processing */
             MCU_BlockIndex += pRGBToYCbCr_Convert_Function((uint8_t *)(RGB_InputImageAddress + RGB_InputImageIndex), Jpeg_IN_BufferTab.DataBuffer, 0, DataBufferSize, (uint32_t*)(&Jpeg_IN_BufferTab.DataBufferSize));
             Jpeg_IN_BufferTab.State = JPEG_BUFFER_FULL;
@@ -426,6 +467,11 @@ static uint32_t JPEG_Decode_DMA(JPEG_HandleTypeDef *hjpeg, jpegc_t *jpegc)
     Input_frameSize = jpegc->dec_input_buffer_size;
     Jpeg_HWDecodingEnd = 0;
     decode_size = 0;
+    /* Session hygiene: these flags are shared with the ENC feeder, and the
+     * DEC GetData path now writes Input_Is_Paused (pause-at-exhaustion) -
+     * a decode must not inherit the last encode's residue. */
+    Input_Is_Paused = 0;
+    Output_Is_Paused = 0;
 
     LOG_DRV_DEBUG("HAL_JPEG_Decode_DMA inAddr 0x%x, outAddr 0x%x, Input_frameSize:%d\r\n", JPEGSourceAddress, FrameBufferAddress, Input_frameSize);
 #if JPEG_USE_SOFT_CONV
@@ -573,9 +619,17 @@ void HAL_JPEG_GetDataCallback(JPEG_HandleTypeDef *hjpeg, uint32_t NbData)
         }else{
             inDataLength = 0;
         }
-        // printf("Address: %p, NbData: %d,  inDataLength: %d\r\n", JPEGSourceAddress, NbData, inDataLength);
         if(inDataLength > 0){
             HAL_JPEG_ConfigInputBuffer(hjpeg,(uint8_t *)JPEGSourceAddress, inDataLength);
+        }else{
+            /* Input exhausted: the HAL contract for this callback is
+             * Config-or-Pause. Doing nothing leaves JPEG_DMAInCpltCallback
+             * re-arming the previous chunk with its stale ptr/len - an
+             * endless replay that keeps feeding the core past EOI and races
+             * the EOC teardown of the DMA channels (field wedges showed
+             * armed-but-idle HPDMA channels with COF set, no error). */
+            HAL_JPEG_Pause(hjpeg, JPEG_PAUSE_RESUME_INPUT);
+            Input_Is_Paused = 1;
         }
 #endif
     }
@@ -634,7 +688,19 @@ void HAL_JPEG_InfoReadyCallback(JPEG_HandleTypeDef *hjpeg, JPEG_ConfTypeDef *pIn
     if(g_jpegc.mode == JPEG_MODE_DEC){
         if(JPEG_GetDecodeColorConvertFunc(pInfo, &pYCbCrToRGB_pConvert_Function, &MCU_TotalNb) != HAL_OK)
         {
-            Error_Handler();
+            /* Unsupported chroma layout in the parsed stream: recover like
+             * the dimension-mismatch case below. Error_Handler() resolves to
+             * the weak while(1) fallback in this image - it would dead-loop
+             * the ISR into the IWDG on a single malformed frame. */
+            HAL_JPEG_Abort(hjpeg);
+            g_jpegc.dec_info.ColorSpace = pInfo->ColorSpace;
+            g_jpegc.dec_info.ImageWidth = pInfo->ImageWidth;
+            g_jpegc.dec_info.ImageHeight = pInfo->ImageHeight;
+            g_jpegc.dec_info.ImageQuality = pInfo->ImageQuality;
+            g_jpegc.dec_info.ChromaSubsampling = pInfo->ChromaSubsampling;
+            g_jpegc.mode = JPEG_MODE_ERROR;
+            osSemaphoreRelease(g_jpegc.sem_dec);
+            return;
         }
         if(pInfo->ImageHeight != g_jpegc.dec_params.ImageHeight || pInfo->ImageWidth != g_jpegc.dec_params.ImageWidth){
             HAL_JPEG_Abort(hjpeg);
@@ -683,7 +749,14 @@ void HAL_JPEG_DecodeCpltCallback(JPEG_HandleTypeDef *hjpeg)
   */
 void HAL_JPEG_ErrorCallback(JPEG_HandleTypeDef *hjpeg)
 {
-    printf("JPEG ErrorCallback\r\n");
+    /* The HAL only raises this from the DMA paths (channel transfer error or
+     * restart failure - the JPEG core has no error interrupt of its own);
+     * the codes below name which channel and what kind of failure. */
+    printf("JPEG ErrorCallback jpeg_err=0x%lx SR=0x%lx in_dma=0x%lx out_dma=0x%lx\r\n",
+           (unsigned long)HAL_JPEG_GetError(hjpeg),
+           (unsigned long)hjpeg->Instance->SR,
+           hjpeg->hdmain ? (unsigned long)HAL_DMA_GetError(hjpeg->hdmain) : 0UL,
+           hjpeg->hdmaout ? (unsigned long)HAL_DMA_GetError(hjpeg->hdmaout) : 0UL);
     // Error_Handler();
     if (g_jpegc.evt_id) {
         osEventFlagsSet(g_jpegc.evt_id, JPEGC_EVT_ERROR);
@@ -700,6 +773,25 @@ void jpegc_unlock(void)
     osMutexRelease(g_jpegc.mtx_id);
 }
 
+/* Abort + full peripheral re-init with the HPDMA channel IRQs masked: a
+ * latched channel-completion interrupt firing between HAL_DMA_Abort (done
+ * inside HAL_JPEG_Abort) and HAL_DMA_DeInit re-arms the channel, and the
+ * DeInit register writes on that armed channel raise a User-Setting-Error
+ * (observed as in_dma=0x4 / HAL_JPEG_ERROR_DMA pairs ~78ms apart) that
+ * looks exactly like a fresh hardware fault. Masking the NVIC lines closes
+ * the window; the pending flag fires once more on the re-enabled idle
+ * channel and is a harmless no-op. */
+static void jpegc_abort_reinit(void)
+{
+    HAL_NVIC_DisableIRQ(HPDMA1_Channel0_IRQn);
+    HAL_NVIC_DisableIRQ(HPDMA1_Channel1_IRQn);
+    (void)HAL_JPEG_Abort(&hjpeg);
+    (void)HAL_JPEG_DeInit(&hjpeg);
+    (void)HAL_JPEG_Init(&hjpeg);
+    HAL_NVIC_EnableIRQ(HPDMA1_Channel0_IRQn);
+    HAL_NVIC_EnableIRQ(HPDMA1_Channel1_IRQn);
+}
+
 static void jpegcProcess(void *argument)
 {
     jpegc_t *jpegc = (jpegc_t *)argument;
@@ -708,6 +800,12 @@ static void jpegcProcess(void *argument)
 #if JPEG_USE_SOFT_CONV
     uint32_t decode_processing_end = 0;
 #endif
+    /* silent-stall watchdog: a 1080P pass is ~100ms; if the codec sits in
+     * the same mode for seconds with no completion AND no error event
+     * (wedged HPDMA channel / paused core - no callbacks fire at all),
+     * only a full peripheral re-init recovers it. */
+    uint32_t stall_since = 0;
+    uint32_t last_prog = 0; /* last-progress snapshot: ENC idx / DEC out-bytes */
     jpegc->mode = JPEG_MODE_IDLE;
     jpegc->is_init = true;
     while (jpegc->is_init) {
@@ -718,6 +816,8 @@ static void jpegcProcess(void *argument)
         osMutexRelease(jpegc->mtx_id);
 
         if (mode_snapshot == JPEG_MODE_IDLE) {
+            stall_since = 0;
+            last_prog = 0;
             (void)osEventFlagsWait(jpegc->evt_id,
                                    JPEGC_EVT_KICK,
                                    osFlagsWaitAny,
@@ -737,9 +837,8 @@ static void jpegcProcess(void *argument)
             wait_mask = JPEGC_EVT_KICK | JPEGC_EVT_ERROR;
         }
 
-        (void)osEventFlagsWait(jpegc->evt_id, wait_mask, osFlagsWaitAny, 200);
+        uint32_t evt = (uint32_t)osEventFlagsWait(jpegc->evt_id, wait_mask, osFlagsWaitAny, 200);
 
-        osMutexAcquire(jpegc->mtx_id, osWaitForever);
         if(jpegc->mode == JPEG_MODE_ENC){
             /* Service pending input/output once we're woken up */
             JPEG_EncodeInputHandler(&hjpeg);
@@ -747,6 +846,17 @@ static void jpegcProcess(void *argument)
             if(encode_processing_end == 1){
                 jpegc->mode = JPEG_MODE_ENC_COMPLETE;
                 osSemaphoreRelease(jpegc->sem_enc);
+            }
+            if (jpegc->mode == JPEG_MODE_ENC &&
+                (int32_t)evt > 0 && (evt & JPEGC_EVT_ERROR)) {
+                /* HW encode error: abort and wake the encoder waiter, or it
+                 * stalls on sem_enc for its full timeout and the HAL handle
+                 * stays BUSY forever (reboot-only wedge). */
+                jpegc_abort_reinit();
+                Jpeg_HWEncodingEnd = 0;
+                jpegc->mode = JPEG_MODE_ERROR;
+                osSemaphoreRelease(jpegc->sem_enc);
+                printf("[jpegc] enc error: aborted, full re-init\r\n");
             }
         }else if(jpegc->mode == JPEG_MODE_DEC){
 #if JPEG_USE_SOFT_CONV
@@ -765,11 +875,132 @@ static void jpegcProcess(void *argument)
                 jpegc->dec_info.ChromaSubsampling = JPEG_Info.ChromaSubsampling;
 
                 jpegc->dec_output_buffer_size = (uint32_t)jpegc->dec_info.ImageWidth * jpegc->dec_info.ImageHeight * JPEG_BYTES_PER_PIXEL(jpegc->dec_info.ChromaSubsampling);
+                /* the raster was HPDMA-written: drop stale cached lines so
+                 * CPU readers (overlay draw, debug paths) see the decoded
+                 * bytes. No dirty lines exist here - only the DMA wrote it. */
+                SCB_InvalidateDCache_by_Addr((uint32_t *)jpegc->dec_output_buffer,
+                                             (int32_t)jpegc->dec_output_buffer_size);
                 LOG_DRV_DEBUG("jepgc_decode size:%d, width:%d, height:%d, Quality:%d, Subsampling:%d\r\n",decode_size, jpegc->dec_info.ImageWidth, jpegc->dec_info.ImageHeight, jpegc->dec_info.ImageQuality, jpegc->dec_info.ChromaSubsampling);
                 osSemaphoreRelease(g_jpegc.sem_dec);
             }
+            if (jpegc->mode == JPEG_MODE_DEC &&
+                (int32_t)evt > 0 && (evt & JPEGC_EVT_ERROR)) {
+                /* HW decode error: HAL_JPEG_ErrorCallback only flags the
+                 * event - without this recovery the waiter stalls on
+                 * sem_dec for its full timeout (-6) and the HAL handle
+                 * stays BUSY so every later decode fails until reboot.
+                 * Mirror the InfoReady-mismatch recovery above. */
+                jpegc_abort_reinit();
+                Jpeg_HWDecodingEnd = 0;
+                jpegc->mode = JPEG_MODE_ERROR;
+                osSemaphoreRelease(g_jpegc.sem_dec);
+                printf("[jpegc] dec error: aborted, full re-init\r\n");
+            }
         }
-        osMutexRelease(jpegc->mtx_id);
+        /* silent-stall watchdog: same busy mode for seconds without any
+         * completion or error event = wedged DMA/core (plain Abort is not
+         * enough; the INPUT retry path already Aborts and still hangs).
+         * Full peripheral + DMA re-init, then wake the waiter as ERROR. */
+        if (jpegc->mode == JPEG_MODE_ENC || jpegc->mode == JPEG_MODE_DEC) {
+            uint32_t now = osKernelGetTickCount();
+            /* progress = feeder advanced (ENC) or output produced (DEC);
+             * under bus load a 1080P encode legitimately runs ~9s */
+            uint32_t prog = (jpegc->mode == JPEG_MODE_ENC) ? RGB_InputImageIndex : decode_size;
+            /* per-mode budget: a 1080P decode pass is ~100ms so 1s is a
+             * generous bound (progress resets the timer while output flows);
+             * an encode legitimately runs seconds under bus load, keep 4s */
+            uint32_t stall_limit_ticks = (jpegc->mode == JPEG_MODE_ENC)
+                ? (4000u * osKernelGetTickFreq()) / 1000u
+                : (1000u * osKernelGetTickFreq()) / 1000u;
+            if (stall_since == 0 || prog != last_prog) {
+                stall_since = now;
+                last_prog = prog;
+            } else if ((now - stall_since) > stall_limit_ticks) {
+                int was_dec = (jpegc->mode == JPEG_MODE_DEC);
+                printf("[jpegc] silent stall (mode %d, %lu ticks): full re-init\r\n",
+                       (int)jpegc->mode, (unsigned long)(now - stall_since));
+                /* crime-scene dump: JPEG core status + both HPDMA channels
+                 * (CSR error flags tell whether a DMA transfer error wedged
+                 * the pipe - Abort does not clear those, DeInit/Init does) */
+                {
+                    volatile JPEG_TypeDef *j = JPEG;
+                    volatile DMA_Channel_TypeDef *ci = (volatile DMA_Channel_TypeDef *)hjpeg.hdmain->Instance;
+                    volatile DMA_Channel_TypeDef *co = (volatile DMA_Channel_TypeDef *)hjpeg.hdmaout->Instance;
+                    printf("[jpegc]   JPEG: CR=%08lx SR=%08lx  hjpeg.State=%d\r\n",
+                           (unsigned long)j->CR, (unsigned long)j->SR, (int)hjpeg.State);
+                    if (was_dec) {
+                        /* DEC has its own progress counters - the ENC globals
+                         * below are stale by construction during a decode
+                         * (the old dump printed the last encode's feeder) */
+                        printf("[jpegc]   feeder(dec): idx=%lu/%lu out_bytes=%lu in_pause=%u\r\n",
+                               (unsigned long)Input_frameIndex, (unsigned long)Input_frameSize,
+                               (unsigned long)decode_size, (unsigned)Input_Is_Paused);
+                    } else {
+                        printf("[jpegc]   feeder: IN.State=%u IN.len=%lu idx=%lu/%lu MCU=%lu/%lu in_pause=%u out_pause=%u\r\n",
+                               (unsigned)Jpeg_IN_BufferTab.State,
+                               (unsigned long)Jpeg_IN_BufferTab.DataBufferSize,
+                               (unsigned long)RGB_InputImageIndex, (unsigned long)RGB_InputImageSize_Bytes,
+                               (unsigned long)MCU_BlockIndex, (unsigned long)MCU_TotalNb,
+                               (unsigned)Input_Is_Paused, (unsigned)Output_Is_Paused);
+                    }
+                    printf("[jpegc]   DMAin : CCR=%08lx CSR=%08lx CTR2=%08lx CSAR=%08lx CDAR=%08lx CBR1=%08lx\r\n",
+                           (unsigned long)ci->CCR, (unsigned long)ci->CSR, (unsigned long)ci->CTR2,
+                           (unsigned long)ci->CSAR, (unsigned long)ci->CDAR, (unsigned long)ci->CBR1);
+                    printf("[jpegc]   DMAout: CCR=%08lx CSR=%08lx CTR2=%08lx CSAR=%08lx CDAR=%08lx CBR1=%08lx\r\n",
+                           (unsigned long)co->CCR, (unsigned long)co->CSR, (unsigned long)co->CTR2,
+                           (unsigned long)co->CSAR, (unsigned long)co->CDAR, (unsigned long)co->CBR1);
+                }
+                jpegc_abort_reinit();
+                Jpeg_HWEncodingEnd = 0;
+                Jpeg_HWDecodingEnd = 0;
+                if (was_dec) {
+                    /* Tail-wedge salvage: a subset of this camera's VALID
+                     * streams (strict software decode passes byte-for-byte)
+                     * leaves the core hung a few MCUs before the image end -
+                     * all input consumed, COF stuck, partial output in the
+                     * FIFO, no EOC (retry on identical bytes reproduces it,
+                     * EOI tail padding does not cure it). When the raster is
+                     * essentially complete, finish the decode in software
+                     * instead of dropping the frame: zero the missing tail
+                     * and report completion. Below the threshold this is a
+                     * real failure - keep the ERROR fold. */
+                    uint32_t expect = (uint32_t)jpegc->dec_params.ImageWidth *
+                        jpegc->dec_params.ImageHeight *
+                        JPEG_BYTES_PER_PIXEL(jpegc->dec_params.ChromaSubsampling);
+                    /* >=95%: covers both the undershoot wedge (tail MCUs
+                     * missing) and the overshoot one (core decoded past the
+                     * image into stale bytes, output counter wrapped past
+                     * the full size) */
+                    if (decode_size >= (expect / 20u) * 19u) {
+                        if (expect > decode_size) {
+                            SCB_InvalidateDCache_by_Addr(
+                                (uint32_t *)jpegc->dec_output_buffer,
+                                (int32_t)decode_size);
+                            memset(jpegc->dec_output_buffer + decode_size, 0,
+                                   expect - decode_size);
+                        }
+                        jpegc->dec_info.ColorSpace = jpegc->dec_params.ColorSpace;
+                        jpegc->dec_info.ImageWidth = jpegc->dec_params.ImageWidth;
+                        jpegc->dec_info.ImageHeight = jpegc->dec_params.ImageHeight;
+                        jpegc->dec_info.ImageQuality = jpegc->dec_params.ImageQuality;
+                        jpegc->dec_info.ChromaSubsampling = jpegc->dec_params.ChromaSubsampling;
+                        jpegc->dec_output_buffer_size = expect;
+                        jpegc->mode = JPEG_MODE_DEC_COMPLETE;
+                        printf("[jpegc] dec tail-wedge salvaged: %lu/%lu bytes, tail zeroed\r\n",
+                               (unsigned long)decode_size, (unsigned long)expect);
+                    } else {
+                        jpegc->mode = JPEG_MODE_ERROR;
+                    }
+                    osSemaphoreRelease(g_jpegc.sem_dec);
+                } else {
+                    jpegc->mode = JPEG_MODE_ERROR;
+                    osSemaphoreRelease(g_jpegc.sem_enc);
+                }
+                stall_since = 0;
+            }
+        } else {
+            stall_since = 0;
+        }
     }
     LOG_DRV_ERROR("jpegcProcess exit \r\n");
     jpegc->jpegc_processId = NULL;
@@ -803,6 +1034,10 @@ static int jpegc_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsign
         case JPEGC_CMD_SET_ENC_PARAM:
             if(arg != sizeof(jpegc_params_t)){
                 ret = AICAM_ERROR_INVALID_PARAM;
+                break;
+            }
+            if(jpegc->mode != JPEG_MODE_IDLE){
+                ret = AICAM_ERROR_BUSY;
                 break;
             }
             memcpy(&jpegc->enc_params, ubuf, sizeof(jpegc_params_t));
@@ -880,6 +1115,13 @@ static int jpegc_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsign
                 ret = AICAM_ERROR_INVALID_PARAM;
                 break;
             }
+            if(jpegc->mode != JPEG_MODE_IDLE){
+                /* an encode/decode session is active: reconfiguring now
+                 * frees buffers out from under it (mid-encode raster churn
+                 * from the concurrent AI decode retries) */
+                ret = AICAM_ERROR_BUSY;
+                break;
+            }
             memcpy(&jpegc->dec_params, ubuf, sizeof(jpegc_params_t));
 
             if (((jpegc->dec_params.ImageWidth % 8) != 0 ) || ((jpegc->dec_params.ImageHeight % 8) != 0 ) || \
@@ -914,6 +1156,10 @@ static int jpegc_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsign
                 ret = AICAM_ERROR_INVALID_PARAM;
                 break;
             }
+            /* drain stale completion tokens left by a watchdog/error
+             * release whose waiter had already given up: they make the
+             * next OUTPUT acquire instantly and misread the mode */
+            while (osSemaphoreAcquire(jpegc->sem_enc, 0) == osOK) {}
             jpegc->enc_input_buffer = ubuf;
             jpegc->mode = JPEG_MODE_ENC;
             HAL_JPEG_Abort(&hjpeg);
@@ -937,13 +1183,22 @@ static int jpegc_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsign
                 break;
             }
 
+            if(jpegc->mode == JPEG_MODE_ERROR){
+                /* Session already failed (HW error / watchdog): fold the
+                 * error and return to IDLE. The plain reject below would
+                 * leave the mode stuck at ERROR, locking every later
+                 * SET/INPUT ioctl out until reboot. */
+                jpegc->mode = JPEG_MODE_IDLE;
+                ret = AICAM_ERROR_INVALID_DATA;
+                break;
+            }
             if(jpegc->mode != JPEG_MODE_ENC){
                 ret = AICAM_ERROR;
                 break;
             }
 
             osMutexRelease(jpegc->mtx_id);
-            if (osSemaphoreAcquire(jpegc->sem_enc, 10000) == osOK){
+            if (osSemaphoreAcquire(jpegc->sem_enc, 30000) == osOK){
                 osMutexAcquire(jpegc->mtx_id, osWaitForever);
                 if(jpegc->mode == JPEG_MODE_ENC_COMPLETE){
                     jpegc_ensure_eoi(jpegc);
@@ -965,9 +1220,15 @@ static int jpegc_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsign
                 ret = AICAM_ERROR_INVALID_PARAM;
                 break;
             }
+            /* drain stale completion tokens (see INPUT_ENC_BUFFER) */
+            while (osSemaphoreAcquire(jpegc->sem_dec, 0) == osOK) {}
             jpegc->dec_input_buffer = ubuf;
             jpegc->mode = JPEG_MODE_DEC;
             jpegc->dec_input_buffer_size = arg;
+            /* NOTE: no cache clean here on purpose. PSRAM (0x90400000+) sits
+             * in the 0x80000000-0x9FFFFFFF default-map region which is
+             * cacheable WRITE-THROUGH (M55 PM table 24): CPU writes reach
+             * PSRAM immediately and cannot be stale to the HPDMA. */
             HAL_JPEG_Abort(&hjpeg);
             if(JPEG_Decode_DMA(&hjpeg, jpegc) != 0){
                 jpegc->mode = JPEG_MODE_IDLE;
@@ -985,6 +1246,20 @@ static int jpegc_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsign
                 *((unsigned char **)ubuf) = jpegc->dec_output_buffer;
                 ret = jpegc->dec_output_buffer_size;
                 jpegc->mode = JPEG_MODE_IDLE;
+                break;
+            }
+            if(jpegc->mode == JPEG_MODE_ERROR){
+                /* see OUTPUT_ENC_BUFFER: fold the error instead of stranding
+                 * the mode (a stuck ERROR mode rejects every later INPUT) */
+                jpegc->mode = JPEG_MODE_IDLE;
+                ret = AICAM_ERROR_INVALID_DATA;
+                break;
+            }
+            if(jpegc->mode != JPEG_MODE_DEC){
+                /* mirror OUTPUT_ENC_BUFFER: without this guard a misdirected
+                 * call would sit 15s on sem_dec, then force mode=IDLE and
+                 * kill a live session (e.g. an encode) the caller never owned */
+                ret = AICAM_ERROR;
                 break;
             }
             osMutexRelease(jpegc->mtx_id);

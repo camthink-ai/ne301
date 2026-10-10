@@ -68,6 +68,17 @@ int quick_storage_read_snapshot_config(qs_snapshot_config_t *snapshot_config);
 int quick_storage_fill_isp_iq_param(uint32_t isp_mode, uint8_t grayscale,
                                     ISP_IQParamTypeDef *isp_param);
 
+/**
+ * @brief Camera source straight from NVS (no json_config init)
+ * @return 0 = native (default/absent key), 1 = uvc (CAMERA_SOURCE_UVC)
+ */
+uint32_t quick_storage_get_camera_source(void);
+
+/**
+ * @brief Configured UVC stream selection (0/0 = auto/largest)
+ */
+void quick_storage_get_uvc_resolution(uint32_t *w, uint32_t *h);
+
 
 typedef struct {
     uint8_t work_mode;                  // 0: image, 1: video stream
