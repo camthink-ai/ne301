@@ -116,6 +116,24 @@ static void ai_uvc_thread(void *arg)
         uint32_t len = 0;
         uint16_t w = 0, h = 0;
         uint32_t seq = usbh_uvc_service_latest_frame(&p, &len, &w, &h);
+
+        /* Resource guard FIRST: above 1080P the decode path is skipped
+         * entirely (the 4K raster + full-frame convert would exhaust the
+         * external pool). Must run before the len<=512K bail below or a
+         * published 4K frame spams "frame invalid" every poll cycle (a
+         * 4K MJPEG is 0.8-1.6MB). No per-frame notification: the
+         * source-config page warns in red when the selected resolution
+         * exceeds the budget. */
+        if (seq != 0 && (uint32_t)w * h > 1920u * 1080u) {
+            if (!g_ai_uvc.oversize_noted) {
+                g_ai_uvc.oversize_noted = 1;
+                LOG_SVC_WARN("ai_uvc: %ux%u exceeds the 1080P decode budget, AI idle",
+                             (unsigned)w, (unsigned)h);
+            }
+            osDelay(interval_ms);
+            continue;
+        }
+
         if (seq == 0 || len == 0 || len > sizeof(g_ai_uvc_frame)) {
             if (diag) {
                 printf("[ai_uvc] frame invalid (seq=%lu len=%lu %ux%u)\r\n",
@@ -130,20 +148,6 @@ static void ai_uvc_thread(void *arg)
          * this buffer is decode-only - never stored or uploaded - so the
          * padded length stays internal */
         len = uvc_jpeg_pad_tail(g_ai_uvc_frame, len, sizeof(g_ai_uvc_frame));
-
-        /* Resource guard: above 1080P the decode path is skipped entirely
-         * (the 4K raster + full-frame convert would exhaust the external
-         * pool). No per-frame notification: the source-config page warns
-         * in red when the selected resolution exceeds the budget. */
-        if ((uint32_t)w * h > 1920u * 1080u) {
-            if (!g_ai_uvc.oversize_noted) {
-                g_ai_uvc.oversize_noted = 1;
-                LOG_SVC_WARN("ai_uvc: %ux%u exceeds the 1080P decode budget, AI idle",
-                             (unsigned)w, (unsigned)h);
-            }
-            osDelay(interval_ms);
-            continue;
-        }
 
         if (model_input == NULL) {
             model_input = buffer_malloc_aligned(

@@ -79,13 +79,18 @@ static uint32_t g_uvc_rec_idx_len[UVC_REC_IDX_MAX] IN_PSRAM;
  * buffer, lock-free. The worker publishes intact frames into slot[seq&1]
  * then bumps seq; readers snapshot (seq-1)&1 and stay valid until two more
  * publishes. */
+/* preview slot capacity: sized for 4K MJPEG frames (3840x2160 up to
+ * ~1.6MB at q85). Publishing, assembly overflow and THIS store use the
+ * slot size; record staging and the capture buffer stay at UVC_PREVIEW_
+ * BYTES (SD recording / raw capture remain 1080P-class caps). */
+#define UVC_PREVIEW_SLOT_BYTES (2048 * 1024)
 #define UVC_PREVIEW_BYTES (512 * 1024)
 /* triple buffer: a reader holding slot (seq-1)%3 keeps it safe for three
  * publish periods (100ms @ 30fps) — slow web sends under priority bursts
  * used to tear on a 2-slot rotation */
 #define UVC_PREV_SLOTS 3
 static uint32_t s_prev_pub_sig;         /* last published frame signature */
-static uint8_t g_uvc_prev_buf[UVC_PREV_SLOTS][UVC_PREVIEW_BYTES] ALIGN_32 IN_PSRAM;
+static uint8_t g_uvc_prev_buf[UVC_PREV_SLOTS][UVC_PREVIEW_SLOT_BYTES] ALIGN_32 IN_PSRAM;
 static volatile uint32_t g_uvc_prev_len[UVC_PREV_SLOTS];
 static volatile uint32_t g_uvc_prev_seq;
 static uint16_t g_uvc_prev_w, g_uvc_prev_h;
@@ -505,7 +510,7 @@ static void uvc_frame_append(const uint8_t *src, uint32_t len)
     if (g_uvct.frame_skip) {
         return;
     }
-    if (len <= UVC_PREVIEW_BYTES - g_uvct.frame_len) { /* actual slot size */
+    if (len <= UVC_PREVIEW_SLOT_BYTES - g_uvct.frame_len) { /* actual slot size */
         memcpy(g_uvct.frame_cur + g_uvct.frame_len, src, len);
         g_uvct.frame_len += len;
     } else {
@@ -573,7 +578,7 @@ static void uvc_frame_finish(void)
         } else {
             g_uvct.fps_window_frames++; /* unique-frame rate for the badge */
         }
-        if (!dup && g_uvct.frame_len <= UVC_PREVIEW_BYTES) {
+        if (!dup && g_uvct.frame_len <= UVC_PREVIEW_SLOT_BYTES) {
             /* publish to the web preview store. ISO assembles DIRECTLY in
              * the preview double buffer, so publishing is a zero-copy seq
              * bump (a memcpy here used to stall the channel re-arm ~300us
