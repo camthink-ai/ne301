@@ -918,7 +918,7 @@ LDFLAGS += -Wl,--start-group $(LIBS) -Wl,--end-group
 # 4.1.1 port (Custom/Hal now uses 4.1.1 APIs: sli_wifi_send_command,
 # sli_buffer_manager_free_buffer, rx_irq bus model). Rollback to 4.0.2
 # = git revert the 4.1.1 port commit (restores SDK tree + Custom/Hal + this line).
-include ../Custom/Common/Lib/SiliconLabs_SDK_4_1_1/silabs_sdk.mk
+include ../Custom/Common/Lib/SiliconLabs_SDK_4_2_0/silabs_sdk.mk
 include ../Custom/Common/Lib/mmx108/mmx108.mk
 
 ######################################
