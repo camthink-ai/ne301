@@ -123,6 +123,22 @@
          changed = AICAM_TRUE;
      }
 
+     // Batching knobs outside their ranges are clamped to the nearest bound
+     mqtt_service_config_t *mqtt = &config->mqtt_service;
+     uint16_t batch_ms = mqtt->telemetry_batch_ms;
+     uint16_t batch_bytes = mqtt->telemetry_batch_bytes;
+     if (batch_ms != 0 && batch_ms < MQTT_TELEMETRY_BATCH_MS_MIN) batch_ms = MQTT_TELEMETRY_BATCH_MS_MIN;
+     if (batch_ms > MQTT_TELEMETRY_BATCH_MS_MAX) batch_ms = MQTT_TELEMETRY_BATCH_MS_MAX;
+     if (batch_bytes < MQTT_TELEMETRY_BATCH_BYTES_MIN) batch_bytes = MQTT_TELEMETRY_BATCH_BYTES_MIN;
+     if (batch_bytes > MQTT_TELEMETRY_BATCH_BYTES_MAX) batch_bytes = MQTT_TELEMETRY_BATCH_BYTES_MAX;
+     if (batch_ms != mqtt->telemetry_batch_ms || batch_bytes != mqtt->telemetry_batch_bytes) {
+         LOG_CORE_WARN("telemetry batch %u ms / %u B out of range; using %u ms / %u B",
+                       mqtt->telemetry_batch_ms, mqtt->telemetry_batch_bytes, batch_ms, batch_bytes);
+         mqtt->telemetry_batch_ms = batch_ms;
+         mqtt->telemetry_batch_bytes = batch_bytes;
+         changed = AICAM_TRUE;
+     }
+
      return changed;
  }
  

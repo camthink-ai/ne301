@@ -85,6 +85,8 @@ typedef struct {
     char telemetry_topic[128];           // Telemetry topic
     int telemetry_qos;                   // Telemetry QoS
     int telemetry_format;                // Payload format (mqtt_telemetry_format_t)
+    int telemetry_batch_ms;              // Longest a beat waits in a batch (0 = off)
+    int telemetry_batch_bytes;           // Batch payload cap in bytes
 } mqtt_service_topic_config_t;
 
 /* ==================== MQTT Service Interface Functions ==================== */
@@ -313,6 +315,16 @@ aicam_bool_t mqtt_service_get_telemetry_enabled(void);
  *         MQTT_TELEMETRY_FORMAT_JSON (stock behavior)
  */
 mqtt_telemetry_format_t mqtt_service_get_telemetry_format(void);
+
+/**
+ * @brief Get the continuous AI telemetry batch window in ms (0 = one beat per message)
+ */
+uint16_t mqtt_service_get_telemetry_batch_ms(void);
+
+/**
+ * @brief Get the continuous AI telemetry batch payload cap in bytes
+ */
+uint16_t mqtt_service_get_telemetry_batch_bytes(void);
 
 /**
  * @brief Publish a continuous AI telemetry message to the telemetry topic

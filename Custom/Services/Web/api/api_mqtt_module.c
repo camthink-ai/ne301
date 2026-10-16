@@ -324,6 +324,8 @@ static aicam_result_t mqtt_config_get_handler(http_handler_context_t* ctx)
         cJSON_AddNumberToObject(response_json, "telemetry_qos", topic_config.telemetry_qos);
         cJSON_AddStringToObject(response_json, "telemetry_format",
                                 topic_config.telemetry_format == MQTT_TELEMETRY_FORMAT_CBOR ? "cbor" : "json");
+        cJSON_AddNumberToObject(response_json, "telemetry_batch_ms", topic_config.telemetry_batch_ms);
+        cJSON_AddNumberToObject(response_json, "telemetry_batch_bytes", topic_config.telemetry_batch_bytes);
 
 
         //cJSON *auto_subscribe = cJSON_CreateObject();
@@ -437,6 +439,23 @@ static aicam_result_t mqtt_config_set_handler(http_handler_context_t* ctx)
             return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
                                       "telemetry_format must be 'json' or 'cbor'");
         }
+    }
+    cJSON *telemetry_batch_ms = cJSON_GetObjectItem(request_json, "telemetry_batch_ms");
+    if (telemetry_batch_ms && (!cJSON_IsNumber(telemetry_batch_ms) ||
+                               (telemetry_batch_ms->valueint != 0 &&
+                                (telemetry_batch_ms->valueint < (int)MQTT_TELEMETRY_BATCH_MS_MIN ||
+                                 telemetry_batch_ms->valueint > (int)MQTT_TELEMETRY_BATCH_MS_MAX)))) {
+        cJSON_Delete(request_json);
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
+                                  "telemetry_batch_ms must be 0 or 200 to 10000");
+    }
+    cJSON *telemetry_batch_bytes = cJSON_GetObjectItem(request_json, "telemetry_batch_bytes");
+    if (telemetry_batch_bytes && (!cJSON_IsNumber(telemetry_batch_bytes) ||
+                                  telemetry_batch_bytes->valueint < (int)MQTT_TELEMETRY_BATCH_BYTES_MIN ||
+                                  telemetry_batch_bytes->valueint > (int)MQTT_TELEMETRY_BATCH_BYTES_MAX)) {
+        cJSON_Delete(request_json);
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
+                                  "telemetry_batch_bytes must be 512 to 16384");
     }
 
     // Get current configuration
@@ -594,7 +613,8 @@ static aicam_result_t mqtt_config_set_handler(http_handler_context_t* ctx)
     cJSON *topics = cJSON_GetObjectItem(request_json, "topics");
     cJSON *qos = cJSON_GetObjectItem(request_json, "qos");
 
-    if (topics || qos || report_content || telemetry_enabled || telemetry_topic || telemetry_qos || telemetry_format) {
+    if (topics || qos || report_content || telemetry_enabled || telemetry_topic || telemetry_qos || telemetry_format ||
+        telemetry_batch_ms || telemetry_batch_bytes) {
         mqtt_service_topic_config_t topic_config;
         result = mqtt_service_get_topic_config(&topic_config);
         if (result == AICAM_OK) {
@@ -650,6 +670,12 @@ static aicam_result_t mqtt_config_set_handler(http_handler_context_t* ctx)
             }
             if (telemetry_format) {
                 topic_config.telemetry_format = telemetry_format_value;
+            }
+            if (telemetry_batch_ms) {
+                topic_config.telemetry_batch_ms = (int)telemetry_batch_ms->valueint;
+            }
+            if (telemetry_batch_bytes) {
+                topic_config.telemetry_batch_bytes = (int)telemetry_batch_bytes->valueint;
             }
 
             // Apply topic configuration

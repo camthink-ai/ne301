@@ -402,6 +402,8 @@ typedef struct {
     char telemetry_topic[MAX_TOPIC_LENGTH];      // Telemetry topic
     uint8_t telemetry_qos;                       // Telemetry QoS (0-2)
     uint8_t telemetry_format;                    // Payload format (mqtt_telemetry_format_t)
+    uint16_t telemetry_batch_ms;                 // Longest a beat waits in a batch (0 = off)
+    uint16_t telemetry_batch_bytes;              // Batch payload cap in bytes
 } mqtt_service_config_t;
 
 /**
@@ -413,6 +415,19 @@ typedef enum {
     MQTT_TELEMETRY_FORMAT_JSON = 0,              // cJSON text payload (default)
     MQTT_TELEMETRY_FORMAT_CBOR = 1               // Compact CBOR binary payload
 } mqtt_telemetry_format_t;
+
+/**
+ * @brief Continuous AI telemetry batching
+ * @note telemetry_batch_ms 0 keeps one beat per message; otherwise beats are
+ *       batched into messages that close when the first beat is
+ *       telemetry_batch_ms old or the next beat would pass
+ *       telemetry_batch_bytes.
+ */
+#define MQTT_TELEMETRY_BATCH_MS_MIN          200U
+#define MQTT_TELEMETRY_BATCH_MS_MAX          10000U
+#define MQTT_TELEMETRY_BATCH_BYTES_MIN       512U
+#define MQTT_TELEMETRY_BATCH_BYTES_MAX       16384U
+#define MQTT_TELEMETRY_BATCH_BYTES_DEFAULT   5000U
 
 /** Stored in image_config_t.isp_mode — built-in profiles vs NVS-backed custom IQ. */
 #define IMAGE_ISP_MODE_OUTDOOR  0u   /* default */
@@ -1035,6 +1050,11 @@ aicam_result_t json_config_get_mqtt_service_config(mqtt_service_config_t *mqtt_s
  * @return aicam_result_t Operation result
  */
 aicam_result_t json_config_set_mqtt_service_config(const mqtt_service_config_t *mqtt_service_config);
+
+/**
+ * @brief Get the MQTT client id as a NUL-terminated copy
+ */
+void json_config_get_mqtt_client_id(char *client_id, size_t size);
 
 /**
  * @brief Get device service image configuration

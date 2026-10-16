@@ -1451,6 +1451,18 @@ aicam_result_t json_config_save_mqtt_service_config_to_nvs(const mqtt_service_co
         result = telemetry_result;
     }
 
+    telemetry_result = json_config_nvs_write_uint32(NVS_KEY_MQTT_TELEMETRY_BATCH_MS, config->telemetry_batch_ms);
+    if (telemetry_result != AICAM_OK) {
+        LOG_CORE_ERROR("Failed to save MQTT telemetry batch ms to NVS");
+        result = telemetry_result;
+    }
+
+    telemetry_result = json_config_nvs_write_uint32(NVS_KEY_MQTT_TELEMETRY_BATCH_BYTES, config->telemetry_batch_bytes);
+    if (telemetry_result != AICAM_OK) {
+        LOG_CORE_ERROR("Failed to save MQTT telemetry batch bytes to NVS");
+        result = telemetry_result;
+    }
+
     LOG_CORE_INFO("MQTT full service configuration saved to NVS successfully");
     return result;
 }
@@ -2724,6 +2736,20 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     else
         json_config_nvs_write_uint8(NVS_KEY_MQTT_TELEMETRY_FORMAT, config->mqtt_service.telemetry_format);
 
+    // Stored as uint32 (no uint16 helper); saturate so the invariants clamp
+    // an out-of-range value instead of a wrapped one
+    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_TELEMETRY_BATCH_MS, &temp_uint32);
+    if (result == AICAM_OK)
+        config->mqtt_service.telemetry_batch_ms = (uint16_t)(temp_uint32 > UINT16_MAX ? UINT16_MAX : temp_uint32);
+    else
+        json_config_nvs_write_uint32(NVS_KEY_MQTT_TELEMETRY_BATCH_MS, config->mqtt_service.telemetry_batch_ms);
+
+    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_TELEMETRY_BATCH_BYTES, &temp_uint32);
+    if (result == AICAM_OK)
+        config->mqtt_service.telemetry_batch_bytes = (uint16_t)(temp_uint32 > UINT16_MAX ? UINT16_MAX : temp_uint32);
+    else
+        json_config_nvs_write_uint32(NVS_KEY_MQTT_TELEMETRY_BATCH_BYTES, config->mqtt_service.telemetry_batch_bytes);
+
     // Note: RTMP config is now part of video_stream_mode, loaded below
 
     // Load work mode configuration
@@ -2990,6 +3016,10 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
                                     config->mqtt_service.telemetry_enabled);
         json_config_nvs_write_uint8(NVS_KEY_MQTT_TELEMETRY_FORMAT,
                                     config->mqtt_service.telemetry_format);
+        json_config_nvs_write_uint32(NVS_KEY_MQTT_TELEMETRY_BATCH_MS,
+                                     config->mqtt_service.telemetry_batch_ms);
+        json_config_nvs_write_uint32(NVS_KEY_MQTT_TELEMETRY_BATCH_BYTES,
+                                     config->mqtt_service.telemetry_batch_bytes);
     }
 
     LOG_CORE_INFO("Config loaded from NVS successfully");

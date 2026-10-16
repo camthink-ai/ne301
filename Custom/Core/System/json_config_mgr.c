@@ -289,7 +289,9 @@
         .telemetry_enabled = AICAM_FALSE,
         .telemetry_topic = "aicam/data/telemetry",
         .telemetry_qos = 0,
-        .telemetry_format = MQTT_TELEMETRY_FORMAT_JSON
+        .telemetry_format = MQTT_TELEMETRY_FORMAT_JSON,
+        .telemetry_batch_ms = 0,
+        .telemetry_batch_bytes = MQTT_TELEMETRY_BATCH_BYTES_DEFAULT
     }
  };
 
@@ -1497,6 +1499,12 @@ aicam_result_t json_config_config_to_isp_param(isp_config_t *isp_config, ISP_IQP
 
      *mqtt_service_config = g_json_config_ctx.current_config.mqtt_service;
      return AICAM_OK;
+ }
+
+ void json_config_get_mqtt_client_id(char *client_id, size_t size)
+ {
+     strncpy(client_id, g_json_config_ctx.current_config.mqtt_service.base_config.client_id, size - 1);
+     client_id[size - 1] = '\0';
  }
 
  aicam_result_t json_config_set_mqtt_service_config(const mqtt_service_config_t *mqtt_service_config)

@@ -98,6 +98,8 @@ typedef struct {
     char telemetry_topic[MAX_TOPIC_LENGTH];      // Telemetry topic
     uint8_t telemetry_qos;                       // Telemetry QoS (0-2)
     uint8_t telemetry_format;                    // Payload format (mqtt_telemetry_format_t)
+    uint16_t telemetry_batch_ms;                 // Longest a beat waits in a batch (0 = off)
+    uint16_t telemetry_batch_bytes;              // Batch payload cap in bytes
 } mqtt_service_extended_config_t;
 
 typedef struct {
@@ -1123,6 +1125,8 @@ static aicam_result_t mqtt_config_persistent_to_runtime(const mqtt_service_confi
     strcpy(runtime->telemetry_topic, persistent->telemetry_topic);
     runtime->telemetry_qos = persistent->telemetry_qos;
     runtime->telemetry_format = persistent->telemetry_format;
+    runtime->telemetry_batch_ms = persistent->telemetry_batch_ms;
+    runtime->telemetry_batch_bytes = persistent->telemetry_batch_bytes;
 
     return AICAM_OK;
 }
@@ -1168,6 +1172,8 @@ static aicam_result_t mqtt_config_runtime_to_persistent(const mqtt_service_exten
     strcpy(persistent->telemetry_topic, runtime->telemetry_topic);
     persistent->telemetry_qos = runtime->telemetry_qos;
     persistent->telemetry_format = runtime->telemetry_format;
+    persistent->telemetry_batch_ms = runtime->telemetry_batch_ms;
+    persistent->telemetry_batch_bytes = runtime->telemetry_batch_bytes;
 
     return AICAM_OK;
 }
@@ -2246,6 +2252,8 @@ aicam_result_t mqtt_service_get_topic_config(mqtt_service_topic_config_t *config
     config->telemetry_topic[sizeof(config->telemetry_topic) - 1] = '\0';
     config->telemetry_qos = g_mqtt_service.config.telemetry_qos;
     config->telemetry_format = g_mqtt_service.config.telemetry_format;
+    config->telemetry_batch_ms = g_mqtt_service.config.telemetry_batch_ms;
+    config->telemetry_batch_bytes = g_mqtt_service.config.telemetry_batch_bytes;
 
 
     return AICAM_OK;
@@ -2295,6 +2303,8 @@ aicam_result_t mqtt_service_set_topic_config(const mqtt_service_topic_config_t *
     g_mqtt_service.config.telemetry_topic[sizeof(g_mqtt_service.config.telemetry_topic) - 1] = '\0';
     g_mqtt_service.config.telemetry_qos = config->telemetry_qos;
     g_mqtt_service.config.telemetry_format = (uint8_t)config->telemetry_format;
+    g_mqtt_service.config.telemetry_batch_ms = (uint16_t)config->telemetry_batch_ms;
+    g_mqtt_service.config.telemetry_batch_bytes = (uint16_t)config->telemetry_batch_bytes;
 
 
     LOG_SVC_DEBUG("MQTT service topic configuration updated");
@@ -2339,6 +2349,22 @@ mqtt_telemetry_format_t mqtt_service_get_telemetry_format(void)
         return MQTT_TELEMETRY_FORMAT_CBOR;
     }
     return MQTT_TELEMETRY_FORMAT_JSON;
+}
+
+/**
+ * @brief Get the continuous AI telemetry batch window
+ */
+uint16_t mqtt_service_get_telemetry_batch_ms(void)
+{
+    return g_mqtt_service.config.telemetry_batch_ms;
+}
+
+/**
+ * @brief Get the continuous AI telemetry batch payload cap
+ */
+uint16_t mqtt_service_get_telemetry_batch_bytes(void)
+{
+    return g_mqtt_service.config.telemetry_batch_bytes;
 }
 
 /**
