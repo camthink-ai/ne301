@@ -1186,6 +1186,11 @@ aicam_result_t json_config_set_capture_upload_config(const capture_upload_config
 void json_config_capture_upload_defaults(capture_upload_config_t *config);
 
 /**
+ * @brief Create the LittleFS certificate directory (/certs) if it is missing
+ */
+void json_config_ensure_cert_dir(void);
+
+/**
  * @brief Get webhook custom CA certificate (from LittleFS file)
  * @param cert_data Output buffer (caller must free with buffer_free). NULL if no cert.
  * @param cert_len Output length (0 if no cert)

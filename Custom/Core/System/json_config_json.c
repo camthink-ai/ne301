@@ -507,6 +507,7 @@ static void json_save_cert_data(cJSON *obj, const char *key, const char *cert_pa
         return;
     }
     json_get_string(obj, key, (char *)cert_data, cert_len);
+    json_config_ensure_cert_dir();
     void *fd = disk_file_fopen(FS_FLASH, cert_path, "w");
     if (fd == NULL)
     {

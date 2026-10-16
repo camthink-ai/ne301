@@ -1968,6 +1968,50 @@ aicam_result_t mqtt_service_get_config(ms_mqtt_config_t *config)
     return AICAM_OK;
 }
 
+#define MQTT_CA_CERT_PATH       "/certs/mqtt_ca.pem"
+#define MQTT_CLIENT_CERT_PATH   "/certs/mqtt_client_cert.pem"
+#define MQTT_CLIENT_KEY_PATH    "/certs/mqtt_client_key.pem"
+
+/**
+ * @brief Save a certificate to flash at its path
+ * @details Only the path and length are persisted, so inline data given
+ *          without a path gets a default path; otherwise it is lost at reboot.
+ */
+static aicam_result_t save_mqtt_cert_to_flash(char **path, const char *default_path,
+                                              const char *data, size_t len)
+{
+    if (data == NULL || len == 0) {
+        return AICAM_OK;
+    }
+
+    if (*path == NULL || (*path)[0] == '\0') {
+        if (*path) {
+            buffer_free(*path);
+        }
+        *path = my_strdup(default_path);
+        if (*path == NULL) {
+            LOG_SVC_ERROR("Failed to allocate memory for %s", default_path);
+            return AICAM_ERROR_NO_MEMORY;
+        }
+    }
+
+    json_config_ensure_cert_dir();
+    void *fd = disk_file_fopen(FS_FLASH, *path, "w");
+    if (fd == NULL) {
+        LOG_SVC_ERROR("Failed to open cert file: %s", *path);
+        return AICAM_ERROR;
+    }
+    int written = disk_file_fwrite(FS_FLASH, fd, data, len);
+    disk_file_fclose(FS_FLASH, fd);
+    if (written != (int)len) {
+        LOG_SVC_ERROR("Failed to write cert file: %s (%d/%zu)", *path, written, len);
+        disk_file_remove(FS_FLASH, *path);
+        return AICAM_ERROR;
+    }
+
+    return AICAM_OK;
+}
+
 aicam_result_t mqtt_service_set_config(const ms_mqtt_config_t *config)
 {
     if (!config) {
@@ -2130,38 +2174,18 @@ aicam_result_t mqtt_service_set_config(const ms_mqtt_config_t *config)
 
 
     //cert save to flash
-    if (config->authentication.ca_data) {
-        if (config->authentication.ca_path) {
-            void *fd = disk_file_fopen(FS_FLASH, config->authentication.ca_path, "w");
-            if (fd == NULL) {
-                LOG_SVC_ERROR("Failed to open ca file: %s", config->authentication.ca_path);
-                return AICAM_ERROR;
-            }
-            disk_file_fwrite(FS_FLASH, fd, config->authentication.ca_data, config->authentication.ca_len);
-            disk_file_fclose(FS_FLASH, fd);
-        }
+    struct authentication_t *auth = &g_mqtt_service.config.base_config.authentication;
+    aicam_result_t result = save_mqtt_cert_to_flash(&auth->ca_path, MQTT_CA_CERT_PATH, auth->ca_data, auth->ca_len);
+    if (result != AICAM_OK) {
+        return result;
     }
-    if (config->authentication.client_cert_data) {
-        if (config->authentication.client_cert_path) {
-            void *fd = disk_file_fopen(FS_FLASH, config->authentication.client_cert_path, "w");
-            if (fd == NULL) {
-                LOG_SVC_ERROR("Failed to open client cert file: %s", config->authentication.client_cert_path);
-                return AICAM_ERROR;
-            }
-            disk_file_fwrite(FS_FLASH, fd, config->authentication.client_cert_data, config->authentication.client_cert_len);
-            disk_file_fclose(FS_FLASH, fd);
-        }
+    result = save_mqtt_cert_to_flash(&auth->client_cert_path, MQTT_CLIENT_CERT_PATH, auth->client_cert_data, auth->client_cert_len);
+    if (result != AICAM_OK) {
+        return result;
     }
-    if (config->authentication.client_key_data) {
-        if (config->authentication.client_key_path) {
-            void *fd = disk_file_fopen(FS_FLASH, config->authentication.client_key_path, "w");
-            if (fd == NULL) {
-                LOG_SVC_ERROR("Failed to open client key file: %s", config->authentication.client_key_path);
-                return AICAM_ERROR;
-            }
-            disk_file_fwrite(FS_FLASH, fd, config->authentication.client_key_data, config->authentication.client_key_len);
-            disk_file_fclose(FS_FLASH, fd);
-        }
+    result = save_mqtt_cert_to_flash(&auth->client_key_path, MQTT_CLIENT_KEY_PATH, auth->client_key_data, auth->client_key_len);
+    if (result != AICAM_OK) {
+        return result;
     }
 
     //convert mqtt_service_extended_config_t to mqtt_service_config_t
