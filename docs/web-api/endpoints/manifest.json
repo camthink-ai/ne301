@@ -550,7 +550,7 @@
     },
     "mqtt": {
       "source": "Custom/Services/Web/api/api_mqtt_module.c",
-      "source_sha256": "2ce36ec1b35a094e",
+      "source_sha256": "e20abc81c97170d7",
       "routes": [
         {
           "method": "GET",

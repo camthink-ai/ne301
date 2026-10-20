@@ -315,6 +315,8 @@
 #define NVS_KEY_MQTT_TELEMETRY_TOPIC    "mqtt_t_tel"
 #define NVS_KEY_MQTT_TELEMETRY_QOS      "mqtt_q_tel"
 #define NVS_KEY_MQTT_TELEMETRY_FORMAT   "mqtt_f_tel"
+#define NVS_KEY_MQTT_TELEMETRY_BATCH_MS "mqtt_bm_tel"
+#define NVS_KEY_MQTT_TELEMETRY_BATCH_BYTES "mqtt_bb_tel"
  
  // Work mode configuration key names
  #define NVS_KEY_WORK_MODE           "work_mode"
