@@ -427,7 +427,7 @@ static int DCMIPP_Pipe1Init(camera_t *camera)
     dcmipp_conf.output_bpp = camera->pipe1_param.bpp;
     dcmipp_conf.mode = CMW_Aspect_ratio_manual_roi;
     dcmipp_conf.enable_swap = 0;
-    dcmipp_conf.enable_gamma_conversion = 0;
+    dcmipp_conf.enable_gamma_conversion = -1;
     CAM_InitCropConfig(&dcmipp_conf.manual_conf, camera);
     ret = CMW_CAMERA_SetPipeConfig(DCMIPP_PIPE1, &dcmipp_conf, &hw_pitch);
     if(ret != HAL_OK || hw_pitch != dcmipp_conf.output_width * dcmipp_conf.output_bpp){
@@ -448,7 +448,10 @@ static int DCMIPP_Pipe2Init(camera_t *camera)
     dcmipp_conf.output_bpp = camera->pipe2_param.bpp;
     dcmipp_conf.mode = CMW_Aspect_ratio_manual_roi;
     dcmipp_conf.enable_swap = 1;
-    dcmipp_conf.enable_gamma_conversion = 0;
+    /* -1: leave per-pipe gamma to ISP_SVC_ISP_SetGamma (both pipes).
+    Passing 0 would DisableGammaConversion here and desync Pipe2 after
+    model reload, because camera_start no longer re-runs ISP_Start. */
+    dcmipp_conf.enable_gamma_conversion = -1;
     CAM_InitCropConfig(&dcmipp_conf.manual_conf, camera);
     ret = CMW_CAMERA_SetPipeConfig(DCMIPP_PIPE2, &dcmipp_conf, &hw_pitch);
     if(ret != HAL_OK || hw_pitch != dcmipp_conf.output_width * dcmipp_conf.output_bpp){
