@@ -321,8 +321,14 @@ static inline void dwc2_chan_transfer(struct usbh_bus *bus, uint8_t ch_num, uint
 
     flags = usb_osal_enter_critical_section();
 
-    /* Enable channel interrupts required for this transfer. */
-    USB_OTG_HC((uint32_t)ch_num)->HCINTMSK = USB_OTG_HCINTMSK_CHHM;
+    /* Enable channel interrupts required for this transfer.
+     * NE301 local patch #10: also unmask XFRC. The core can raise XFRC and
+     * leave the channel ENABLED without ever halting it (observed on bulk
+     * AND iso IN when the completion straddles USB1 activity) — with only
+     * CHHM unmasked that state raises no interrupt at all and the URB
+     * parks forever (silent wedge). The in-handler early-completion branch
+     * finishes such transfers and halts the channel. */
+    USB_OTG_HC((uint32_t)ch_num)->HCINTMSK = USB_OTG_HCINTMSK_CHHM | USB_OTG_HCINTMSK_XFRCM;
 
     is_oddframe = (((uint32_t)USB_OTG_HOST->HFNUM & 0x01U) != 0U) ? 0U : 1U;
     USB_OTG_HC(ch_num)->HCCHAR &= ~USB_OTG_HCCHAR_ODDFRM;
@@ -1196,6 +1202,41 @@ static void dwc2_inchan_irq_handler(struct usbh_bus *bus, uint8_t ch_num)
     chan = &g_dwc2_hcd[bus->hcd.hcd_id].chan_pool[ch_num];
     urb = chan->urb;
     //printf("s1:%08x\r\n", chan_intstatus);
+
+    if (urb == NULL) {
+        /* spurious channel interrupt after an early ISO completion freed
+         * the channel (the late CHH of patch #10's halt lands here) */
+        USB_OTG_HC(ch_num)->HCINT = chan_intstatus;
+        return;
+    }
+
+    /* NE301 local patch #10: transfer completed (XFRC) while the channel
+     * is still ENABLED and will NOT raise CHH (seen on bulk and iso IN).
+     * Complete the URB now and halt the channel; the late CHH lands on a
+     * freed channel and is dropped by the urb==NULL guard above. */
+    if ((chan_intstatus & USB_OTG_HCINT_XFRC) &&
+        !(chan_intstatus & USB_OTG_HCINT_CHH) &&
+        (USB_OTG_HC(ch_num)->HCCHAR & USB_OTG_HCCHAR_EPDIR) &&
+        ((USB_OTG_HC(ch_num)->HCCHAR & USB_OTG_HCCHAR_EPTYP) >> USB_OTG_HCCHAR_EPTYP_Pos) != 0x0U) { /* not ep0: control has its own multi-phase state machine */
+        uint32_t count = chan->xferlen - (USB_OTG_HC(ch_num)->HCTSIZ & USB_OTG_HCTSIZ_XFRSIZ);
+        uint8_t data_toggle = ((USB_OTG_HC(ch_num)->HCTSIZ & USB_OTG_HCTSIZ_DPID) >> USB_OTG_HCTSIZ_DPID_Pos);
+
+        urb->actual_length += count;
+        urb->transfer_buffer_length -= count;
+
+        if (data_toggle == HC_PID_DATA0) {
+            urb->data_toggle = 0;
+        } else {
+            urb->data_toggle = 1;
+        }
+
+        usb_dcache_invalidate((uintptr_t)urb->transfer_buffer, USB_ALIGN_UP(urb->actual_length, CONFIG_USB_ALIGN_SIZE));
+        urb->errorcode = 0;
+
+        dwc2_halt(bus, ch_num);   /* park the channel before freeing it */
+        dwc2_urb_waitup(urb);     /* callback re-arms on a clean channel */
+        return;
+    }
 
     if (chan_intstatus & USB_OTG_HCINT_CHH) {
         USB_OTG_HC(ch_num)->HCINT = chan_intstatus;
