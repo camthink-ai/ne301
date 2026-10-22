@@ -8,6 +8,7 @@
 #include "main.h"
 #include "common_utils.h"
 #include "exti.h"
+#include "board_hw.h"
 
 static uint8_t key_read(void);
 static int light_get_value(uint8_t *rate);
@@ -155,7 +156,10 @@ static int misc_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsigne
                 break;
             
             case MISC_CMD_PWM_SET_DUTY:
-                ((pwm_cfg_t *)misc->config)->duty = *ubuf;
+                ((pwm_cfg_t *)misc->config)->duty = (*ubuf > 100U) ? 100U : *ubuf;
+                break;
+            case MISC_CMD_PWM_GET_DUTY:
+                *ubuf = ((pwm_cfg_t *)misc->config)->duty;
                 break;
             default:
                 ret = AICAM_ERROR_NOT_SUPPORTED;
@@ -236,7 +240,7 @@ static int misc_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsigne
                     if(cfg->int_cb != NULL) {
                         io_cfg->groups[idx].int_cb = cfg->int_cb;
                     }
-                    
+
                     if(io_cfg->groups[idx].int_cb != NULL) {
                         if(io_cfg->groups[idx].pin == GPIO_PIN_12) {
                             HAL_NVIC_SetPriority(EXTI12_IRQn, 5, 0);
@@ -409,6 +413,12 @@ static int flash_init(void *priv)
 {
     misc_t *flash = (misc_t *)priv;
     MX_TIM3_Init();
+    /* IR board: the light-board LED is an IR LED driven best at 8 MHz /
+     * 200 steps (PSC=0, ARR=199, ir_ver tuning). Standard board keeps the
+     * white-LED PWM from MX_TIM3_Init (1 MHz / 1600 steps) untouched. */
+    if (board_is_ir() == AICAM_TRUE) {
+        TIM3_config_ir_period();
+    }
 
     flash->config = (void *)&flash_cfg;
     flash->mtx_id = osMutexNew(NULL);
@@ -623,11 +633,10 @@ static int light_get_value(uint8_t *rate)
     uint32_t voltage = 0;
     if(!g_light.is_init)
         return -1;
-    pwr_manager_acquire(g_light.pwr_handle);
-    osDelay(1000);
+    /* IR board light sensor: shares the always-on sensor rail — no
+     * pwr_manager cycling and no settle delay needed (ir_ver tuning). */
     ADC_get_value(&voltage, 1);
-    pwr_manager_release(g_light.pwr_handle);
-    LOG_SIMPLE("light  get  voltage :%ld \r\n",voltage);
+    voltage *= 2;
     voltage = MIN(MAX(voltage, LIGHT_MIN_SENS), LIGHT_MAX_SENS);
     *rate = (uint8_t)((voltage - LIGHT_MIN_SENS) * 100 / (LIGHT_MAX_SENS - LIGHT_MIN_SENS));
     return 0;
@@ -639,7 +648,6 @@ static int light_init(void *priv)
     MX_ADC1_Init();
     light->mtx_id = osMutexNew(NULL);
     light->type = MISC_TYPE_ADC;
-    light->pwr_handle = pwr_manager_get_handle(PWR_SENSOR_NAME);
     light->is_init = true;
     return 0;
 }
@@ -651,10 +659,6 @@ static int light_deinit(void *priv)
     if (light->mtx_id != NULL) {
         osMutexDelete(light->mtx_id);
         light->mtx_id = NULL;
-    }
-    if (light->pwr_handle != 0) {
-        pwr_manager_release(light->pwr_handle);
-        light->pwr_handle = 0;
     }
     MX_ADC1_DeInit();
     return 0;
@@ -839,12 +843,20 @@ static void io_unregister(void)
 
 int misc_register(void)
 {
+    aicam_bool_t ir_board = board_is_ir();
+
     led_module_init();
     key_register();
     flash_register();
     ind_register();
-    ind_ext_register();
-    // light_register();
+    if (ir_board == AICAM_TRUE) {
+        /* IR board: the external-indicator pin (PF3) is wired to the ambient
+         * light sensor (ADC1_IN16) — register the light sensor instead of
+         * ind_ext. The onboard indicator (ind, PG9) is the only indicator. */
+        light_register();
+    } else {
+        ind_ext_register();
+    }
     battery_register();
     io_register();
 
@@ -853,7 +865,7 @@ int misc_register(void)
     led_processId = osThreadNew(ledProcess, NULL, &ledTask_attributes);
     LOG_DRV_DEBUG("misc_register  end\r\n");
     return AICAM_OK;
-}  
+}
 
 int misc_unregister(void)
 {
@@ -864,9 +876,12 @@ int misc_unregister(void)
 
     // Unregister all submodules
     battery_unregister();
-    // light_unregister();
+    if (board_is_ir() == AICAM_TRUE) {
+        light_unregister();
+    } else {
+        ind_ext_unregister();
+    }
     ind_unregister();
-    ind_ext_unregister();
     flash_unregister();
     key_unregister();
     io_unregister();

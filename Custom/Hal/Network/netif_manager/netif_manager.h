@@ -69,7 +69,7 @@
 #endif
 
 #ifndef NETIF_WIFI_HALOW_IS_ENABLE
-#define NETIF_WIFI_HALOW_IS_ENABLE          (0)
+#define NETIF_WIFI_HALOW_IS_ENABLE            (1)
 #endif
 #define NETIF_WIFI_HALOW_DEFAULT_TX_PWR       (0)
 #define NETIF_WIFI_HALOW_DEFAULT_SCAN_DWELL   (30)

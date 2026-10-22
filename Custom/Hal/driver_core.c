@@ -43,6 +43,11 @@ bool driver_core_init(void)
     // printf("driver_core_init \r\n");
     hal_mem_register();
     storage_register();
+    /* Detect the board revision strap (PE9) and prime the IR-variant cache
+     * right after storage: the osDelay-based sampling yields the CPU, and
+     * releasing PE9 early lets the IR-CUT io group claim it cleanly on IR
+     * boards (misc_register below). */
+    board_hw_init();
 #if ENABLE_U0_MODULE
     u0_module_register();
 #endif
@@ -87,11 +92,6 @@ bool driver_core_init(void)
     LOG_DRV_DEBUG("driver_core_init end \r\n");
     driver_test_main();
     set_slot_boot_success(FIRMWARE_APP, true);
-
-    /* Detect the board revision strap last: the quick-snapshot pipeline is
-     * already registered above, and the osDelay-based sampling yields the
-     * CPU so the capture path is not stalled. */
-    board_hw_init();
 
     return true;
 }

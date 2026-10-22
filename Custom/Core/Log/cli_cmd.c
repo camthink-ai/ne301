@@ -7,6 +7,7 @@
 #include "json_config_mgr.h"
 #include "aicam_types.h"
 #include "aicam_error.h"
+#include "board_hw.h"
 #include "drtc.h"
 #include "misc.h"
 #include "ai_service.h"
@@ -570,6 +571,8 @@ static int version_cmd(int argc, char* argv[])
     LOG_SIMPLE("Build Date: %s %s\r\n", FW_BUILD_DATE, FW_BUILD_TIME);
     LOG_SIMPLE("Git Hash: %s\r\n", FW_GIT_COMMIT);
     LOG_SIMPLE("Git Branch: %s\r\n", FW_GIT_BRANCH);
+    LOG_SIMPLE("Hardware Revision: %s\r\n", board_hw_version_str());
+    LOG_SIMPLE("Board Variant: %s\r\n", board_is_ir() ? "IR" : "standard");
     LOG_SIMPLE("Core System: JSON Config + Event Bus\r\n");
     return 0;
 }
@@ -630,7 +633,85 @@ static int light_cmd(int argc, char* argv[])
     }else{
         LOG_SIMPLE("get light rate failed \r\n");
     }
-    
+
+    return 0;
+}
+
+/**
+ * @brief IR-CUT direct control for bench verification (IR board only)
+ * @details Forces the filter position through the camera component
+ *          (CAM_CMD_IRCUT_SET) — the same channel the day/night service uses
+ *          (dn_ircut_set), but bypassing the day/night state machine. The
+ *          IR-CUT driver is powered from the camera sensor rail, so the
+ *          camera device must be registered (it is from driver init; after a
+ *          camera deinit the write is physically ineffective). While the
+ *          day/night task runs in AUTO it re-applies its own decision every
+ *          poll, so a forced state may be overridden; set the mode to
+ *          day/night (manual) for a stable test.
+ * Usage:
+ *   ircut                  - show current filter state
+ *   ircut day              - force DAY   (color)
+ *   ircut night            - force NIGHT (IR)
+ *   ircut toggle           - flip to the opposite state
+ */
+static int ircut_cmd(int argc, char* argv[])
+{
+    device_t *cam;
+    uint8_t state = 0xFF;
+    int ret;
+
+    if (board_is_ir() != AICAM_TRUE) {
+        LOG_SIMPLE("IR-CUT not available on this board (standard variant)\r\n");
+        return -1;
+    }
+
+    cam = device_find_pattern(CAMERA_DEVICE_NAME, DEV_TYPE_VIDEO);
+    if (cam == NULL) {
+        LOG_SIMPLE("camera device not found\r\n");
+        return -1;
+    }
+
+    if (argc >= 2 && (strcmp(argv[1], "day") == 0 || strcmp(argv[1], "night") == 0 ||
+                      strcmp(argv[1], "toggle") == 0)) {
+        uint8_t v;
+        if (strcmp(argv[1], "day") == 0) {
+            v = 0U;
+        } else if (strcmp(argv[1], "night") == 0) {
+            v = 1U;
+        } else {
+            /* toggle: read the current state first */
+            ret = device_ioctl(cam, CAM_CMD_IRCUT_GET, &state, 0);
+            if (ret != AICAM_OK || state == 0xFFU) {
+                LOG_SIMPLE("read IR_CUT state failed: %d\r\n", ret);
+                return -1;
+            }
+            v = (state != 0U) ? 0U : 1U;
+        }
+        ret = device_ioctl(cam, CAM_CMD_IRCUT_SET, &v, 0);
+        if (ret != AICAM_OK) {
+            LOG_SIMPLE("set IR_CUT failed: %d\r\n", ret);
+            return -1;
+        }
+        LOG_SIMPLE("IR_CUT forced to %s\r\n", v ? "NIGHT (IR)" : "DAY (color)");
+        return 0;
+    }
+
+    if (argc >= 2) {
+        LOG_SIMPLE("Usage: ircut [day|night|toggle]\r\n");
+        return -1;
+    }
+
+    /* no args: report the current state */
+    ret = device_ioctl(cam, CAM_CMD_IRCUT_GET, &state, 0);
+    if (ret != AICAM_OK) {
+        LOG_SIMPLE("read IR_CUT state failed: %d\r\n", ret);
+        return -1;
+    }
+    if (state == 0xFFU) {
+        LOG_SIMPLE("IR_CUT not initialized\r\n");
+        return -1;
+    }
+    LOG_SIMPLE("IR_CUT: %s\r\n", state ? "NIGHT (IR)" : "DAY (color)");
     return 0;
 }
 
@@ -1338,6 +1419,7 @@ debug_cmd_reg_t file_cmd_table[] = {
     {"config_show", "Show current configuration", config_show_cmd},
     {"config_set", "Set configuration value. config_set <key> <value>", config_set_cmd},
     {"version", "Show system version", version_cmd},
+    {"ircut", "IR-CUT test control (IR board). ircut [day|night|toggle]", ircut_cmd},
     {"echo", "Echo command for testing", echo_cmd},
     // {"mkdir", "Create directory",         mkdir_cmd},
     // {"rmdir", "Remove directory",         rmdir_cmd},

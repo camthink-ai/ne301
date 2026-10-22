@@ -30,6 +30,8 @@
 #include "system_service.h"
 #include "nn.h"
 #include "json_config_mgr.h"
+#include "board_hw.h"
+#include "isp_api.h"        /* ISP_GetLuxEstimation for the day/night task */
 #include "fsbl_app_common.h"
 #include "mem_map.h"
 #include "pixel_format_map.h"
@@ -74,7 +76,31 @@ typedef struct {
     volatile aicam_bool_t fill_light_task_run;
     aicam_bool_t fill_light_active;
     uint32_t fill_light_last_duty;
-    
+
+    /* Day/Night management (IR board only; dormant — and the task is never
+     * created — on standard boards). */
+    day_night_config_t day_night_config;
+    aicam_bool_t day_night_initialized;
+    day_night_control_t day_night_control;   // manual / auto
+    uint32_t day_night_effective_mode;        // currently applied IMAGE_ISP_MODE_DAY/NIGHT
+    osMutexId_t day_night_mtx;
+    osThreadId_t day_night_task_id;
+    device_t *lightsensor_device;             // ambient light sensor misc ADC device
+    /* auto-switch runtime state */
+    uint32_t dn_last_poll_ms;
+    uint32_t dn_last_switch_ms;
+    uint32_t dn_pending_mode;
+    uint8_t dn_pending_count;
+    /* ISP statistics EMA metrics */
+    aicam_bool_t dn_metrics_valid;
+    uint32_t dn_lux;
+    uint32_t dn_lux_ema;
+    uint8_t dn_avg_l;
+    uint8_t dn_avg_l_ema;
+    uint32_t dn_exposure_us;
+    uint32_t dn_gain_mdb;
+    uint8_t dn_light_percent;
+
     // ISP management
     isp_config_t isp_config;
     
@@ -217,6 +243,14 @@ static void device_service_build_isp_iq_param(const image_config_t *img_cfg, ISP
         return;
     }
 
+    if (board_is_ir() == AICAM_TRUE) {
+        /* IR board: DAY(=OUTDOOR)/NIGHT/AUTO map through the day/night
+         * profiles; AUTO starts on the tuned color profile until the
+         * day/night task switches it. */
+        camera_fill_isp_iq_for_mode(img_cfg->isp_mode, out_iq);
+        return;
+    }
+
     if (img_cfg->isp_mode == IMAGE_ISP_MODE_CUSTOM && g_device_service.isp_config.valid) {
         json_config_config_to_isp_param(&g_device_service.isp_config, out_iq);
     } else {
@@ -228,7 +262,6 @@ static void device_service_build_isp_iq_param(const image_config_t *img_cfg, ISP
         }
         camera_fill_isp_iq_scene(scene, out_iq);
     }
-    camera_apply_grayscale_iq(out_iq, img_cfg->grayscale);
 }
 
 /**
@@ -316,16 +349,14 @@ static void init_default_camera_config(camera_config_t *config)
     config->image_config.capture_disable_comm = image_config.capture_disable_comm;
     config->image_config.capture_storage_ai = image_config.capture_storage_ai;
     config->image_config.isp_mode = image_config.isp_mode;
-    config->image_config.grayscale = image_config.grayscale;
 
-    LOG_SVC_DEBUG("Image configuration updated: brightness=%u, contrast=%u, h_flip=%d, v_flip=%d, aec=%d, isp_mode=%u, grayscale=%d, startup_skip=%u, fast_skip=%u, fast_res=%u, fast_jpeg_q=%u, cap_dis_comm=%d, cap_stor_ai=%d",
+    LOG_SVC_DEBUG("Image configuration updated: brightness=%u, contrast=%u, h_flip=%d, v_flip=%d, aec=%d, isp_mode=%u, startup_skip=%u, fast_skip=%u, fast_res=%u, fast_jpeg_q=%u, cap_dis_comm=%d, cap_stor_ai=%d",
                 config->image_config.brightness,
                 config->image_config.contrast,
                 config->image_config.horizontal_flip,
                 config->image_config.vertical_flip,
                 config->image_config.aec,
                 config->image_config.isp_mode,
-                config->image_config.grayscale,
                 config->image_config.startup_skip_frames,
                 config->image_config.fast_capture_skip_frames,
                 config->image_config.fast_capture_resolution,
@@ -692,7 +723,14 @@ static void apply_light_control(const light_config_t *config)
     if (!config || !config->connected || !g_device_service.light_device) {
         return;
     }
-    
+
+    /* Day/night owns the IR light + IR-CUT once initialized (IR boards only);
+       legacy light auto/custom control is deferred to avoid fighting the
+       day/night task. Standard boards never initialize day/night. */
+    if (g_device_service.day_night_initialized) {
+        return;
+    }
+
     aicam_bool_t should_enable = AICAM_FALSE;
     
     switch (config->mode) {
@@ -792,6 +830,11 @@ static aicam_bool_t light_custom_schedule_active_now(const light_config_t *confi
 static void fill_light_sync(void)
 {
     if (!g_device_service.light_initialized || !g_device_service.light_device) {
+        return;
+    }
+
+    /* IR boards: the day/night task owns the IR light — never fight it. */
+    if (g_device_service.day_night_initialized) {
         return;
     }
 
@@ -910,12 +953,620 @@ static void long_press_callback(void *user_data)
 static void super_long_press_callback(void *user_data)
 {
     LOG_SVC_INFO("Super long press (10s) detected - triggering factory reset\r\n");
-    
+
     // Directly trigger device reset on super long press
     device_service_reset_to_factory_defaults();
 }
 
 // Note: Double click timeout check removed - factory reset now triggered by super long press (10s) only
+
+/* ==================== Day/Night Management (IR board) ==================== */
+
+#define DAY_NIGHT_POLL_PERIOD_MS     500U
+#define DAY_NIGHT_MIN_HOLD_MS        15000U
+#define DAY_NIGHT_SWITCH_CONFIRM     3U
+#define DAY_NIGHT_TASK_STACK_SIZE    (1024 * 2)
+
+static uint8_t s_dn_task_stack[DAY_NIGHT_TASK_STACK_SIZE] ALIGN_32 IN_PSRAM;
+static const osThreadAttr_t dnTask_attributes = {
+    .name = "dnTask",
+    .priority = (osPriority_t) osPriorityLow,
+    .stack_mem = s_dn_task_stack,
+    .stack_size = sizeof(s_dn_task_stack),
+};
+
+static uint32_t dn_ema_u32(uint32_t old_v, uint32_t new_v, uint8_t num, uint8_t den)
+{
+    if ((den == 0U) || (num >= den)) {
+        return new_v;
+    }
+    return ((old_v * (den - num)) + (new_v * num) + (den / 2U)) / den;
+}
+
+static uint8_t dn_ema_u8(uint8_t old_v, uint8_t new_v, uint8_t num, uint8_t den)
+{
+    return (uint8_t)dn_ema_u32((uint32_t)old_v, (uint32_t)new_v, num, den);
+}
+
+static aicam_bool_t dn_sensor_supports_night_iq(void)
+{
+    sensor_params_t sp;
+    if (!g_device_service.camera_device) {
+        return AICAM_FALSE;
+    }
+    if (device_ioctl(g_device_service.camera_device, CAM_CMD_GET_SENSOR_PARAM,
+                     (uint8_t *)&sp, sizeof(sensor_params_t)) != AICAM_OK) {
+        return AICAM_FALSE;
+    }
+    return (strstr(sp.name, "OS04C10") != NULL) ? AICAM_TRUE : AICAM_FALSE;
+}
+
+static void dn_ircut_set(aicam_bool_t night)
+{
+    device_t *cam = g_device_service.camera_device;
+    uint8_t v = (night == AICAM_TRUE) ? 1U : 0U;
+
+    /* Lazy lookup: in the sleep-wake fast path device_service is NOT
+     * started, so camera_device was never set — find the camera device
+     * directly (it is registered during driver init on every boot/wake). */
+    if (cam == NULL) {
+        cam = device_find_pattern(CAMERA_DEVICE_NAME, DEV_TYPE_VIDEO);
+    }
+    if (cam == NULL) {
+        return;
+    }
+    (void)device_ioctl(cam, CAM_CMD_IRCUT_SET, &v, 0);
+}
+
+static void dn_ir_light_set(aicam_bool_t on, uint8_t brightness)
+{
+    device_t *dev = g_device_service.light_device;
+    if (dev == NULL) {
+        return;
+    }
+    if (!on || brightness == 0U) {
+        (void)device_ioctl(dev, MISC_CMD_PWM_OFF, NULL, 0);
+        return;
+    }
+    if (brightness > 100U) {
+        brightness = 100U;
+    }
+    (void)device_ioctl(dev, MISC_CMD_PWM_SET_DUTY, (uint8_t *)&brightness, 0);
+    (void)device_ioctl(dev, MISC_CMD_PWM_ON, NULL, 0);
+}
+
+/* Apply a concrete day/night mode (DAY or NIGHT) to optics + ISP IQ. */
+static void day_night_apply(uint32_t effective)
+{
+    aicam_bool_t night = (effective == IMAGE_ISP_MODE_NIGHT) ? AICAM_TRUE : AICAM_FALSE;
+
+    /* IR-CUT + IR light first (immediate optical effect). */
+    dn_ircut_set(night);
+    if (night) {
+        dn_ir_light_set(AICAM_TRUE, g_device_service.day_night_config.ir_brightness);
+    } else {
+        dn_ir_light_set(AICAM_FALSE, 0U);
+    }
+
+    /* ISP IQ hot-swap (only for sensors with a tuned night profile). */
+    if (g_device_service.camera_initialized && g_device_service.camera_device &&
+        dn_sensor_supports_night_iq()) {
+        ISP_IQParamTypeDef iq = {0};
+        camera_fill_isp_iq_for_mode(effective, &iq);
+        (void)device_ioctl(g_device_service.camera_device, CAM_CMD_APPLY_ISP_IQ,
+                           (uint8_t *)&iq, sizeof(ISP_IQParamTypeDef));
+    }
+
+    g_device_service.day_night_effective_mode = effective;
+    g_device_service.dn_pending_mode = effective;
+    g_device_service.dn_pending_count = 0U;
+    g_device_service.dn_last_switch_ms = (uint32_t)rtc_get_uptime_ms();
+    LOG_SVC_INFO("Day/Night applied: %s", night ? "night" : "day");
+}
+
+/* TIME source: night when current time is inside the configured window. */
+static uint32_t dn_eval_time(void)
+{
+    RTC_TIME_S now = rtc_get_time();
+    uint32_t cur = now.hour * 60U + now.minute;
+    uint32_t start = g_device_service.day_night_config.time_start_hour * 60U +
+                     g_device_service.day_night_config.time_start_minute;
+    uint32_t end = g_device_service.day_night_config.time_end_hour * 60U +
+                   g_device_service.day_night_config.time_end_minute;
+    aicam_bool_t in_window;
+    if (start > end) {
+        in_window = (cur >= start || cur <= end) ? AICAM_TRUE : AICAM_FALSE;
+    } else if (start < end) {
+        in_window = (cur >= start && cur <= end) ? AICAM_TRUE : AICAM_FALSE;
+    } else {
+        in_window = AICAM_FALSE;
+    }
+    return in_window ? IMAGE_ISP_MODE_NIGHT : IMAGE_ISP_MODE_DAY;
+}
+
+/* LIGHT_SENSOR source: hysteresis on ambient light percent. */
+static uint32_t dn_eval_light_sensor(uint32_t current)
+{
+    uint8_t percent = 0;
+    device_t *dev = g_device_service.lightsensor_device;
+    if (dev == NULL) {
+        dev = device_find_pattern(LIGHT_DEVICE_NAME, DEV_TYPE_MISC);
+        g_device_service.lightsensor_device = dev;
+    }
+    if (dev == NULL) {
+        return current;
+    }
+    if (device_ioctl(dev, MISC_CMD_ADC_GET_PERCENT, (uint8_t *)&percent, 0) != AICAM_OK) {
+        return current;
+    }
+    g_device_service.dn_light_percent = percent;
+    if (current == IMAGE_ISP_MODE_DAY &&
+        percent <= g_device_service.day_night_config.light_sensor_night_threshold) {
+        return IMAGE_ISP_MODE_NIGHT;
+    }
+    if (current == IMAGE_ISP_MODE_NIGHT &&
+        percent >= g_device_service.day_night_config.light_sensor_day_threshold) {
+        return IMAGE_ISP_MODE_DAY;
+    }
+    return current;
+}
+
+/* ISP_STATS source: lux/avgL/exposure/gain EMA with hysteresis. */
+static uint32_t dn_eval_isp_stats(uint32_t current)
+{
+    ISP_HandleTypeDef *hIsp = camera_get_isp_handle();
+    ISP_SVC_StatStateTypeDef stats;
+    ISP_SensorExposureTypeDef expo;
+    ISP_SensorGainTypeDef gain;
+    uint32_t lux = 0U;
+    uint8_t avg_l = 0U;
+    uint8_t num = g_device_service.day_night_config.isp_ema_alpha_num;
+    uint8_t den = g_device_service.day_night_config.isp_ema_alpha_den;
+    const day_night_config_t *c = &g_device_service.day_night_config;
+
+    if (hIsp == NULL) {
+        return current;
+    }
+    if (ISP_GetLuxEstimation(hIsp, &lux) != ISP_OK) {
+        g_device_service.dn_metrics_valid = AICAM_FALSE;
+        return current;
+    }
+    if (ISP_SVC_Stats_GetLatest(hIsp, &stats) != ISP_OK) {
+        g_device_service.dn_metrics_valid = AICAM_FALSE;
+        return current;
+    }
+    avg_l = stats.down.averageL;
+    if (ISP_SVC_Sensor_GetExposure(hIsp, &expo) != ISP_OK ||
+        ISP_SVC_Sensor_GetGain(hIsp, &gain) != ISP_OK) {
+        g_device_service.dn_metrics_valid = AICAM_FALSE;
+        return current;
+    }
+
+    g_device_service.dn_lux = lux;
+    g_device_service.dn_avg_l = avg_l;
+    g_device_service.dn_exposure_us = expo.exposure;
+    g_device_service.dn_gain_mdb = gain.gain;
+    if (!g_device_service.dn_metrics_valid) {
+        g_device_service.dn_lux_ema = lux;
+        g_device_service.dn_avg_l_ema = avg_l;
+        g_device_service.dn_metrics_valid = AICAM_TRUE;
+    } else {
+        g_device_service.dn_lux_ema = dn_ema_u32(g_device_service.dn_lux_ema, lux, num, den);
+        g_device_service.dn_avg_l_ema = dn_ema_u8(g_device_service.dn_avg_l_ema, avg_l, num, den);
+    }
+
+    if (current == IMAGE_ISP_MODE_DAY) {
+        if (g_device_service.dn_lux_ema <= c->isp_night_enter_lux) {
+            return IMAGE_ISP_MODE_NIGHT;
+        }
+        if (g_device_service.dn_exposure_us >= c->isp_night_enter_exposure_us &&
+            g_device_service.dn_gain_mdb >= c->isp_night_enter_gain_mdb &&
+            g_device_service.dn_avg_l_ema <= c->isp_night_enter_avgl) {
+            return IMAGE_ISP_MODE_NIGHT;
+        }
+    } else {
+        if (g_device_service.dn_lux_ema >= c->isp_day_enter_lux) {
+            return IMAGE_ISP_MODE_DAY;
+        }
+        if (g_device_service.dn_exposure_us <= c->isp_day_enter_exposure_us &&
+            g_device_service.dn_gain_mdb <= c->isp_day_enter_gain_mdb &&
+            g_device_service.dn_avg_l_ema >= c->isp_day_enter_avgl) {
+            return IMAGE_ISP_MODE_DAY;
+        }
+    }
+    return current;
+}
+
+static void day_night_process_tick(void)
+{
+    uint32_t target;
+    uint32_t now;
+    uint32_t current = g_device_service.day_night_effective_mode;
+
+    if (g_device_service.day_night_control != DAY_NIGHT_CONTROL_AUTO) {
+        return;
+    }
+
+    now = (uint32_t)rtc_get_uptime_ms();
+    if (g_device_service.dn_last_poll_ms != 0U &&
+        (uint32_t)(now - g_device_service.dn_last_poll_ms) < DAY_NIGHT_POLL_PERIOD_MS) {
+        return;
+    }
+    g_device_service.dn_last_poll_ms = now;
+
+    switch (g_device_service.day_night_config.auto_source) {
+        case DAY_NIGHT_SOURCE_TIME:
+            target = dn_eval_time();
+            break;
+        case DAY_NIGHT_SOURCE_LIGHT_SENSOR:
+            target = dn_eval_light_sensor(current);
+            break;
+        case DAY_NIGHT_SOURCE_ISP_STATS:
+        default:
+            target = dn_eval_isp_stats(current);
+            break;
+    }
+
+    if (target == current) {
+        g_device_service.dn_pending_mode = current;
+        g_device_service.dn_pending_count = 0U;
+        return;
+    }
+
+    if (g_device_service.dn_last_switch_ms != 0U &&
+        (uint32_t)(now - g_device_service.dn_last_switch_ms) < DAY_NIGHT_MIN_HOLD_MS) {
+        return;
+    }
+
+    if (target != g_device_service.dn_pending_mode) {
+        g_device_service.dn_pending_mode = target;
+        g_device_service.dn_pending_count = 1U;
+        return;
+    }
+
+    if (g_device_service.dn_pending_count < DAY_NIGHT_SWITCH_CONFIRM) {
+        g_device_service.dn_pending_count++;
+        return;
+    }
+
+    day_night_apply(target);
+}
+
+/* Startup one-shot target evaluation: immediate, NO debounce. TIME and
+ * LIGHT_SENSOR evaluate per the configured source; ISP statistics are not
+ * stable yet at boot, so the ambient light sensor thresholds act as the
+ * instant proxy (dark -> stay night, bright enough -> day). Used once at
+ * service start; afterwards the day/night task owns switching with its
+ * poll/confirm/min-hold debounce. */
+static uint32_t dn_eval_startup_target(void)
+{
+    switch (g_device_service.day_night_config.auto_source) {
+        case DAY_NIGHT_SOURCE_TIME:
+            return dn_eval_time();
+        case DAY_NIGHT_SOURCE_LIGHT_SENSOR:
+        case DAY_NIGHT_SOURCE_ISP_STATS:
+        default:
+            /* Evaluate against the boot default (DAY): only a dark reading
+               (<= night threshold) switches to NIGHT right away. */
+            return dn_eval_light_sensor(IMAGE_ISP_MODE_DAY);
+    }
+}
+
+static void dayNightTask(void *argument)
+{
+    (void)argument;
+    while (g_device_service.day_night_initialized) {
+        if (g_device_service.day_night_control == DAY_NIGHT_CONTROL_AUTO &&
+            g_device_service.camera_initialized && g_device_service.camera_device) {
+            if (osMutexAcquire(g_device_service.day_night_mtx, osWaitForever) == osOK) {
+                day_night_process_tick();
+                osMutexRelease(g_device_service.day_night_mtx);
+            }
+        }
+        osDelay(DAY_NIGHT_POLL_PERIOD_MS);
+    }
+    g_device_service.day_night_task_id = NULL;
+    osThreadExit();
+}
+
+static void init_default_day_night_config(day_night_config_t *config)
+{
+    day_night_config_t dn;
+    if (json_config_get_day_night_config(&dn) == AICAM_OK) {
+        memcpy(config, &dn, sizeof(day_night_config_t));
+    } else {
+        memset(config, 0, sizeof(day_night_config_t));
+    }
+}
+
+static void day_night_init(void)
+{
+    /* Standard board: the day/night feature does not exist — no task, no
+     * mutex, no optics control. GET status reports configured=false. */
+    if (board_is_ir() != AICAM_TRUE) {
+        LOG_SVC_INFO("Day/Night: standard board, feature dormant");
+        return;
+    }
+
+    init_default_day_night_config(&g_device_service.day_night_config);
+    g_device_service.day_night_mtx = osMutexNew(NULL);
+    g_device_service.dn_metrics_valid = AICAM_FALSE;
+    g_device_service.dn_last_poll_ms = 0U;
+    g_device_service.dn_last_switch_ms = 0U;
+    g_device_service.dn_pending_count = 0U;
+
+    g_device_service.light_device = device_find_pattern(FLASH_DEVICE_NAME, DEV_TYPE_MISC);
+    g_device_service.lightsensor_device = device_find_pattern(LIGHT_DEVICE_NAME, DEV_TYPE_MISC);
+
+    /* Resolve configured mode: AUTO stays auto; DAY/NIGHT applied immediately.
+     * Boot-time effective mode defaults to DAY — the cameraProcess homing
+     * edge pulls PE9 LOW (= day) on every boot — so the first
+     * day_night_apply only actuates the filter when the evaluation says
+     * NIGHT (single switch at most). */
+    g_device_service.day_night_effective_mode = IMAGE_ISP_MODE_DAY;
+    g_device_service.day_night_control = DAY_NIGHT_CONTROL_AUTO;
+    g_device_service.day_night_initialized = AICAM_TRUE;
+
+    if (g_device_service.day_night_config.ir_brightness == 0U) {
+        g_device_service.day_night_config.ir_brightness = 50U;
+    }
+
+    g_device_service.day_night_task_id = osThreadNew(dayNightTask, NULL, &dnTask_attributes);
+    LOG_SVC_INFO("Day/Night initialized (mode=%u, source=%u)",
+                 g_device_service.camera_config.image_config.isp_mode,
+                 g_device_service.day_night_config.auto_source);
+}
+
+aicam_result_t device_service_day_night_get_config(day_night_config_t *config)
+{
+    if (!config) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    if (!g_device_service.day_night_initialized) {
+        /* Dormant (standard board): still readable from the config layer. */
+        return json_config_get_day_night_config(config);
+    }
+    if (osMutexAcquire(g_device_service.day_night_mtx, osWaitForever) == osOK) {
+        memcpy(config, &g_device_service.day_night_config, sizeof(day_night_config_t));
+        osMutexRelease(g_device_service.day_night_mtx);
+    }
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_day_night_set_config(const day_night_config_t *config)
+{
+    if (!config) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    if (board_is_ir() != AICAM_TRUE) {
+        /* Day/night switching is an IR-board feature only. */
+        return AICAM_ERROR_NOT_SUPPORTED;
+    }
+    if (config->auto_source > DAY_NIGHT_SOURCE_ISP_STATS || config->ir_brightness > 100U) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    if (osMutexAcquire(g_device_service.day_night_mtx, osWaitForever) == osOK) {
+        memcpy(&g_device_service.day_night_config, config, sizeof(day_night_config_t));
+        osMutexRelease(g_device_service.day_night_mtx);
+    }
+
+    aicam_result_t r = json_config_set_day_night_config(config);
+    if (r != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to persist day/night config: %d", r);
+    }
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_day_night_set_mode(uint32_t isp_mode)
+{
+    if (isp_mode != IMAGE_ISP_MODE_DAY && isp_mode != IMAGE_ISP_MODE_NIGHT &&
+        isp_mode != IMAGE_ISP_MODE_AUTO) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    if (board_is_ir() != AICAM_TRUE) {
+        return AICAM_ERROR_NOT_SUPPORTED;
+    }
+
+    if (osMutexAcquire(g_device_service.day_night_mtx, osWaitForever) == osOK) {
+        g_device_service.camera_config.image_config.isp_mode = isp_mode;
+        if (isp_mode == IMAGE_ISP_MODE_AUTO) {
+            g_device_service.day_night_control = DAY_NIGHT_CONTROL_AUTO;
+            g_device_service.dn_pending_mode = g_device_service.day_night_effective_mode;
+            g_device_service.dn_pending_count = 0U;
+            g_device_service.dn_last_poll_ms = 0U;
+            g_device_service.dn_metrics_valid = AICAM_FALSE;
+        } else {
+            g_device_service.day_night_control = DAY_NIGHT_CONTROL_MANUAL;
+            day_night_apply(isp_mode);
+        }
+        osMutexRelease(g_device_service.day_night_mtx);
+    }
+
+    /* Persist the mode via image config. */
+    (void)json_config_set_device_service_image_config(&g_device_service.camera_config.image_config);
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_day_night_get_status(day_night_status_t *status)
+{
+    if (!status) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    memset(status, 0, sizeof(day_night_status_t));
+    if (g_device_service.day_night_initialized &&
+        osMutexAcquire(g_device_service.day_night_mtx, osWaitForever) == osOK) {
+        status->configured = dn_sensor_supports_night_iq();
+        status->mode = g_device_service.camera_config.image_config.isp_mode;
+        status->control = g_device_service.day_night_control;
+        status->source = g_device_service.day_night_config.auto_source;
+        status->effective_mode = g_device_service.day_night_effective_mode;
+        status->ir_brightness = g_device_service.day_night_config.ir_brightness;
+        status->ir_on = (g_device_service.day_night_effective_mode == IMAGE_ISP_MODE_NIGHT) ? AICAM_TRUE : AICAM_FALSE;
+        status->ircut_mode = (g_device_service.day_night_effective_mode == IMAGE_ISP_MODE_NIGHT) ? 1U : 0U;
+        status->metrics_valid = g_device_service.dn_metrics_valid;
+        status->lux = g_device_service.dn_lux;
+        status->lux_ema = g_device_service.dn_lux_ema;
+        status->avg_l = g_device_service.dn_avg_l;
+        status->avg_l_ema = g_device_service.dn_avg_l_ema;
+        status->exposure_us = g_device_service.dn_exposure_us;
+        status->gain_mdb = g_device_service.dn_gain_mdb;
+        status->light_sensor_percent = g_device_service.dn_light_percent;
+        osMutexRelease(g_device_service.day_night_mtx);
+    } else {
+        /* Dormant (standard board): report the board fact — not configured. */
+        status->configured = AICAM_FALSE;
+        status->mode = g_device_service.camera_config.image_config.isp_mode;
+        status->control = DAY_NIGHT_CONTROL_MANUAL;
+        status->effective_mode = IMAGE_ISP_MODE_DAY;
+    }
+    return AICAM_OK;
+}
+
+void device_service_day_night_capture_light(aicam_bool_t *on, uint8_t *brightness)
+{
+    uint8_t bri = 0U;
+    aicam_bool_t enable = AICAM_FALSE;
+
+    if (!on || !brightness) {
+        return;
+    }
+    if (!g_device_service.day_night_initialized) {
+        /* Fast-start path before service fully started: use configured mode. */
+        uint32_t m = g_device_service.camera_config.image_config.isp_mode;
+        if (m == IMAGE_ISP_MODE_NIGHT) {
+            enable = AICAM_TRUE;
+            bri = (g_device_service.day_night_config.ir_brightness == 0U) ? 50U : g_device_service.day_night_config.ir_brightness;
+        }
+    } else if (osMutexAcquire(g_device_service.day_night_mtx, osWaitForever) == osOK) {
+        if (g_device_service.day_night_effective_mode == IMAGE_ISP_MODE_NIGHT) {
+            enable = AICAM_TRUE;
+            bri = g_device_service.day_night_config.ir_brightness;
+        }
+        osMutexRelease(g_device_service.day_night_mtx);
+    }
+
+    *on = enable;
+    *brightness = bri;
+}
+
+/* Evaluate the effective day/night mode for a capture. When device_service is
+   fully started (device_service.c capture paths), reuse the mode maintained by
+   the day/night task and the already-loaded config. In the sleep-wake fast path
+   (device_service NOT started), the caller (quick_snapshot) supplies the
+   day/night config + isp_mode read from NVS via quick_storage; AUTO sources that
+   are feasible before the camera runs (TIME, LIGHT_SENSOR) are evaluated here.
+   ISP_STATS cannot be evaluated before the stream starts -> defaults to day. */
+static uint32_t dn_capture_effective_mode(const day_night_config_t *fast_cfg, uint32_t fast_isp_mode)
+{
+    if (g_device_service.day_night_initialized) {
+        return g_device_service.day_night_effective_mode;
+    }
+    if (fast_cfg == NULL) {
+        return IMAGE_ISP_MODE_DAY;
+    }
+
+    if (fast_isp_mode == IMAGE_ISP_MODE_NIGHT) {
+        return IMAGE_ISP_MODE_NIGHT;
+    }
+    if (fast_isp_mode == IMAGE_ISP_MODE_DAY) {
+        return IMAGE_ISP_MODE_DAY;
+    }
+
+    /* AUTO */
+    switch (fast_cfg->auto_source) {
+        case DAY_NIGHT_SOURCE_TIME: {
+            RTC_TIME_S now = rtc_get_time();
+            uint32_t cur = (uint32_t)now.hour * 60U + (uint32_t)now.minute;
+            uint32_t s = fast_cfg->time_start_hour * 60U + fast_cfg->time_start_minute;
+            uint32_t e = fast_cfg->time_end_hour * 60U + fast_cfg->time_end_minute;
+            if (s > e) {
+                return (cur >= s || cur <= e) ? IMAGE_ISP_MODE_NIGHT : IMAGE_ISP_MODE_DAY;
+            }
+            if (s < e) {
+                return (cur >= s && cur <= e) ? IMAGE_ISP_MODE_NIGHT : IMAGE_ISP_MODE_DAY;
+            }
+            return IMAGE_ISP_MODE_DAY;
+        }
+        case DAY_NIGHT_SOURCE_LIGHT_SENSOR: {
+            device_t *dev = device_find_pattern(LIGHT_DEVICE_NAME, DEV_TYPE_MISC);
+            uint8_t pct = 100U;
+            if (dev != NULL &&
+                device_ioctl(dev, MISC_CMD_ADC_GET_PERCENT, (uint8_t *)&pct, 0) == AICAM_OK) {
+                LOG_SVC_INFO("[DN] fast: light_sensor pct=%u%% (night_th=%u day_th=%u)",
+                             (unsigned)pct,
+                             (unsigned)fast_cfg->light_sensor_night_threshold,
+                             (unsigned)fast_cfg->light_sensor_day_threshold);
+                return (pct <= fast_cfg->light_sensor_night_threshold) ? IMAGE_ISP_MODE_NIGHT : IMAGE_ISP_MODE_DAY;
+            }
+            LOG_SVC_WARN("[DN] fast: light sensor read failed, default day");
+            return IMAGE_ISP_MODE_DAY;
+        }
+        case DAY_NIGHT_SOURCE_ISP_STATS:
+        default:
+            return IMAGE_ISP_MODE_DAY;
+    }
+}
+
+uint32_t device_service_day_night_capture_prepare(const day_night_config_t *fast_cfg,
+                                                   uint32_t fast_isp_mode,
+                                                   aicam_bool_t *on,
+                                                   uint8_t *brightness)
+{
+    uint32_t eff;
+    aicam_bool_t night;
+    uint8_t bri = 50U;
+    uint32_t log_isp_mode;
+    day_night_source_t log_source;
+
+    /* Standard board: no IR optics — short-circuit to DAY and never touch the
+     * light (the caller keeps the standard light_mode behavior). */
+    if (board_is_ir() != AICAM_TRUE) {
+        if (on) *on = AICAM_FALSE;
+        if (brightness) *brightness = 0U;
+        return IMAGE_ISP_MODE_DAY;
+    }
+
+    eff = dn_capture_effective_mode(fast_cfg, fast_isp_mode);
+    night = (eff == IMAGE_ISP_MODE_NIGHT) ? AICAM_TRUE : AICAM_FALSE;
+
+    /* IR-CUT per effective mode (immediate GPIO effect via the camera
+     * component — powered by its sensor rail). */
+    dn_ircut_set(night);
+
+    if (g_device_service.day_night_initialized) {
+        bri = g_device_service.day_night_config.ir_brightness;
+        log_isp_mode = g_device_service.camera_config.image_config.isp_mode;
+        log_source = g_device_service.day_night_config.auto_source;
+    } else {
+        if (fast_cfg && fast_cfg->ir_brightness != 0U) {
+            bri = fast_cfg->ir_brightness;
+        }
+        log_isp_mode = fast_isp_mode;
+        log_source = fast_cfg ? fast_cfg->auto_source : DAY_NIGHT_SOURCE_ISP_STATS;
+    }
+
+    if (on) *on = night;
+    if (brightness) *brightness = bri;
+
+    LOG_SVC_INFO("[DN] capture_prepare: isp_mode=%u source=%u eff_mode=%u ir_on=%u ir_bri=%u dn_init=%u",
+                 (unsigned)log_isp_mode, (unsigned)log_source, (unsigned)eff,
+                 night ? 1u : 0u, (unsigned)bri,
+                 g_device_service.day_night_initialized ? 1u : 0u);
+    return eff;
+}
 
 /* ==================== Device Service Implementation ==================== */
 
@@ -1041,8 +1692,10 @@ aicam_result_t device_service_start(void)
         LOG_SVC_WARN("Fill light sync task creation failed");
     }
     
-    // Find and initialize LED device
-    g_device_service.led_device = device_find_pattern(IND_EXT_DEVICE_NAME, DEV_TYPE_MISC);
+    // Find and initialize LED device (IR boards: onboard indicator — the
+    // external-indicator pin is wired to the ambient light sensor there)
+    g_device_service.led_device = device_find_pattern(board_is_ir() ? IND_DEVICE_NAME : IND_EXT_DEVICE_NAME,
+                                                      DEV_TYPE_MISC);
     if (g_device_service.led_device) {
         LOG_SVC_INFO("LED device found");
         g_device_service.led_config.connected = AICAM_TRUE;
@@ -1090,6 +1743,40 @@ aicam_result_t device_service_start(void)
     update_storage_info(&g_device_service.storage_info);
     update_device_name(&g_device_service.device_info);
 
+    /* Start day/night management (IR-CUT + IR light + ISP IQ hot-swap), IR
+     * boards only. Must run after camera start + light device discovery +
+     * camera module info. No-op on standard boards. */
+    day_night_init();
+    if (g_device_service.day_night_initialized) {
+        uint32_t init_mode = g_device_service.camera_config.image_config.isp_mode;
+        if (init_mode == IMAGE_ISP_MODE_NIGHT) {
+            /* Manual night: apply immediately (IR-CUT + IR light + night IQ). */
+            if (osMutexAcquire(g_device_service.day_night_mtx, osWaitForever) == osOK) {
+                g_device_service.day_night_control = DAY_NIGHT_CONTROL_MANUAL;
+                day_night_apply(IMAGE_ISP_MODE_NIGHT);
+                osMutexRelease(g_device_service.day_night_mtx);
+            }
+        } else if (init_mode == IMAGE_ISP_MODE_DAY) {
+            /* Manual day: apply day optics (IR-CUT day, IR light off). */
+            if (osMutexAcquire(g_device_service.day_night_mtx, osWaitForever) == osOK) {
+                g_device_service.day_night_control = DAY_NIGHT_CONTROL_MANUAL;
+                day_night_apply(IMAGE_ISP_MODE_DAY);
+                osMutexRelease(g_device_service.day_night_mtx);
+            }
+        } else {
+            /* AUTO: control stays AUTO for the day/night task — but do an
+             * immediate one-shot evaluation NOW (light sensor / time). The
+             * boot homing edge already leaves the filter in DAY; this only
+             * actuates when the evaluation says NIGHT, and the debounced
+             * task logic takes over from the next tick with full
+             * poll/confirm/min-hold. */
+            if (osMutexAcquire(g_device_service.day_night_mtx, osWaitForever) == osOK) {
+                day_night_apply(dn_eval_startup_target());
+                g_device_service.day_night_control = DAY_NIGHT_CONTROL_AUTO;
+                osMutexRelease(g_device_service.day_night_mtx);
+            }
+        }
+    }
 
     // Note: Double click timeout check thread removed - factory reset now triggered by super long press (10s) only
     
@@ -1425,15 +2112,43 @@ aicam_result_t device_service_image_set_config(const image_config_t *config)
     if (config->brightness > 100 || config->contrast > 100) {
         return AICAM_ERROR_INVALID_PARAM;
     }
-    if (config->isp_mode != IMAGE_ISP_MODE_INDOOR &&
-        config->isp_mode != IMAGE_ISP_MODE_OUTDOOR &&
-        config->isp_mode != IMAGE_ISP_MODE_CUSTOM) {
-        return AICAM_ERROR_INVALID_PARAM;
+    /* isp_mode legal set is board-variant conditional (see json_config_mgr.c):
+     * standard board: OUTDOOR/INDOOR/CUSTOM; IR board: DAY(=OUTDOOR)/NIGHT/AUTO. */
+    if (board_is_ir() == AICAM_TRUE) {
+        if (config->isp_mode != IMAGE_ISP_MODE_DAY &&
+            config->isp_mode != IMAGE_ISP_MODE_NIGHT &&
+            config->isp_mode != IMAGE_ISP_MODE_AUTO) {
+            return AICAM_ERROR_INVALID_PARAM;
+        }
+    } else {
+        if (config->isp_mode != IMAGE_ISP_MODE_INDOOR &&
+            config->isp_mode != IMAGE_ISP_MODE_OUTDOOR &&
+            config->isp_mode != IMAGE_ISP_MODE_CUSTOM) {
+            return AICAM_ERROR_INVALID_PARAM;
+        }
     }
 
     memcpy(&g_device_service.camera_config.image_config, config, sizeof(image_config_t));
 
-    
+
+    /* IR board: isp_mode changes route through the day/night state machine
+     * (manual DAY/NIGHT applies optics immediately; AUTO arms the task) and
+     * are persisted there. Standard board keeps the direct apply below. */
+    if (board_is_ir() == AICAM_TRUE) {
+        if (g_device_service.day_night_initialized) {
+            aicam_result_t r = device_service_day_night_set_mode(config->isp_mode);
+            if (r != AICAM_OK) {
+                return r;
+            }
+        } else {
+            (void)json_config_set_device_service_image_config(&g_device_service.camera_config.image_config);
+        }
+        LOG_SVC_INFO("Image configuration applied: brightness=%u, contrast=%u, h_flip=%d, v_flip=%d, isp_mode=%u",
+                    config->brightness, config->contrast, config->horizontal_flip, config->vertical_flip,
+                    config->isp_mode);
+        return AICAM_OK;
+    }
+
     // Apply configuration to camera device if initialized
     if (g_device_service.camera_initialized && g_device_service.camera_device) {
         aicam_result_t result = apply_camera_config_to_hardware(&g_device_service.camera_config);
@@ -1442,7 +2157,7 @@ aicam_result_t device_service_image_set_config(const image_config_t *config)
             return result;
         }
 
-        // Hot-swap ISP IQ for isp_mode / grayscale changes — no restart needed
+        // Hot-swap ISP IQ for isp_mode changes — no restart needed
         {
             ISP_IQParamTypeDef iq = {0};
             device_service_build_isp_iq_param(&g_device_service.camera_config.image_config, &iq);
@@ -1454,9 +2169,8 @@ aicam_result_t device_service_image_set_config(const image_config_t *config)
                 LOG_SVC_ERROR("Failed to apply ISP IQ hot-swap: %d", result);
                 return result;
             }
-            LOG_SVC_DEBUG("ISP IQ hot-swapped (mode=%u, grayscale=%d)",
-                         g_device_service.camera_config.image_config.isp_mode,
-                         g_device_service.camera_config.image_config.grayscale);
+            LOG_SVC_DEBUG("ISP IQ hot-swapped (mode=%u)",
+                         g_device_service.camera_config.image_config.isp_mode);
         }
     }
 
@@ -1467,9 +2181,9 @@ aicam_result_t device_service_image_set_config(const image_config_t *config)
     }
 
 
-    LOG_SVC_INFO("Image configuration applied: brightness=%u, contrast=%u, h_flip=%d, v_flip=%d, isp_mode=%u, grayscale=%d",
+    LOG_SVC_INFO("Image configuration applied: brightness=%u, contrast=%u, h_flip=%d, v_flip=%d, isp_mode=%u",
                 config->brightness, config->contrast, config->horizontal_flip, config->vertical_flip,
-                config->isp_mode, config->grayscale);
+                config->isp_mode);
 
     return AICAM_OK;
 }
@@ -1520,7 +2234,20 @@ aicam_result_t device_service_light_set_config(const light_config_t *config)
     }
     
     memcpy(&g_device_service.light_config, config, sizeof(light_config_t));
-    
+
+    /* IR boards: the light device is the IR lamp — mirror brightness into
+     * the day/night config so the legacy /device/light/config brightness
+     * slider drives ir_brightness, and update a live night-mode IR light
+     * immediately. Dormant on standard boards. */
+    if (g_device_service.day_night_initialized &&
+        g_device_service.day_night_config.ir_brightness != config->brightness_level) {
+        g_device_service.day_night_config.ir_brightness = (uint8_t)config->brightness_level;
+        (void)json_config_set_day_night_config(&g_device_service.day_night_config);
+        if (g_device_service.day_night_effective_mode == IMAGE_ISP_MODE_NIGHT) {
+            dn_ir_light_set(AICAM_TRUE, g_device_service.day_night_config.ir_brightness);
+        }
+    }
+
     //store config to json_config_mgr
     aicam_result_t result = json_config_set_device_service_light_config(&g_device_service.light_config);
     if (result != AICAM_OK) {
@@ -1577,7 +2304,12 @@ aicam_result_t device_service_light_set_brightness(uint32_t brightness_level)
     
     // Update brightness level in configuration
     g_device_service.light_config.brightness_level = brightness_level;
-    
+    /* IR boards: keep the day/night ir_brightness in sync (dormant otherwise). */
+    if (g_device_service.day_night_initialized) {
+        g_device_service.day_night_config.ir_brightness = (uint8_t)brightness_level;
+        (void)json_config_set_day_night_config(&g_device_service.day_night_config);
+    }
+
     // Set PWM duty cycle
     uint8_t duty = brightness_level;
     device_ioctl(g_device_service.light_device, MISC_CMD_PWM_SET_DUTY, (uint8_t *)&duty, 0);
@@ -1666,7 +2398,7 @@ aicam_result_t device_service_camera_start(void)
                     g_device_service.camera_config.image_config.startup_skip_frames);
     }
 
-    // apply isp IQ init buffer (built-in scene or custom profile from NVS) + grayscale overlay
+    // apply isp IQ init buffer (built-in scene / custom NVS profile; IR: day-night profile)
     {
         ISP_IQParamTypeDef isp_param = {0};
         device_service_build_isp_iq_param(&g_device_service.camera_config.image_config, &isp_param);
@@ -1817,7 +2549,14 @@ aicam_result_t device_service_camera_capture(uint8_t **buffer, int *out_len,
     // 1. light control (capture-time flash). Skipped entirely in
     //    fill-light-while-streaming mode: there the light is driven by the
     //    continuous sync instead, and work-time captures must not toggle it.
-    if (!g_device_service.light_config.fill_light_while_streaming)
+    //    IR boards: the day/night task owns the IR light continuously
+    //    (night = on at ir_brightness); captures never flash it (ir_ver
+    //    behavior — the light stays on across captures in night mode).
+    if (board_is_ir() == AICAM_TRUE)
+    {
+        /* IR light owned by day/night task — nothing to do here. */
+    }
+    else if (!g_device_service.light_config.fill_light_while_streaming)
     {
         if (g_device_service.light_config.mode == LIGHT_MODE_AUTO &&
             g_device_service.light_config.auto_trigger_enabled)
@@ -2187,7 +2926,18 @@ aicam_result_t device_service_camera_capture_fast(uint8_t **buffer, int *out_len
     // 7. Light control (same logic as device_service_camera_capture). The wake
     //    path is intentionally NOT affected by fill-light-while-streaming: it
     //    always uses the capture-time flash behavior (no stream runs here).
-    if (g_device_service.light_initialized && g_device_service.light_device) {
+    //    IR boards: the day/night evaluation below decides the IR light and
+    //    IR-CUT (AUTO evaluates TIME/LIGHT_SENSOR before the stream starts).
+    if (board_is_ir() == AICAM_TRUE) {
+        aicam_bool_t ir_on = AICAM_FALSE;
+        uint8_t ir_bri = 0U;
+        (void)device_service_day_night_capture_prepare(NULL, 0, &ir_on, &ir_bri);
+        if (ir_on) {
+            dn_ir_light_set(AICAM_TRUE, ir_bri);
+            light_on = AICAM_TRUE; /* tracked only so cleanup below knows */
+        }
+    }
+    else if (g_device_service.light_initialized && g_device_service.light_device) {
         if (g_device_service.light_config.mode == LIGHT_MODE_AUTO &&
             g_device_service.light_config.auto_trigger_enabled)
         {
@@ -2643,7 +3393,8 @@ aicam_result_t device_service_led_blink(uint32_t blink_times, uint32_t interval_
     }
 
     if(!g_device_service.led_initialized || !g_device_service.led_device) {
-        g_device_service.led_device = device_find_pattern(IND_EXT_DEVICE_NAME, DEV_TYPE_MISC);
+        g_device_service.led_device = device_find_pattern(board_is_ir() ? IND_DEVICE_NAME : IND_EXT_DEVICE_NAME,
+                                                          DEV_TYPE_MISC);
         if(!g_device_service.led_device) {
             return AICAM_ERROR_NOT_FOUND;
         }

@@ -341,21 +341,26 @@ static void qs_isp_config_to_iq_param(const isp_config_t *isp_config, ISP_IQPara
     isp_param->luxRef.calibFactor = isp_config->lux_calib_factor;
 }
 
-int quick_storage_fill_isp_iq_param(uint32_t isp_mode, uint8_t grayscale,
+int quick_storage_fill_isp_iq_param(uint32_t isp_mode,
                                     ISP_IQParamTypeDef *isp_param)
 {
-    aicam_bool_t gray_on = (grayscale != 0u) ? AICAM_TRUE : AICAM_FALSE;
-
     if (!isp_param) {
         return AICAM_ERROR_INVALID_PARAM;
     }
 
+    /* IR board: day/night IQ selection (NIGHT -> IR night profile;
+       DAY/AUTO -> tuned color profile). */
+    if (board_is_ir() == AICAM_TRUE) {
+        camera_fill_isp_iq_for_mode(isp_mode, isp_param);
+        return AICAM_OK;
+    }
+
+    /* Standard board: unchanged legacy selection. */
     if (isp_mode == QS_IMAGE_ISP_MODE_CUSTOM) {
         isp_config_t cfg = {0};
         qs_load_isp_config_from_nvs(&cfg);
         if (cfg.valid) {
             qs_isp_config_to_iq_param(&cfg, isp_param);
-            camera_apply_grayscale_iq(isp_param, gray_on);
             return AICAM_OK;
         }
     }
@@ -368,7 +373,6 @@ int quick_storage_fill_isp_iq_param(uint32_t isp_mode, uint8_t grayscale,
         scene = CAM_IQ_SCENE_INDOOR;
     }
     camera_fill_isp_iq_scene(scene, isp_param);
-    camera_apply_grayscale_iq(isp_param, gray_on);
     return AICAM_OK;
 }
 
@@ -545,7 +549,6 @@ int quick_storage_read_snapshot_config(qs_snapshot_config_t *snapshot_config)
     snapshot_config->fast_capture_jpeg_quality = default_config.device_service.image_config.fast_capture_jpeg_quality;
     snapshot_config->capture_storage_ai = default_config.device_service.image_config.capture_storage_ai;
     snapshot_config->isp_mode = default_config.device_service.image_config.isp_mode;
-    snapshot_config->grayscale = (uint8_t)default_config.device_service.image_config.grayscale;
 
     aicam_result_t result;
     aicam_bool_t temp_bool = AICAM_FALSE;
@@ -625,17 +628,58 @@ int quick_storage_read_snapshot_config(qs_snapshot_config_t *snapshot_config)
 
     result = qs_nvs_read_uint32(NVS_KEY_IMAGE_ISP_MODE, &temp_u32);
     if (result == AICAM_OK) snapshot_config->isp_mode = temp_u32;
-    if (snapshot_config->isp_mode != QS_IMAGE_ISP_MODE_INDOOR &&
-        snapshot_config->isp_mode != QS_IMAGE_ISP_MODE_OUTDOOR &&
-        snapshot_config->isp_mode != QS_IMAGE_ISP_MODE_CUSTOM) {
+    /* Legal set is board-variant conditional (standard: 0/1/255; IR: 0/2/3);
+     * anything else (including ir_ver test-firmware values 1/2 on an IR
+     * board) falls back to the default mode. */
+    if (board_is_ir() == AICAM_TRUE) {
+        if (snapshot_config->isp_mode != QS_IMAGE_ISP_MODE_DAY &&
+            snapshot_config->isp_mode != QS_IMAGE_ISP_MODE_NIGHT &&
+            snapshot_config->isp_mode != QS_IMAGE_ISP_MODE_AUTO) {
+            snapshot_config->isp_mode = QS_IMAGE_ISP_MODE_DAY;
+        }
+    } else if (snapshot_config->isp_mode != QS_IMAGE_ISP_MODE_INDOOR &&
+               snapshot_config->isp_mode != QS_IMAGE_ISP_MODE_OUTDOOR &&
+               snapshot_config->isp_mode != QS_IMAGE_ISP_MODE_CUSTOM) {
         snapshot_config->isp_mode = default_config.device_service.image_config.isp_mode;
     }
+    /* Legacy NVS_KEY_IMAGE_GRAYSCALE ("img_gray") is intentionally ignored:
+     * the grayscale feature was removed. */
 
-    result = qs_nvs_read_bool(NVS_KEY_IMAGE_GRAYSCALE, &temp_bool);
-    if (result == AICAM_OK) {
-        snapshot_config->grayscale = (uint8_t)temp_bool;
+    return AICAM_OK;
+}
+
+/* Day/night configuration for the sleep-wake fast-capture path (IR boards).
+   Defaults mirror `default_config.day_night_config` (see json_config_mgr.c). */
+int quick_storage_read_day_night_config(day_night_config_t *config)
+{
+    if (!config) return AICAM_ERROR_INVALID_PARAM;
+    *config = default_config.device_service.day_night_config;
+
+    int32_t v32 = 0;
+    if (qs_nvs_read_int32(NVS_KEY_DN_SOURCE, &v32) == AICAM_OK &&
+        v32 >= 0 && v32 <= (int32_t)DAY_NIGHT_SOURCE_ISP_STATS) {
+        config->auto_source = (day_night_source_t)v32;
     }
-
+    if (qs_nvs_read_int32(NVS_KEY_DN_TIME_S_H, &v32) == AICAM_OK) config->time_start_hour = (uint32_t)v32;
+    if (qs_nvs_read_int32(NVS_KEY_DN_TIME_S_M, &v32) == AICAM_OK) config->time_start_minute = (uint32_t)v32;
+    if (qs_nvs_read_int32(NVS_KEY_DN_TIME_E_H, &v32) == AICAM_OK) config->time_end_hour = (uint32_t)v32;
+    if (qs_nvs_read_int32(NVS_KEY_DN_TIME_E_M, &v32) == AICAM_OK) config->time_end_minute = (uint32_t)v32;
+    if (qs_nvs_read_int32(NVS_KEY_DN_LS_NIGHT_TH, &v32) == AICAM_OK) config->light_sensor_night_threshold = (uint8_t)v32;
+    if (qs_nvs_read_int32(NVS_KEY_DN_LS_DAY_TH, &v32) == AICAM_OK) config->light_sensor_day_threshold = (uint8_t)v32;
+    if (qs_nvs_read_int32(NVS_KEY_DN_ISP_NIGHT_LUX, &v32) == AICAM_OK) config->isp_night_enter_lux = (uint32_t)v32;
+    if (qs_nvs_read_int32(NVS_KEY_DN_ISP_DAY_LUX, &v32) == AICAM_OK) config->isp_day_enter_lux = (uint32_t)v32;
+    if (qs_nvs_read_int32(NVS_KEY_DN_ISP_NIGHT_EXPO, &v32) == AICAM_OK) config->isp_night_enter_exposure_us = (uint32_t)v32;
+    if (qs_nvs_read_int32(NVS_KEY_DN_ISP_NIGHT_GAIN, &v32) == AICAM_OK) config->isp_night_enter_gain_mdb = (uint32_t)v32;
+    if (qs_nvs_read_int32(NVS_KEY_DN_ISP_NIGHT_AVGL, &v32) == AICAM_OK) config->isp_night_enter_avgl = (uint8_t)v32;
+    if (qs_nvs_read_int32(NVS_KEY_DN_ISP_DAY_EXPO, &v32) == AICAM_OK) config->isp_day_enter_exposure_us = (uint32_t)v32;
+    if (qs_nvs_read_int32(NVS_KEY_DN_ISP_DAY_GAIN, &v32) == AICAM_OK) config->isp_day_enter_gain_mdb = (uint32_t)v32;
+    if (qs_nvs_read_int32(NVS_KEY_DN_ISP_DAY_AVGL, &v32) == AICAM_OK) config->isp_day_enter_avgl = (uint8_t)v32;
+    if (qs_nvs_read_int32(NVS_KEY_DN_ISP_EMA_NUM, &v32) == AICAM_OK) config->isp_ema_alpha_num = (uint8_t)v32;
+    if (qs_nvs_read_int32(NVS_KEY_DN_ISP_EMA_DEN, &v32) == AICAM_OK) config->isp_ema_alpha_den = (uint8_t)v32;
+    if (qs_nvs_read_int32(NVS_KEY_DN_IR_BRIGHTNESS, &v32) == AICAM_OK &&
+        v32 >= 0 && v32 <= 100) {
+        config->ir_brightness = (uint8_t)v32;
+    }
     return AICAM_OK;
 }
 

@@ -42,6 +42,7 @@
 #include "generic_utils.h"
 #include "generic_file.h"
 #include "common_utils.h"
+#include "board_hw.h"
 #include "lwip/sockets.h"
 #include <errno.h>  // For ENOBUFS
 #include "mem.h"
@@ -679,7 +680,10 @@ static void wifi_update_process(void)
     // osDelay(100);
     storage_nvs_write(NVS_FACTORY, NVS_KEY_WIFI_MODE, WIFI_MODE_NORMAL, strlen(WIFI_MODE_NORMAL));
     
-    misc = device_find_pattern(IND_EXT_DEVICE_NAME, DEV_TYPE_MISC);
+    /* Indicator: IR boards use the onboard indicator (the external-indicator
+     * pin is wired to the ambient light sensor there). */
+    misc = device_find_pattern(board_is_ir() ? IND_DEVICE_NAME : IND_EXT_DEVICE_NAME,
+                               DEV_TYPE_MISC);
     if (misc != NULL) {
         blink_params.blink_times = INT32_MAX;
         blink_params.interval_ms = 50;
