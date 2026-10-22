@@ -1,6 +1,6 @@
 {
   "base_path": "/api/v1",
-  "total_endpoints": 176,
+  "total_endpoints": 179,
   "modules": {
     "ai_management": {
       "source": "Custom/Services/Web/api/api_ai_management_module.c",
@@ -112,8 +112,26 @@
     },
     "device": {
       "source": "Custom/Services/Web/api/api_device_module.c",
-      "source_sha256": "80e72b6afc378195",
+      "source_sha256": "bcebed9115171ad0",
       "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/device/day-night/config",
+          "handler": "device_day_night_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/device/day-night/config",
+          "handler": "device_day_night_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/device/day-night/status",
+          "handler": "device_day_night_status_handler",
+          "require_auth": true
+        },
         {
           "method": "GET",
           "path": "/api/v1/device/info",

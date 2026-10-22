@@ -1,5 +1,67 @@
 import request from '../request'
 
+/* ISP mode values (match firmware IMAGE_ISP_MODE_*). The standard board uses
+ * outdoor(0)/indoor(1)/custom(255); the IR board uses day(0)/night(2)/auto(3).
+ * The selector options are chosen by board variant (day-night status
+ * `configured`), see graphics.tsx. */
+export const ISP_MODE_OUTDOOR = 0
+export const ISP_MODE_INDOOR = 1
+export const ISP_MODE_CUSTOM = 255
+export const ISP_MODE_DAY = 0
+export const ISP_MODE_NIGHT = 2
+export const ISP_MODE_AUTO = 3
+
+export type DayNightSource = 'time' | 'light_sensor' | 'isp_stats'
+
+export interface DayNightConfig {
+    mode: 'day' | 'night' | 'auto'
+    auto_source: DayNightSource
+    custom_schedule: {
+        start_hour: number
+        start_minute: number
+        end_hour: number
+        end_minute: number
+    }
+    light_sensor: {
+        night_threshold: number
+        day_threshold: number
+    }
+    isp_stats: {
+        night_enter_lux: number
+        day_enter_lux: number
+        night_enter_exposure_us: number
+        night_enter_gain_mdb: number
+        night_enter_avgl: number
+        day_enter_exposure_us: number
+        day_enter_gain_mdb: number
+        day_enter_avgl: number
+        ema_alpha_num: number
+        ema_alpha_den: number
+    }
+    ir_brightness: number
+}
+
+export interface DayNightStatus {
+    configured: boolean
+    mode: 'day' | 'night' | 'auto'
+    control: 'manual' | 'auto'
+    source: DayNightSource
+    effective_mode: 'day' | 'night' | 'auto'
+    ir_on: boolean
+    ir_brightness: number
+    ircut_mode: number
+    metrics: {
+        valid: boolean
+        lux: number
+        lux_ema: number
+        avg_l: number
+        avg_l_ema: number
+        exposure_us: number
+        gain_mdb: number
+        light_sensor_percent: number
+    }
+}
+
 export interface SetHardwareInfoReq {
     brightness: number;
     contrast: number;
@@ -7,7 +69,6 @@ export interface SetHardwareInfoReq {
     vertical_flip: boolean;
     aec: number;
     isp_mode: number;
-    grayscale: boolean;
     /* The following are optional — backend only updates fields that are present
        in the request body. They are managed on the Capture Settings page. */
     fast_capture_skip_frames?: number;
@@ -54,6 +115,9 @@ const hardwareManagement = {
     postIspProfileImportReq: (body: Record<string, unknown>) => request.post('/api/v1/isp/config/import', body),
     getLightConfigReq: () => request.get('/api/v1/device/light/config'),
     setLightConfigReq: (data: SetLightConfigReq) => request.post('/api/v1/device/light/config', data),
+    getDayNightConfigReq: () => request.get<DayNightConfig>('/api/v1/device/day-night/config'),
+    setDayNightConfigReq: (data: Partial<DayNightConfig>) => request.post('/api/v1/device/day-night/config', data),
+    getDayNightStatusReq: () => request.get<DayNightStatus>('/api/v1/device/day-night/status'),
 }
 
 export default hardwareManagement;

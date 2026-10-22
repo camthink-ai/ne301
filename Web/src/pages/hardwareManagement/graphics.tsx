@@ -11,7 +11,13 @@ import { useSystemInfo } from '@/store/systemInfo';
 import deviceTool from '@/services/api/deviceTool';
 import H264Player from '@/lib/MSE/h264Player';
 import Loading from '@/components/loading';
-import hardwareManagement from '@/services/api/hardware-management';
+import hardwareManagement, {
+  ISP_MODE_DAY,
+  ISP_MODE_NIGHT,
+  ISP_MODE_AUTO,
+  ISP_MODE_CUSTOM,
+} from '@/services/api/hardware-management';
+import DayNightAutoConfig from './day-night-auto';
 import SvgIcon from '@/components/svg-icon';
 import { Input } from '@/components/ui/input';
 import {
@@ -31,6 +37,18 @@ import {
 import { getWebSocketUrl, downloadFile } from '@/utils';
 import { toast } from 'sonner';
 
+/* Resolve true once the condition holds, or false after the timeout.
+ * Interval-based so the (intentional) polling stays eslint-clean. */
+const waitFor = (cond: () => boolean, timeoutMs: number): Promise<boolean> => new Promise<boolean>(resolve => {
+  const deadline = Date.now() + timeoutMs;
+  const timer = setInterval(() => {
+    if (cond() || Date.now() >= deadline) {
+      clearInterval(timer);
+      resolve(cond());
+    }
+  }, 50);
+});
+
 export default function Graphics() {
   const { i18n } = useLingui();
   const { deviceInfo } = useSystemInfo();
@@ -39,6 +57,7 @@ export default function Graphics() {
     setHardwareInfoReq,
     getIspProfileExportReq,
     postIspProfileImportReq,
+    getDayNightStatusReq,
   } = hardwareManagement;
   const { toggleAiReq, startVideoStreamReq, stopVideoStreamReq } = deviceTool;
   const [connectionStatus, setConnectionStatus] = useState('');
@@ -48,9 +67,11 @@ export default function Graphics() {
   const [flipVertical, setFlipVertical] = useState(false);
   const [aec, setAec] = useState(0);
   const [cameraSectionOpen, setCameraSectionOpen] = useState(true);
-  const ISP_MODE_CUSTOM = 255;
+  /* IR board (day/night-capable): ISP selector shows day/night/auto and the
+   * AUTO mode renders the day/night auto-switch config. Standard board keeps
+   * outdoor/indoor/custom (main behavior). */
+  const [isIrBoard, setIsIrBoard] = useState(false);
   const [ispMode, setIspMode] = useState(0);
-  const [grayscale, setGrayscale] = useState(false);
   const ispImportInputRef = useRef<HTMLInputElement>(null);
   const [luxRefDialogOpen, setLuxRefDialogOpen] = useState(false);
   const [luxRefForm, setLuxRefForm] = useState({
@@ -118,7 +139,14 @@ export default function Graphics() {
       try {
         setPlayerLoading(true);
         await startVideoStreamReq();
-        if (cancelled || !playerRef.current) return;
+        /* The <video> element mounts only after the config load flips
+         * `loading` off. When the camera is already running (e.g. navigating
+         * here from the preview page) startVideoStreamReq resolves almost
+         * instantly and can beat it — wait for the element instead of
+         * bailing, otherwise no player is ever created and the preview
+         * stays black forever. */
+        const mounted = await waitFor(() => !!playerRef.current, 5000);
+        if (cancelled || !mounted || !playerRef.current) return;
         const video = playerRef.current;
         const player = new H264Player(() => {});
         playerRender = player;
@@ -155,9 +183,13 @@ export default function Graphics() {
       if (typeof res.data.isp_mode === 'number') {
         setIspMode(res.data.isp_mode);
       }
-      if (typeof res.data.grayscale === 'boolean') {
-        setGrayscale(res.data.grayscale);
-      }
+      /* Board variant probe: the day/night status reports configured=true only
+       * on IR boards (the endpoint is readable on all boards). Fire-and-forget
+       * on purpose: awaiting it would extend `loading`, which gates the
+       * <video> element the stream effect needs (see below). */
+      getDayNightStatusReq()
+        .then(st => setIsIrBoard(Boolean(st?.data?.configured)))
+        .catch(() => setIsIrBoard(false));
       // TODO: when ISP APIs are wired, hydrate ISP exposure state from /api/v1/isp/aec, /aec/manual, /sensor_delay, /statistics, etc.
     } catch (error) {
       console.error(error);
@@ -177,7 +209,6 @@ export default function Graphics() {
       vertical_flip: boolean;
       aec: number;
       isp_mode: number;
-      grayscale: boolean;
     }> = {}
   ) => ({
     brightness: overrides.brightness ?? brightness,
@@ -186,7 +217,6 @@ export default function Graphics() {
     vertical_flip: overrides.vertical_flip ?? flipVertical,
     aec: overrides.aec ?? aec,
     isp_mode: overrides.isp_mode ?? ispMode,
-    grayscale: overrides.grayscale ?? grayscale,
   });
 
   const handleSetHardwareInfo = async (type: string, value: number) => {
@@ -344,7 +374,9 @@ export default function Graphics() {
                                 <div>
                                   <p>
                                     {i18n._(
-                                      'sys.hardware_management.isp_mode_hint'
+                                      isIrBoard
+                                        ? 'sys.hardware_management.isp_mode_hint_ir'
+                                        : 'sys.hardware_management.isp_mode_hint'
                                     )}
                                   </p>
                                 </div>
@@ -374,25 +406,47 @@ export default function Graphics() {
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="0">
-                                {i18n._(
-                                  'sys.hardware_management.isp_mode_outdoor'
-                                )}
-                              </SelectItem>
-                              <SelectItem value="1">
-                                {i18n._(
-                                  'sys.hardware_management.isp_mode_indoor'
-                                )}
-                              </SelectItem>
-                              <SelectItem value="255">
-                                {i18n._(
-                                  'sys.hardware_management.isp_mode_custom'
-                                )}
-                              </SelectItem>
+                              {isIrBoard ? (
+                                <>
+                                  <SelectItem value={String(ISP_MODE_DAY)}>
+                                    {i18n._(
+                                      'sys.hardware_management.isp_mode_day'
+                                    )}
+                                  </SelectItem>
+                                  <SelectItem value={String(ISP_MODE_NIGHT)}>
+                                    {i18n._(
+                                      'sys.hardware_management.isp_mode_night'
+                                    )}
+                                  </SelectItem>
+                                  <SelectItem value={String(ISP_MODE_AUTO)}>
+                                    {i18n._(
+                                      'sys.hardware_management.isp_mode_auto'
+                                    )}
+                                  </SelectItem>
+                                </>
+                              ) : (
+                                <>
+                                  <SelectItem value="0">
+                                    {i18n._(
+                                      'sys.hardware_management.isp_mode_outdoor'
+                                    )}
+                                  </SelectItem>
+                                  <SelectItem value="1">
+                                    {i18n._(
+                                      'sys.hardware_management.isp_mode_indoor'
+                                    )}
+                                  </SelectItem>
+                                  <SelectItem value={String(ISP_MODE_CUSTOM)}>
+                                    {i18n._(
+                                      'sys.hardware_management.isp_mode_custom'
+                                    )}
+                                  </SelectItem>
+                                </>
+                              )}
                             </SelectContent>
                           </Select>
                         </div>
-                        {ispMode === ISP_MODE_CUSTOM && (
+                        {!isIrBoard && ispMode === ISP_MODE_CUSTOM && (
                           <>
                             <Separator />
                             <div className="flex flex-wrap gap-2 justify-end">
@@ -469,52 +523,12 @@ export default function Graphics() {
                             </div>
                           </>
                         )}
-                        <Separator />
-                        <div className="flex justify-between gap-4 items-center">
-                          <div className="flex min-w-0 flex-1 items-center gap-2">
-                            <Label className="shrink-0">
-                              {i18n._('sys.hardware_management.grayscale')}
-                            </Label>
-                            <Tooltip mbEnhance>
-                              <TooltipTrigger>
-                                <div className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-gray-500">
-                                  <SvgIcon
-                                    className="h-4 w-4 text-gray-500"
-                                    icon="info"
-                                  />
-                                </div>
-                              </TooltipTrigger>
-                              <TooltipContent className="max-w-80 text-pretty">
-                                <div>
-                                  <p>
-                                    {i18n._(
-                                      'sys.hardware_management.grayscale_hint'
-                                    )}
-                                  </p>
-                                </div>
-                              </TooltipContent>
-                            </Tooltip>
-                          </div>
-                          <Switch
-                            checked={grayscale}
-                            onCheckedChange={async checked => {
-                              setGrayscale(checked);
-                              try {
-                                await setHardwareInfoReq(
-                                  buildImageConfigRequest({ grayscale: checked })
-                                );
-                                toast.success(
-                                  i18n._(
-                                    'sys.hardware_management.grayscale_applied_hint'
-                                  )
-                                );
-                              } catch (error) {
-                                console.error(error);
-                                setGrayscale(!checked);
-                              }
-                            }}
-                          />
-                        </div>
+                        {isIrBoard && ispMode === ISP_MODE_AUTO && (
+                          <>
+                            <Separator />
+                            <DayNightAutoConfig />
+                          </>
+                        )}
                       </div>
                     )}
                   </div>

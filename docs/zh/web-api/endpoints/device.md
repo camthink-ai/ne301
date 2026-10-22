@@ -10,10 +10,13 @@ title: 设备管理 端点参考
 
 源文件: [`Custom/Services/Web/api/api_device_module.c`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/api_device_module.c)
 
-共 **24** 个端点。鉴权列 ✅ 表示需要携带[认证凭据](../authentication.md)。
+共 **27** 个端点。鉴权列 ✅ 表示需要携带[认证凭据](../authentication.md)。
 
 | 方法 | 路径 | 鉴权 | 处理函数 |
 |------|------|:----:|----------|
+| `GET` | `/api/v1/device/day-night/config` | ✅ | `device_day_night_config_handler` |
+| `POST` | `/api/v1/device/day-night/config` | ✅ | `device_day_night_config_handler` |
+| `GET` | `/api/v1/device/day-night/status` | ✅ | `device_day_night_status_handler` |
 | `GET` | `/api/v1/device/info` | ✅ | `device_info_handler` |
 | `GET` | `/api/v1/device/firmware-versions` | ✅ | `firmware_versions_handler` |
 | `GET` | `/api/v1/device/version-check` | ✅ | `version_check_handler` |

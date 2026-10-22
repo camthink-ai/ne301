@@ -5,11 +5,13 @@
 #include "dev_manager.h"
 #include "aicam_types.h"
 #include "aicam_error.h"
+#include "board_hw.h"
 #include "camera.h"
 #include "jpegc.h"
 #include "draw.h"
 #include "ai_draw.h"
 #include "misc.h"
+#include "device_service.h"
 #include "npu_cache.h"
 #include "mem_map.h"
 #include "common_utils.h"
@@ -155,7 +157,7 @@ static void qs_stop_camera_pipes(aicam_bool_t need_ai)
     camera_deinit_but_not_unregister();
 }
 
-static int qs_prepare_camera_and_jpeg(const qs_snapshot_config_t *cfg, const nn_model_info_t *model_info_opt)
+static int qs_prepare_camera_and_jpeg(const qs_snapshot_config_t *cfg, const nn_model_info_t *model_info_opt, uint32_t effective_mode)
 {
     if (!cfg) return AICAM_ERROR_INVALID_PARAM;
 
@@ -215,10 +217,12 @@ static int qs_prepare_camera_and_jpeg(const qs_snapshot_config_t *cfg, const nn_
         (void)device_ioctl(s_cam_dev, CAM_CMD_SET_PIPE_CTRL, &ctrl, 0);
     }
 
-    /* ISP IQ before start: NVS + stock profiles via quick_storage (no json_config init). */
+    /* ISP IQ before start: NVS + stock profiles via quick_storage (no json_config init).
+     * IR boards pass the day/night effective mode (DAY/NIGHT) resolved by the
+     * snapshot thread; standard boards pass the configured isp_mode verbatim. */
     {
         ISP_IQParamTypeDef isp_param = {0};
-        (void)quick_storage_fill_isp_iq_param(cfg->isp_mode, cfg->grayscale, &isp_param);
+        (void)quick_storage_fill_isp_iq_param(effective_mode, &isp_param);
         (void)device_ioctl(s_cam_dev, CAM_CMD_SET_ISP_PARAM, (uint8_t *)&isp_param, sizeof(isp_param));
     }
 
@@ -323,8 +327,26 @@ static void qs_snapshot_thread(void *argument)
         qt_prof_step(&prof, "[QS] snap:ai_info ");
     }
 
-    /* light control: follow device_service fast path behavior (AUTO treated as ON) */
-    if (s_cfg.light_mode != QS_LIGHT_MODE_OFF) {
+    /* Light control for the capture — board-variant split:
+     * IR boards: day/night evaluation (device_service is NOT running in the
+     *   sleep-wake fast path, so the config + isp_mode come from NVS via
+     *   quick_storage; AUTO evaluates TIME/LIGHT_SENSOR, ISP_STATS is not
+     *   feasible before the stream starts -> day). capture_prepare also
+     *   switches the IR-CUT filter per the effective mode.
+     * Standard boards: keep the legacy light_mode logic (AUTO treated as ON,
+     *   CUSTOM = white-light schedule window). */
+    uint32_t eff_mode = s_cfg.isp_mode;
+    if (board_is_ir() == AICAM_TRUE) {
+        day_night_config_t dn_cfg;
+        aicam_bool_t ir_on = AICAM_FALSE;
+        uint8_t ir_bri = 0U;
+        (void)quick_storage_read_day_night_config(&dn_cfg);
+        eff_mode = device_service_day_night_capture_prepare(&dn_cfg, s_cfg.isp_mode, &ir_on, &ir_bri);
+        if (ir_on) {
+            qs_light_set(AICAM_TRUE, ir_bri);
+        }
+    }
+    else if (s_cfg.light_mode != QS_LIGHT_MODE_OFF) {
         aicam_bool_t light_on = AICAM_FALSE;
         if (s_cfg.light_mode == QS_LIGHT_MODE_ON) light_on = AICAM_TRUE;
         else if (s_cfg.light_mode == QS_LIGHT_MODE_AUTO) light_on = AICAM_TRUE;
@@ -344,7 +366,7 @@ static void qs_snapshot_thread(void *argument)
     }
 
     /* init camera/jpeg based on config (+ model info if needed) */
-    int prep = qs_prepare_camera_and_jpeg(&s_cfg, model_info_opt);
+    int prep = qs_prepare_camera_and_jpeg(&s_cfg, model_info_opt, eff_mode);
     if (prep != 0) {
         QT_TRACE("[QS] ", "prepare cam/jpeg fail %d", prep);
         (void)osEventFlagsSet(s_evt, QS_FLAG_ERROR_ABORT);
@@ -398,8 +420,9 @@ static void qs_snapshot_thread(void *argument)
     }
     printf("SNAP: %lu ms\r\n", HAL_GetTick());
 
-    /* turn light off after capture */
-    if (s_cfg.light_mode != QS_LIGHT_MODE_OFF) {
+    /* turn light off after capture — IR boards always (the wake path returns
+     * to sleep); standard boards only if the light config could have lit it */
+    if (board_is_ir() == AICAM_TRUE || s_cfg.light_mode != QS_LIGHT_MODE_OFF) {
         qs_light_set(AICAM_FALSE, 0);
     }
 

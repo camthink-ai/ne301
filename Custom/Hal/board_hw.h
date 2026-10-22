@@ -10,6 +10,7 @@
 #define _BOARD_HW_H_
 
 #include "stm32n6xx_hal.h"
+#include "aicam_types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,6 +38,19 @@ const char *board_hw_version_str(void);
 /** HaLow WAKE pin for the detected band (<= v1.2: PB2, >= v1.3: PD9). */
 GPIO_TypeDef *board_hw_halow_wake_port(void);
 uint16_t board_hw_halow_wake_pin(void);
+
+/**
+ * @brief Whether this unit is the IR light-board variant.
+ * @details Detected once from the factory-written hardware version string
+ *          (NVS_USER "dev_info_hw_ver", falling back to NVS_FACTORY
+ *          "hw_version"): a case-insensitive "ir" substring means the IR
+ *          variant (white LED replaced by IR LED, external indicator
+ *          replaced by ambient light sensor, IR-CUT filter on PE9). A
+ *          missing or unmatched string means the standard board. Cached
+ *          after the first call; requires storage to be registered
+ *          (driver_core_init registers storage before any caller).
+ */
+aicam_bool_t board_is_ir(void);
 
 #ifdef __cplusplus
 }

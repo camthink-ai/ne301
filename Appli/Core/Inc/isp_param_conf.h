@@ -367,6 +367,117 @@ static const ISP_IQParamTypeDef ISP_IQParamCacheInit_OS04C10 = {
     },
 };
 
+/* DCMIPP ISP configuration for OS04C10 night IR mode. */
+__attribute__((unused)) static const ISP_IQParamTypeDef ISP_IQParamCacheInit_OS04C10_NIGHT = {
+    .sensorGainStatic = {
+        .gain = 0,
+    },
+    .sensorExposureStatic = {
+        .exposure = 4207,
+    },
+    .AECAlgo = {
+        .enable = 1,
+        .exposureCompensation = EXPOSURE_TARGET_MINUS_0_5_EV,
+        .antiFlickerFreq = ANTIFLICKER_50HZ,
+    },
+    .statRemoval = {
+        .enable = 0,
+        .nbHeadLines = 0,
+        .nbValidLines = 0,
+    },
+    .badPixelStatic = {
+        .enable = 0,
+        .strength = 0,
+    },
+    .badPixelAlgo = {
+        .enable = 0,
+        .threshold = 0,
+    },
+    .blackLevelStatic = {
+        .enable = 1,
+        .BLCR = 16,
+        .BLCG = 16,
+        .BLCB = 16,
+    },
+    .demosaicing = {
+        .enable = 1,
+        .type = ISP_DEMOS_TYPE_RGGB,
+        .peak = 2,
+        .lineV = 4,
+        .lineH = 4,
+        .edge = 6,
+    },
+    .ispGainStatic = {
+        .enable = 1,
+        .ispGainR = 100000000,
+        .ispGainG = 100000000,
+        .ispGainB = 100000000,
+    },
+    .colorConvStatic = {
+        .enable = 1,
+        .coeff = { { 25000000, 70000000, 5000000, }, { 25000000, 70000000, 5000000, }, { 25000000, 70000000, 5000000, }, }
+    },
+    .AWBAlgo = {
+        .enable = 0,
+        .label = { "A", "Free Slot", "Free Slot", "Free Slot", "Free Slot", },
+        .referenceColorTemp = { 2500, 0, 0, 0, 0, },
+        .ispGainR = { 100000000, 0, 0, 0, 0, },
+        .ispGainG = { 100000000, 0, 0, 0, 0, },
+        .ispGainB = { 100000000, 0, 0, 0, 0, },
+        .coeff = {
+            { { 25000000, 70000000, 5000000, }, { 25000000, 70000000, 5000000, }, { 25000000, 70000000, 5000000, }, },
+            { { 0, 0, 0, }, { 0, 0, 0, }, { 0, 0, 0, }, },
+            { { 0, 0, 0, }, { 0, 0, 0, }, { 0, 0, 0, }, },
+            { { 0, 0, 0, }, { 0, 0, 0, }, { 0, 0, 0, }, },
+            { { 0, 0, 0, }, { 0, 0, 0, }, { 0, 0, 0, }, },
+        },
+        .referenceRGB = {
+            { 60, 60, 60 },
+            { 0, 0, 0 },
+            { 0, 0, 0 },
+            { 0, 0, 0 },
+            { 0, 0, 0 },
+        },
+    },
+    .contrast = {
+        .enable = 1,
+        .coeff.LUM_0 = 42,
+        .coeff.LUM_32 = 36,
+        .coeff.LUM_64 = 81,
+        .coeff.LUM_96 = 121,
+        .coeff.LUM_128 = 134,
+        .coeff.LUM_160 = 143,
+        .coeff.LUM_192 = 147,
+        .coeff.LUM_224 = 183,
+        .coeff.LUM_256 = 229,
+    },
+    .statAreaStatic = {
+        .X0 = 478,
+        .Y0 = 181,
+        .XSize = 1918,
+        .YSize = 1334,
+    },
+    .gamma = {
+        .enable = 1,
+    },
+    .sensorDelay = {
+        .delay = 3,
+    },
+    .luxRef = {
+        .HL_LuxRef = 1000,
+        .HL_Expo1 = 5000,
+        .HL_Lum1 = 20,
+        .HL_Expo2 = 30000,
+        .HL_Lum2 = 100,
+        .LL_LuxRef = 250,
+        .LL_Expo1 = 10000,
+        .LL_Lum1 = 10,
+        .LL_Expo2 = 30000,
+        .LL_Lum2 = 30,
+        .calibFactor = 1.0f,
+    },
+};
+
 __attribute__((unused)) static const ISP_IQParamTypeDef* ISP_IQParamCacheInit[] = {
     &ISP_IQParamCacheInit_IMX335,
     &ISP_IQParamCacheInit_VD66GY,

@@ -181,6 +181,19 @@ void _Error_Handler_(void);
 void SystemClock_Config(void);
 void Fuse_Programming(void);
 
+/* IR-CUT filter control (IR board only, PE9 — same pin as the v1.3 board
+ * revision strap after board_hw_init() releases it). Polarity (hardware
+ * verified on the production IR board): LOW = day (color), HIGH = night
+ * (IR). Owned by the camera component (CAM_CMD_IRCUT_SET/GET, claimed in
+ * camera_init on IR boards); never touched on standard boards. */
+#ifndef IR_CUT_A_Pin
+#define IR_CUT_A_Pin GPIO_PIN_9
+#endif
+
+#ifndef IR_CUT_A_GPIO_Port
+#define IR_CUT_A_GPIO_Port GPIOE
+#endif
+
 #ifdef __cplusplus
 }
 #endif

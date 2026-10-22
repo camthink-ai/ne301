@@ -45,6 +45,7 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 /* USER CODE BEGIN Prototypes */
 void MX_TIM3_DeInit(void);
 void TIM_set_duty(uint32_t duty);
+void TIM3_config_ir_period(void); /* IR board only: retune PWM to PSC=0/ARR=199 */
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

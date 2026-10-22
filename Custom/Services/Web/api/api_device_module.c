@@ -8,6 +8,7 @@
 #include "web_api.h"
 #include "device_service.h"
 #include "debug.h"
+#include "board_hw.h"
 #include "cJSON.h"
 #include "drtc.h"
 #include <string.h>
@@ -396,7 +397,6 @@ aicam_result_t device_image_config_handler(http_handler_context_t *ctx) {
         cJSON_AddBoolToObject(response_json, "vertical_flip", camera_config.image_config.vertical_flip);
         cJSON_AddNumberToObject(response_json, "aec", camera_config.image_config.aec);
         cJSON_AddNumberToObject(response_json, "isp_mode", camera_config.image_config.isp_mode);
-        cJSON_AddBoolToObject(response_json, "grayscale", camera_config.image_config.grayscale);
         cJSON_AddNumberToObject(response_json, "fast_capture_skip_frames", camera_config.image_config.fast_capture_skip_frames);
         cJSON_AddNumberToObject(response_json, "fast_capture_resolution", camera_config.image_config.fast_capture_resolution);
         cJSON_AddNumberToObject(response_json, "fast_capture_jpeg_quality", camera_config.image_config.fast_capture_jpeg_quality);
@@ -487,17 +487,25 @@ aicam_result_t device_image_config_handler(http_handler_context_t *ctx) {
         cJSON* isp_mode_item = cJSON_GetObjectItem(request_json, "isp_mode");
         if (isp_mode_item && cJSON_IsNumber(isp_mode_item)) {
             double m = cJSON_GetNumberValue(isp_mode_item);
-            if (m == (double)IMAGE_ISP_MODE_INDOOR || m == (double)IMAGE_ISP_MODE_OUTDOOR || m == (double)IMAGE_ISP_MODE_CUSTOM) {
+            /* Board-variant legal set: standard 0/1/255 (outdoor/indoor/custom);
+             * IR 0/2/3 (day/night/auto). */
+            aicam_bool_t mode_ok;
+            if (board_is_ir() == AICAM_TRUE) {
+                mode_ok = (m == (double)IMAGE_ISP_MODE_DAY || m == (double)IMAGE_ISP_MODE_NIGHT ||
+                           m == (double)IMAGE_ISP_MODE_AUTO) ? AICAM_TRUE : AICAM_FALSE;
+            } else {
+                mode_ok = (m == (double)IMAGE_ISP_MODE_INDOOR || m == (double)IMAGE_ISP_MODE_OUTDOOR ||
+                           m == (double)IMAGE_ISP_MODE_CUSTOM) ? AICAM_TRUE : AICAM_FALSE;
+            }
+            if (mode_ok == AICAM_TRUE) {
                 image_config.isp_mode = (uint32_t)m;
             } else {
                 cJSON_Delete(request_json);
-                return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "isp_mode must be 0 (outdoor), 1 (indoor), or 255 (custom)");
+                return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
+                    (board_is_ir() == AICAM_TRUE)
+                        ? "isp_mode must be 0 (day), 2 (night), or 3 (auto)"
+                        : "isp_mode must be 0 (outdoor), 1 (indoor), or 255 (custom)");
             }
-        }
-
-        cJSON* grayscale_item = cJSON_GetObjectItem(request_json, "grayscale");
-        if (grayscale_item && cJSON_IsBool(grayscale_item)) {
-            image_config.grayscale = cJSON_IsTrue(grayscale_item) ? AICAM_TRUE : AICAM_FALSE;
         }
 
         // Update fast capture skip frames if provided (0-300 to match CAM_CMD_SET_STARTUP_SKIP_FRAMES)
@@ -578,7 +586,6 @@ aicam_result_t device_image_config_handler(http_handler_context_t *ctx) {
         cJSON_AddBoolToObject(response_json, "vertical_flip", image_config.vertical_flip);
         cJSON_AddNumberToObject(response_json, "aec", image_config.aec);
         cJSON_AddNumberToObject(response_json, "isp_mode", image_config.isp_mode);
-        cJSON_AddBoolToObject(response_json, "grayscale", image_config.grayscale);
         cJSON_AddNumberToObject(response_json, "fast_capture_skip_frames", image_config.fast_capture_skip_frames);
         cJSON_AddNumberToObject(response_json, "fast_capture_resolution", image_config.fast_capture_resolution);
         cJSON_AddNumberToObject(response_json, "fast_capture_jpeg_quality", image_config.fast_capture_jpeg_quality);
@@ -926,7 +933,6 @@ aicam_result_t device_camera_config_handler(http_handler_context_t *ctx) {
             cJSON_AddBoolToObject(image_config_json, "vertical_flip", camera_config.image_config.vertical_flip);
             cJSON_AddNumberToObject(image_config_json, "aec", camera_config.image_config.aec);
             cJSON_AddNumberToObject(image_config_json, "isp_mode", camera_config.image_config.isp_mode);
-            cJSON_AddBoolToObject(image_config_json, "grayscale", camera_config.image_config.grayscale);
             cJSON_AddNumberToObject(image_config_json, "fast_capture_skip_frames", camera_config.image_config.fast_capture_skip_frames);
             cJSON_AddNumberToObject(image_config_json, "fast_capture_resolution", camera_config.image_config.fast_capture_resolution);
             cJSON_AddNumberToObject(image_config_json, "fast_capture_jpeg_quality", camera_config.image_config.fast_capture_jpeg_quality);
@@ -1043,12 +1049,6 @@ aicam_result_t device_camera_config_handler(http_handler_context_t *ctx) {
                 }
             }
 
-            cJSON* grayscale_nested = cJSON_GetObjectItem(image_config_item, "grayscale");
-            if (grayscale_nested && cJSON_IsBool(grayscale_nested)) {
-                camera_config.image_config.grayscale =
-                    cJSON_IsTrue(grayscale_nested) ? AICAM_TRUE : AICAM_FALSE;
-            }
-
             cJSON* cap_dis_comm_item = cJSON_GetObjectItem(image_config_item, "capture_disable_comm");
             if (cap_dis_comm_item && cJSON_IsBool(cap_dis_comm_item)) {
                 camera_config.image_config.capture_disable_comm =
@@ -1090,7 +1090,6 @@ aicam_result_t device_camera_config_handler(http_handler_context_t *ctx) {
             cJSON_AddBoolToObject(image_config_response, "vertical_flip", camera_config.image_config.vertical_flip);
             cJSON_AddNumberToObject(image_config_response, "aec", camera_config.image_config.aec);
             cJSON_AddNumberToObject(image_config_response, "isp_mode", camera_config.image_config.isp_mode);
-            cJSON_AddBoolToObject(image_config_response, "grayscale", camera_config.image_config.grayscale);
             cJSON_AddNumberToObject(image_config_response, "fast_capture_skip_frames", camera_config.image_config.fast_capture_skip_frames);
             cJSON_AddNumberToObject(image_config_response, "fast_capture_resolution", camera_config.image_config.fast_capture_resolution);
             cJSON_AddNumberToObject(image_config_response, "fast_capture_jpeg_quality", camera_config.image_config.fast_capture_jpeg_quality);
@@ -2234,12 +2233,303 @@ aicam_result_t device_storage_format_handler(http_handler_context_t *ctx) {
     return api_response_success(ctx, json, "Flash formatted");
 }
 
+/* ==================== Day/Night (IR board) ==================== */
+
+static const char* dn_mode_string(uint32_t mode)
+{
+    switch (mode) {
+        case IMAGE_ISP_MODE_DAY:   return "day";
+        case IMAGE_ISP_MODE_NIGHT: return "night";
+        case IMAGE_ISP_MODE_AUTO:  return "auto";
+        default: return "unknown";
+    }
+}
+
+static const char* dn_source_string(day_night_source_t src)
+{
+    switch (src) {
+        case DAY_NIGHT_SOURCE_TIME:         return "time";
+        case DAY_NIGHT_SOURCE_LIGHT_SENSOR: return "light_sensor";
+        case DAY_NIGHT_SOURCE_ISP_STATS:    return "isp_stats";
+        default: return "unknown";
+    }
+}
+
+static int dn_parse_mode(const char *s, uint32_t *out)
+{
+    if (!s || !out) return 0;
+    if (strcmp(s, "day") == 0)   { *out = IMAGE_ISP_MODE_DAY; return 1; }
+    if (strcmp(s, "night") == 0) { *out = IMAGE_ISP_MODE_NIGHT; return 1; }
+    if (strcmp(s, "auto") == 0)  { *out = IMAGE_ISP_MODE_AUTO; return 1; }
+    return 0;
+}
+
+static int dn_parse_source(const char *s, day_night_source_t *out)
+{
+    if (!s || !out) return 0;
+    if (strcmp(s, "time") == 0) { *out = DAY_NIGHT_SOURCE_TIME; return 1; }
+    if (strcmp(s, "light_sensor") == 0) { *out = DAY_NIGHT_SOURCE_LIGHT_SENSOR; return 1; }
+    if (strcmp(s, "isp_stats") == 0) { *out = DAY_NIGHT_SOURCE_ISP_STATS; return 1; }
+    return 0;
+}
+
+aicam_result_t device_day_night_config_handler(http_handler_context_t *ctx) {
+    if (!ctx) return AICAM_ERROR_INVALID_PARAM;
+
+    if (!is_device_service_running()) {
+        return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE, "Device service is not running");
+    }
+
+    if (web_api_verify_method(ctx, "GET")) {
+        day_night_config_t cfg;
+        if (device_service_day_night_get_config(&cfg) != AICAM_OK) {
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to get day/night configuration");
+        }
+        day_night_status_t st;
+        (void)device_service_day_night_get_status(&st);
+
+        cJSON *resp = cJSON_CreateObject();
+        cJSON_AddStringToObject(resp, "mode", dn_mode_string(st.mode));
+        cJSON_AddStringToObject(resp, "auto_source", dn_source_string(cfg.auto_source));
+
+        cJSON *sched = cJSON_CreateObject();
+        cJSON_AddNumberToObject(sched, "start_hour", cfg.time_start_hour);
+        cJSON_AddNumberToObject(sched, "start_minute", cfg.time_start_minute);
+        cJSON_AddNumberToObject(sched, "end_hour", cfg.time_end_hour);
+        cJSON_AddNumberToObject(sched, "end_minute", cfg.time_end_minute);
+        cJSON_AddItemToObject(resp, "custom_schedule", sched);
+
+        cJSON *ls = cJSON_CreateObject();
+        cJSON_AddNumberToObject(ls, "night_threshold", cfg.light_sensor_night_threshold);
+        cJSON_AddNumberToObject(ls, "day_threshold", cfg.light_sensor_day_threshold);
+        cJSON_AddItemToObject(resp, "light_sensor", ls);
+
+        cJSON *isp = cJSON_CreateObject();
+        cJSON_AddNumberToObject(isp, "night_enter_lux", cfg.isp_night_enter_lux);
+        cJSON_AddNumberToObject(isp, "day_enter_lux", cfg.isp_day_enter_lux);
+        cJSON_AddNumberToObject(isp, "night_enter_exposure_us", cfg.isp_night_enter_exposure_us);
+        cJSON_AddNumberToObject(isp, "night_enter_gain_mdb", cfg.isp_night_enter_gain_mdb);
+        cJSON_AddNumberToObject(isp, "night_enter_avgl", cfg.isp_night_enter_avgl);
+        cJSON_AddNumberToObject(isp, "day_enter_exposure_us", cfg.isp_day_enter_exposure_us);
+        cJSON_AddNumberToObject(isp, "day_enter_gain_mdb", cfg.isp_day_enter_gain_mdb);
+        cJSON_AddNumberToObject(isp, "day_enter_avgl", cfg.isp_day_enter_avgl);
+        cJSON_AddNumberToObject(isp, "ema_alpha_num", cfg.isp_ema_alpha_num);
+        cJSON_AddNumberToObject(isp, "ema_alpha_den", cfg.isp_ema_alpha_den);
+        cJSON_AddItemToObject(resp, "isp_stats", isp);
+
+        cJSON_AddNumberToObject(resp, "ir_brightness", cfg.ir_brightness);
+
+        char *json_string = cJSON_Print(resp);
+        cJSON_Delete(resp);
+        if (!json_string) {
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
+        }
+        return api_response_success(ctx, json_string, "Day/Night configuration retrieved successfully");
+    }
+
+    if (web_api_verify_method(ctx, "POST")) {
+        /* Day/night switching is an IR-board feature; standard boards get a
+         * clear error (device_service also rejects, this gives a better msg). */
+        if (board_is_ir() != AICAM_TRUE) {
+            return api_response_error(ctx, API_ERROR_FORBIDDEN, "Day/night switching is not supported on this board");
+        }
+
+        cJSON *req = web_api_parse_body(ctx);
+        if (!req) {
+            return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid JSON request body");
+        }
+
+        day_night_config_t cfg;
+        if (device_service_day_night_get_config(&cfg) != AICAM_OK) {
+            cJSON_Delete(req);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to get current day/night configuration");
+        }
+
+        /* mode change (isp_mode) — applied in real time */
+        cJSON *mode_item = cJSON_GetObjectItem(req, "mode");
+        uint32_t new_mode = IMAGE_ISP_MODE_AUTO;
+        int mode_changed = 0;
+        if (mode_item && cJSON_IsString(mode_item)) {
+            if (!dn_parse_mode(cJSON_GetStringValue(mode_item), &new_mode)) {
+                cJSON_Delete(req);
+                return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "mode must be day/night/auto");
+            }
+            mode_changed = 1;
+        }
+
+        /* auto_source */
+        cJSON *src_item = cJSON_GetObjectItem(req, "auto_source");
+        if (src_item && cJSON_IsString(src_item)) {
+            day_night_source_t s;
+            if (!dn_parse_source(cJSON_GetStringValue(src_item), &s)) {
+                cJSON_Delete(req);
+                return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "auto_source must be time/light_sensor/isp_stats");
+            }
+            cfg.auto_source = s;
+        }
+
+        /* custom schedule */
+        cJSON *sched = cJSON_GetObjectItem(req, "custom_schedule");
+        if (sched && cJSON_IsObject(sched)) {
+            cJSON *sh = cJSON_GetObjectItem(sched, "start_hour");
+            cJSON *sm = cJSON_GetObjectItem(sched, "start_minute");
+            cJSON *eh = cJSON_GetObjectItem(sched, "end_hour");
+            cJSON *em = cJSON_GetObjectItem(sched, "end_minute");
+            if (sh && cJSON_IsNumber(sh)) {
+                double v = cJSON_GetNumberValue(sh);
+                if (v >= 0 && v <= 23) cfg.time_start_hour = (uint32_t)v;
+            }
+            if (sm && cJSON_IsNumber(sm)) {
+                double v = cJSON_GetNumberValue(sm);
+                if (v >= 0 && v <= 59) cfg.time_start_minute = (uint32_t)v;
+            }
+            if (eh && cJSON_IsNumber(eh)) {
+                double v = cJSON_GetNumberValue(eh);
+                if (v >= 0 && v <= 23) cfg.time_end_hour = (uint32_t)v;
+            }
+            if (em && cJSON_IsNumber(em)) {
+                double v = cJSON_GetNumberValue(em);
+                if (v >= 0 && v <= 59) cfg.time_end_minute = (uint32_t)v;
+            }
+        }
+
+        /* light sensor thresholds */
+        cJSON *ls = cJSON_GetObjectItem(req, "light_sensor");
+        if (ls && cJSON_IsObject(ls)) {
+            cJSON *n = cJSON_GetObjectItem(ls, "night_threshold");
+            cJSON *d = cJSON_GetObjectItem(ls, "day_threshold");
+            if (n && cJSON_IsNumber(n)) {
+                double v = cJSON_GetNumberValue(n);
+                if (v >= 0 && v <= 100) cfg.light_sensor_night_threshold = (uint8_t)v;
+            }
+            if (d && cJSON_IsNumber(d)) {
+                double v = cJSON_GetNumberValue(d);
+                if (v >= 0 && v <= 100) cfg.light_sensor_day_threshold = (uint8_t)v;
+            }
+        }
+
+        /* isp stats thresholds */
+        cJSON *isp = cJSON_GetObjectItem(req, "isp_stats");
+        if (isp && cJSON_IsObject(isp)) {
+            cJSON *it;
+            if ((it = cJSON_GetObjectItem(isp, "night_enter_lux")) && cJSON_IsNumber(it)) cfg.isp_night_enter_lux = (uint32_t)cJSON_GetNumberValue(it);
+            if ((it = cJSON_GetObjectItem(isp, "day_enter_lux")) && cJSON_IsNumber(it)) cfg.isp_day_enter_lux = (uint32_t)cJSON_GetNumberValue(it);
+            if ((it = cJSON_GetObjectItem(isp, "night_enter_exposure_us")) && cJSON_IsNumber(it)) cfg.isp_night_enter_exposure_us = (uint32_t)cJSON_GetNumberValue(it);
+            if ((it = cJSON_GetObjectItem(isp, "night_enter_gain_mdb")) && cJSON_IsNumber(it)) cfg.isp_night_enter_gain_mdb = (uint32_t)cJSON_GetNumberValue(it);
+            if ((it = cJSON_GetObjectItem(isp, "night_enter_avgl")) && cJSON_IsNumber(it)) cfg.isp_night_enter_avgl = (uint8_t)cJSON_GetNumberValue(it);
+            if ((it = cJSON_GetObjectItem(isp, "day_enter_exposure_us")) && cJSON_IsNumber(it)) cfg.isp_day_enter_exposure_us = (uint32_t)cJSON_GetNumberValue(it);
+            if ((it = cJSON_GetObjectItem(isp, "day_enter_gain_mdb")) && cJSON_IsNumber(it)) cfg.isp_day_enter_gain_mdb = (uint32_t)cJSON_GetNumberValue(it);
+            if ((it = cJSON_GetObjectItem(isp, "day_enter_avgl")) && cJSON_IsNumber(it)) cfg.isp_day_enter_avgl = (uint8_t)cJSON_GetNumberValue(it);
+            if ((it = cJSON_GetObjectItem(isp, "ema_alpha_num")) && cJSON_IsNumber(it)) cfg.isp_ema_alpha_num = (uint8_t)cJSON_GetNumberValue(it);
+            if ((it = cJSON_GetObjectItem(isp, "ema_alpha_den")) && cJSON_IsNumber(it)) cfg.isp_ema_alpha_den = (uint8_t)cJSON_GetNumberValue(it);
+        }
+
+        /* ir brightness */
+        cJSON *ir = cJSON_GetObjectItem(req, "ir_brightness");
+        if (ir && cJSON_IsNumber(ir)) {
+            double v = cJSON_GetNumberValue(ir);
+            if (v < 0 || v > 100) {
+                cJSON_Delete(req);
+                return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "ir_brightness must be 0-100");
+            }
+            cfg.ir_brightness = (uint8_t)v;
+        }
+
+        cJSON_Delete(req);
+
+        if (device_service_day_night_set_config(&cfg) != AICAM_OK) {
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to set day/night configuration");
+        }
+        if (mode_changed) {
+            if (device_service_day_night_set_mode(new_mode) != AICAM_OK) {
+                return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to apply day/night mode");
+            }
+        }
+
+        cJSON *resp = cJSON_CreateObject();
+        cJSON_AddStringToObject(resp, "message", "Day/Night configuration updated successfully");
+        char *json_string = cJSON_Print(resp);
+        cJSON_Delete(resp);
+        if (!json_string) {
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
+        }
+        return api_response_success(ctx, json_string, "Day/Night configuration updated successfully");
+    }
+
+    return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only GET and POST methods are allowed");
+}
+
+aicam_result_t device_day_night_status_handler(http_handler_context_t *ctx) {
+    if (!ctx) return AICAM_ERROR_INVALID_PARAM;
+
+    if (!web_api_verify_method(ctx, "GET")) {
+        return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only GET method is allowed");
+    }
+    if (!is_device_service_running()) {
+        return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE, "Device service is not running");
+    }
+
+    day_night_status_t st;
+    if (device_service_day_night_get_status(&st) != AICAM_OK) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to get day/night status");
+    }
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "configured", st.configured);
+    cJSON_AddStringToObject(resp, "mode", dn_mode_string(st.mode));
+    cJSON_AddStringToObject(resp, "control", st.control == DAY_NIGHT_CONTROL_AUTO ? "auto" : "manual");
+    cJSON_AddStringToObject(resp, "source", dn_source_string(st.source));
+    cJSON_AddStringToObject(resp, "effective_mode", dn_mode_string(st.effective_mode));
+    cJSON_AddBoolToObject(resp, "ir_on", st.ir_on);
+    cJSON_AddNumberToObject(resp, "ir_brightness", st.ir_brightness);
+    cJSON_AddNumberToObject(resp, "ircut_mode", st.ircut_mode);
+
+    cJSON *metrics = cJSON_CreateObject();
+    cJSON_AddBoolToObject(metrics, "valid", st.metrics_valid);
+    cJSON_AddNumberToObject(metrics, "lux", st.lux);
+    cJSON_AddNumberToObject(metrics, "lux_ema", st.lux_ema);
+    cJSON_AddNumberToObject(metrics, "avg_l", st.avg_l);
+    cJSON_AddNumberToObject(metrics, "avg_l_ema", st.avg_l_ema);
+    cJSON_AddNumberToObject(metrics, "exposure_us", st.exposure_us);
+    cJSON_AddNumberToObject(metrics, "gain_mdb", st.gain_mdb);
+    cJSON_AddNumberToObject(metrics, "light_sensor_percent", st.light_sensor_percent);
+    cJSON_AddItemToObject(resp, "metrics", metrics);
+
+    char *json_string = cJSON_Print(resp);
+    cJSON_Delete(resp);
+    if (!json_string) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
+    }
+    return api_response_success(ctx, json_string, "Day/Night status retrieved successfully");
+}
+
 /* ==================== Route Registration ==================== */
 
 /**
  * @brief Device API module routes
  */
 static const api_route_t device_module_routes[] = {
+    {
+        .method = "GET",
+        .path = API_PATH_PREFIX "/device/day-night/config",
+        .handler = device_day_night_config_handler,
+        .require_auth = AICAM_TRUE,
+        .user_data = NULL
+    },
+    {
+        .method = "POST",
+        .path = API_PATH_PREFIX "/device/day-night/config",
+        .handler = device_day_night_config_handler,
+        .require_auth = AICAM_TRUE,
+        .user_data = NULL
+    },
+    {
+        .method = "GET",
+        .path = API_PATH_PREFIX "/device/day-night/status",
+        .handler = device_day_night_status_handler,
+        .require_auth = AICAM_TRUE,
+        .user_data = NULL
+    },
     {
         .method = "GET",
         .path = API_PATH_PREFIX "/device/info",
