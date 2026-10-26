@@ -1823,14 +1823,17 @@ int sl_net_update_strorage_scan_result(uint32_t timeout_ms)
         if (wifi_storage_scan_result.scan_info == NULL) return SL_STATUS_ALLOCATION_FAILED;
     }
 
+    osMutexAcquire(sl_net_mutex, osWaitForever);
     ap_state = sl_net_ap_netif_state();
     client_state = sl_net_client_netif_state();
-    if (client_state == NETIF_STATE_DEINIT) return SL_STATUS_INVALID_STATE;
-
+    if (client_state == NETIF_STATE_DEINIT) {
+        osMutexRelease(sl_net_mutex);
+        return SL_STATUS_INVALID_STATE;
+    }
+    
     sta_link_up = (client_state == NETIF_STATE_UP);
     ap_link_up = (ap_state == NETIF_STATE_UP);
-
-    osMutexAcquire(sl_net_mutex, osWaitForever);
+    
     if (sta_link_up || ap_link_up) {
         sl_net_pause_links_for_scan(sta_link_up, ap_link_up);
     }

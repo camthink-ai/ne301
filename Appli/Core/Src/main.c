@@ -35,7 +35,6 @@
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
-#include "usb_otg.h"
 #include "venc.h"
 #include "gpio.h"
 #include "npu_cache.h"
@@ -632,6 +631,10 @@ static void SystemIsolation_Config(void)
     HAL_GPIO_ConfigPinAttributes(GPIOG,GPIO_PIN_12,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
     HAL_GPIO_ConfigPinAttributes(GPIOG,GPIO_PIN_15,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
     HAL_GPIO_ConfigPinAttributes(GPIOH,GPIO_PIN_2,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
+    /* IR-CUT control pin (PE9, IR boards): security attribute only — the
+     * actual GPIO mode is left untouched here (strap sampling owns PE9
+     * first; the misc io device claims it on IR boards). */
+    HAL_GPIO_ConfigPinAttributes(IR_CUT_A_GPIO_Port, IR_CUT_A_Pin, GPIO_PIN_SEC|GPIO_PIN_NPRIV);
 
 /* USER CODE BEGIN RIF_Init 1 */
 

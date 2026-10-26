@@ -26,6 +26,8 @@
 #include "ll_aton_reloc_network.h"
 
 #include "spe_movenet_pp_if.h"
+#include "pp_spe_subcell.h"
+#include "debug.h"
 
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
@@ -38,6 +40,7 @@ typedef struct {
     char **kp_names;                        /* per-instance keypoint names */
     uint8_t *keypoint_connections;         /* per-instance keypoint connections */
     uint8_t num_connections;                /* per-instance number of connections */
+    uint8_t subcell_refine;                 /* refine keypoints within their heatmap cell */
 } pp_spe_movenet_ui_params_t;
 
 /*
@@ -46,6 +49,7 @@ Example JSON configuration:
   "num_keypoints": 17,
   "heatmap_width": 64,
   "heatmap_height": 64,
+  "subcell_refine": false,
   "keypoint_names": [
     "nose", "left_eye", "right_eye", "left_ear", "right_ear",
     "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
@@ -110,6 +114,9 @@ static int32_t init(const char *json_str, void **pp_params, void *nn_inst)
                     params->heatmap_height = (int32_t)hm_h->valuedouble;
                 }
 
+                cJSON *subcell = cJSON_GetObjectItemCaseSensitive(pp, "subcell_refine");
+                pp_ctx->subcell_refine = cJSON_IsTrue(subcell) ? 1 : 0;
+
                 // Parse keypoint names
                 cJSON *kp_names = cJSON_GetObjectItemCaseSensitive(pp, "keypoint_names");
                 if (cJSON_IsArray(kp_names)) {
@@ -155,6 +162,7 @@ static int32_t init(const char *json_str, void **pp_params, void *nn_inst)
     assert(pp_ctx->spe_pp_buffer != NULL && pp_ctx->spe_keypoints_buffer != NULL);
     
     spe_movenet_pp_reset(params);
+    LOG_DRV_INFO("pp_spe_movenet_ui: subcell_refine %s\r\n", pp_ctx->subcell_refine ? "on" : "off");
     *pp_params = (void *)pp_ctx;
     return AI_SPE_POSTPROCESS_ERROR_NO;
 }
@@ -238,6 +246,10 @@ static int32_t run(void *pInput[], uint32_t nb_input, void *pResult, void *pp_pa
     // Use int8 processing function for int8 models
     error = spe_movenet_pp_process_int8(&pp_input, &spe_pp_out, params);
     if (error == AI_SPE_POSTPROCESS_ERROR_NO) {
+        if (pp->subcell_refine) {
+            pp_spe_subcell_refine_int8((const int8_t *)pInput[0], params->heatmap_width, params->heatmap_height,
+                                       params->nb_keypoints, spe_pp_out.pOutBuff);
+        }
         spe_pp_out_t_to_pp_result_t(&spe_pp_out, (pp_result_t *)pResult, pp);
     }
     return error;

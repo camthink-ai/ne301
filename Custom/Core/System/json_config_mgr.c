@@ -135,7 +135,6 @@
              .vertical_flip = AICAM_FALSE,
              .aec = 1,  // Auto exposure enabled
              .isp_mode = IMAGE_ISP_MODE_OUTDOOR,
-             .grayscale = IMAGE_GRAYSCALE_OFF,
              .startup_skip_frames = 10,  // Default frames to skip for camera stabilization
              .fast_capture_skip_frames = 10,
              .fast_capture_resolution = 0,   // 0: 1280x720
@@ -154,6 +153,26 @@
              .auto_trigger_enabled = AICAM_TRUE,
              .light_threshold = 30,
              .fill_light_while_streaming = AICAM_FALSE
+         },
+         .day_night_config = {
+             .auto_source = DAY_NIGHT_SOURCE_ISP_STATS,
+             .time_start_hour = 18,
+             .time_start_minute = 0,
+             .time_end_hour = 6,
+             .time_end_minute = 0,
+             .light_sensor_night_threshold = 20,
+             .light_sensor_day_threshold = 40,
+             .isp_night_enter_lux = 50,
+             .isp_day_enter_lux = 150,
+             .isp_night_enter_exposure_us = 20000,
+             .isp_night_enter_gain_mdb = 6000,
+             .isp_night_enter_avgl = 70,
+             .isp_day_enter_exposure_us = 8000,
+             .isp_day_enter_gain_mdb = 3000,
+             .isp_day_enter_avgl = 80,
+             .isp_ema_alpha_num = 1,
+             .isp_ema_alpha_den = 4,
+             .ir_brightness = 50
          }
      },
      
@@ -289,7 +308,9 @@
         .telemetry_enabled = AICAM_FALSE,
         .telemetry_topic = "aicam/data/telemetry",
         .telemetry_qos = 0,
-        .telemetry_format = MQTT_TELEMETRY_FORMAT_JSON
+        .telemetry_format = MQTT_TELEMETRY_FORMAT_JSON,
+        .telemetry_batch_ms = 0,
+        .telemetry_batch_bytes = MQTT_TELEMETRY_BATCH_BYTES_DEFAULT
     }
  };
 
@@ -1122,11 +1143,23 @@
         return AICAM_ERROR_INVALID_PARAM;
     }
 
-    if (image_config->isp_mode != IMAGE_ISP_MODE_INDOOR &&
-        image_config->isp_mode != IMAGE_ISP_MODE_OUTDOOR &&
-        image_config->isp_mode != IMAGE_ISP_MODE_CUSTOM)
-    {
-        return AICAM_ERROR_INVALID_PARAM;
+    /* isp_mode legal set is board-variant conditional:
+     * standard board: OUTDOOR(0)/INDOOR(1)/CUSTOM(255) — unchanged semantics;
+     * IR board: DAY(0, alias of OUTDOOR)/NIGHT(2)/AUTO(3). */
+    if (board_is_ir() == AICAM_TRUE) {
+        if (image_config->isp_mode != IMAGE_ISP_MODE_DAY &&
+            image_config->isp_mode != IMAGE_ISP_MODE_NIGHT &&
+            image_config->isp_mode != IMAGE_ISP_MODE_AUTO)
+        {
+            return AICAM_ERROR_INVALID_PARAM;
+        }
+    } else {
+        if (image_config->isp_mode != IMAGE_ISP_MODE_INDOOR &&
+            image_config->isp_mode != IMAGE_ISP_MODE_OUTDOOR &&
+            image_config->isp_mode != IMAGE_ISP_MODE_CUSTOM)
+        {
+            return AICAM_ERROR_INVALID_PARAM;
+        }
     }
     
     if(image_config != &g_json_config_ctx.current_config.device_service.image_config)
@@ -1179,6 +1212,57 @@
                    light_config->connected, light_config->mode, light_config->start_hour, light_config->start_minute, light_config->end_hour, light_config->end_minute, light_config->brightness_level, light_config->auto_trigger_enabled, light_config->light_threshold, light_config->fill_light_while_streaming);
      return AICAM_OK;
  }
+
+/*=================== Day/Night Configuration API (IR board) ====================*/
+aicam_result_t json_config_get_day_night_config(day_night_config_t *day_night_config)
+{
+    if (!day_night_config)
+    {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if (!g_json_config_ctx.initialized)
+    {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    *day_night_config = g_json_config_ctx.current_config.device_service.day_night_config;
+    return AICAM_OK;
+}
+
+aicam_result_t json_config_set_day_night_config(const day_night_config_t *day_night_config)
+{
+    if (!day_night_config)
+    {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if (!g_json_config_ctx.initialized)
+    {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    if (day_night_config->auto_source > DAY_NIGHT_SOURCE_ISP_STATS)
+    {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if (day_night_config->ir_brightness > 100u)
+    {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    if (day_night_config != &g_json_config_ctx.current_config.device_service.day_night_config)
+    {
+        memcpy(&g_json_config_ctx.current_config.device_service.day_night_config, day_night_config, sizeof(day_night_config_t));
+    }
+
+    // update to NVS
+    aicam_result_t result = json_config_save_day_night_config_to_nvs(day_night_config);
+    if (result != AICAM_OK) {
+        LOG_CORE_ERROR("Failed to save day/night configuration to NVS");
+        return result;
+    }
+
+    LOG_CORE_INFO("Day/night configuration updated: source=%u, ir_brightness=%u",
+                  day_night_config->auto_source, day_night_config->ir_brightness);
+    return AICAM_OK;
+}
 
 /*=================== ISP Configuration API Implementation ====================*/
 aicam_result_t json_config_get_isp_config(isp_config_t *isp_config)
@@ -1497,6 +1581,12 @@ aicam_result_t json_config_config_to_isp_param(isp_config_t *isp_config, ISP_IQP
 
      *mqtt_service_config = g_json_config_ctx.current_config.mqtt_service;
      return AICAM_OK;
+ }
+
+ void json_config_get_mqtt_client_id(char *client_id, size_t size)
+ {
+     strncpy(client_id, g_json_config_ctx.current_config.mqtt_service.base_config.client_id, size - 1);
+     client_id[size - 1] = '\0';
  }
 
  aicam_result_t json_config_set_mqtt_service_config(const mqtt_service_config_t *mqtt_service_config)

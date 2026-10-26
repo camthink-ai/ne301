@@ -74,6 +74,7 @@ typedef enum {
     AICAM_ERROR_ALREADY_INITIALIZED = -42,// Already initialized
     AICAM_ERROR_NOT_SENT_AGAIN = -43,// Not sent again
     AICAM_ERROR_REACH_MAX_ATTEMPTS = -44, // Reach max attempts
+    AICAM_ERROR_INVALID_STATE = -45,// State mismatch - operation not applicable
     
     // Layer-specific error codes
     AICAM_ERROR_HAL_INIT = -100,     // HAL initialization failed

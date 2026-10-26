@@ -10,9 +10,32 @@
 #include "isp_param_conf.h"
 #include "isp_api.h"
 #include "isp_core.h"
+#include "json_config_mgr.h"    /* IMAGE_ISP_MODE_* for camera_fill_isp_iq_for_mode */
+#include "board_hw.h"           /* board_is_ir() for the IR-CUT filter */
+#include "main.h"               /* IR_CUT_A_* pin defines */
 
 // Constant definitions
 #define CAMERA_TASK_DELAY_MS            0
+/* IR-CUT filter state owned by this component (IR boards): 0 = day (color),
+ * 1 = night (IR), 0xFF = unavailable (standard board / not initialized).
+ * Polarity is an implementation detail: LOW = day, HIGH = night (hardware
+ * verified).
+ *
+ * The filter driver is edge-driven and the lens position is unknown after
+ * power-up. The pin idles HIGH (board strap pull-up + the HIGH claim in
+ * camera_init), so cameraProcess performs a single deterministic homing
+ * edge — LOW before CAM_Init — and keeps it: the LOW level persists through
+ * the whole sensor bring-up (settle window), leaving the system in the DAY
+ * position by default. CAM_CMD_IRCUT_SET then only writes on an actual
+ * level change; a same-level command is a no-op. */
+static uint8_t s_ircut_state = 0xFF;          /* commanded state (0/1) or 0xFF */
+
+/* Level write for a commanded state (LOW = day, HIGH = night). */
+static void camera_ircut_write(uint8_t night)
+{
+    HAL_GPIO_WritePin(IR_CUT_A_GPIO_Port, IR_CUT_A_Pin,
+                      night ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
 #define CAMERA_ISP_SEM_TIMEOUT_MS       50
 #define CAMERA_BUFFER_TIMEOUT_MS        50
 #define CAMERA_MEMORY_ALIGNMENT         32
@@ -47,388 +70,6 @@ static const char *sensor_names[] = {
     "CMW_OS04C10",
 };
 
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-#ifdef ISP_ENABLE_UVC
-#include "usbx_conf.h"
-#endif
-
-extern CMW_Sensor_if_t Camera_Drv;
-extern DCMIPP_HandleTypeDef hcamera_dcmipp;
-ISP_HandleTypeDef hIsp;
-static uint8_t isp_is_init = 0, isp_is_start = 0;
-
-/**
-* @brief  Get the sensor info
-* @param  camera_instance: camera instance
-* @param  info: sensor info
-* @retval Operation result
-*/
-ISP_StatusTypeDef GetSensorInfo(uint32_t camera_instance, ISP_SensorInfoTypeDef *info)
-{
-    UNUSED(camera_instance);
-
-    if (CMW_CAMERA_GetSensorInfo(info) != CMW_ERROR_NONE)
-        return ISP_ERR_SENSORINFO;
-
-    // info->width = g_camera.pipe1_param.width;
-    // info->height = g_camera.pipe1_param.height;
-    return ISP_OK;
-}
-
-/**
-* @brief  Set the sensor gain
-* @param  camera_instance: camera instance
-* @param  gain: sensor gain to be applied
-* @retval Operation result
-*/
-ISP_StatusTypeDef SetSensorGain(uint32_t camera_instance, int32_t gain)
-{
-    UNUSED(camera_instance);
-
-    if (CMW_CAMERA_SetGain(gain) != CMW_ERROR_NONE)
-        return ISP_ERR_SENSORGAIN;
-
-    return ISP_OK;
-}
-
-/**
-* @brief  Get the sensor gain
-* @param  camera_instance: camera instance
-* @param  gain: current sensor gain
-* @retval Operation result
-*/
-ISP_StatusTypeDef GetSensorGain(uint32_t camera_instance, int32_t *gain)
-{
-    UNUSED(camera_instance);
-
-    if (CMW_CAMERA_GetGain(gain) != CMW_ERROR_NONE)
-        return ISP_ERR_SENSORGAIN;
-
-    return ISP_OK;
-}
-
-/**
-* @brief  Set the sensor exposure
-* @param  Instance: camera instance
-* @param  Gain: sensor exposure to be applied
-* @retval Operation result
-*/
-ISP_StatusTypeDef SetSensorExposure(uint32_t camera_instance, int32_t exposure)
-{
-    UNUSED(camera_instance);
-
-    if (CMW_CAMERA_SetExposure(exposure) != CMW_ERROR_NONE)
-        return ISP_ERR_SENSOREXPOSURE;
-
-    return ISP_OK;
-}
-
-/**
-* @brief  Get the sensor exposure
-* @param  camera_instance: camera instance
-* @param  gain: current sensor gain
-* @retval Operation result
-*/
-ISP_StatusTypeDef GetSensorExposure(uint32_t camera_instance, int32_t *exposure)
-{
-    UNUSED(camera_instance);
-
-    if (CMW_CAMERA_GetExposure(exposure) != CMW_ERROR_NONE)
-        return ISP_ERR_SENSOREXPOSURE;
-
-    return ISP_OK;
-}
-
-/**
-  * @brief  Set the sensor test pattern
-  * @param  camera_instance: camera instance
-  * @param  mode: sensor test pattern to be applied
-  * @retval Operation result
-  */
-ISP_StatusTypeDef SetSensorTestPattern(uint32_t camera_instance, int32_t mode)
-{
-    UNUSED(camera_instance);
-
-    if (CMW_CAMERA_SetTestPattern(mode) != CMW_ERROR_NONE)
-        return ISP_ERR_EINVAL;
-
-    return ISP_OK;
-}
-
-/**
-* @brief  Helper for ISP to start camera preview
-* @param  hDcmipp Pointer to the dcmipp device
-* @retval ISP status operation
-*/
-ISP_StatusTypeDef Camera_StartPreview(void *pDcmipp)
-{
-    UNUSED(pDcmipp);
-    // printf("Camera_StartPreview\r\n");
-    return ISP_OK;
-}   
-
-/**
-* @brief  Helper for ISP to stop camera preview
-* @param  hDcmipp Pointer to the dcmipp device
-* @retval ISP status operation
-*/
-ISP_StatusTypeDef Camera_StopPreview(void *pDcmipp)
-{
-    UNUSED(pDcmipp);
-    // printf("Camera_StopPreview\r\n");
-    return ISP_OK;
-}
-
-#ifdef ISP_ENABLE_UVC
-/* UVC frame buffer for RGB888 -> YUV422 (YUYV) conversion */
-static uint8_t *uvc_frame_buf = NULL;
-static uint32_t uvc_frame_buf_size = 0;
-
-typedef struct {
-    osThreadId_t thread_id;
-    osSemaphoreId_t sem;
-    uint8_t *pipe2_buf;
-    int pipe2_size;
-} uvc_task_ctx_t;
-
-static uvc_task_ctx_t g_uvc_ctx = {0};
-
-/* Clamp helper for conversion */
-static inline uint8_t clamp_u8(int32_t v)
-{
-    if (v < 0) {
-        return 0;
-    }
-    if (v > 255) {
-        return 255;
-    }
-    return (uint8_t)v;
-}
-
-/* Convert a RGB888 frame to YUV422 (YUYV) format.
- * src: RGB888 buffer (3 bytes per pixel)
- * dst: YUYV buffer (4 bytes per 2 pixels)
- * width, height: frame resolution
- */
-static void rgb888_to_yuv422_yuyv(const uint8_t *src, uint8_t *dst, uint32_t width, uint32_t height)
-{
-    const uint32_t pixel_count = width * height;
-    uint32_t i = 0;
-    uint32_t dst_index = 0;
-
-    while (i + 1U < pixel_count) {
-        uint32_t src_index0 = i * 3U;
-        uint32_t src_index1 = (i + 1U) * 3U;
-
-        int32_t r0 = src[src_index0 + 0];
-        int32_t g0 = src[src_index0 + 1];
-        int32_t b0 = src[src_index0 + 2];
-
-        int32_t r1 = src[src_index1 + 0];
-        int32_t g1 = src[src_index1 + 1];
-        int32_t b1 = src[src_index1 + 2];
-
-        /* Fixed-point BT.601 conversion */
-        int32_t y0 = ( 77 * r0 + 150 * g0 +  29 * b0) >> 8;
-        int32_t y1 = ( 77 * r1 + 150 * g1 +  29 * b1) >> 8;
-        int32_t u  = ((-43 * r0 -  85 * g0 + 128 * b0) >> 8) + 128;
-        int32_t v  = ((128 * r0 - 107 * g0 -  21 * b0) >> 8) + 128;
-
-        dst[dst_index + 0] = clamp_u8(y0);
-        dst[dst_index + 1] = clamp_u8(u);
-        dst[dst_index + 2] = clamp_u8(y1);
-        dst[dst_index + 3] = clamp_u8(v);
-
-        dst_index += 4U;
-        i += 2U;
-    }
-
-    /* Handle odd pixel count: duplicate last pixel chroma */
-    if (i < pixel_count) {
-        uint32_t src_index = i * 3U;
-        int32_t r = src[src_index + 0];
-        int32_t g = src[src_index + 1];
-        int32_t b = src[src_index + 2];
-
-        int32_t y = ( 77 * r + 150 * g +  29 * b) >> 8;
-        int32_t u = ((-43 * r -  85 * g + 128 * b) >> 8) + 128;
-        int32_t v = ((128 * r - 107 * g -  21 * b) >> 8) + 128;
-
-        dst[dst_index + 0] = clamp_u8(y);
-        dst[dst_index + 1] = clamp_u8(u);
-        dst[dst_index + 2] = clamp_u8(y);
-        dst[dst_index + 3] = clamp_u8(v);
-    }
-}
-
-static void uvcSendTask(void *argument)
-{
-    (void)argument;
-
-    for (;;) {
-        if (osSemaphoreAcquire(g_uvc_ctx.sem, osWaitForever) != osOK) {
-            continue;
-        }
-
-        uint8_t *pipe2_buf = g_uvc_ctx.pipe2_buf;
-        int buf_size = g_uvc_ctx.pipe2_size;
-
-        if (pipe2_buf == NULL || buf_size <= 0 ||
-            g_camera.pipe2_param.width <= 0 || g_camera.pipe2_param.height <= 0) {
-            g_uvc_ctx.pipe2_buf = NULL;
-            g_uvc_ctx.pipe2_size = 0;
-            continue;
-        }
-
-        uint32_t width = (uint32_t)g_camera.pipe2_param.width;
-        uint32_t height = (uint32_t)g_camera.pipe2_param.height;
-        uint32_t required_size = width * height * 2U; /* YUYV: 2 bytes per pixel */
-
-        if (uvc_frame_buf == NULL || uvc_frame_buf_size < required_size) {
-            if (uvc_frame_buf != NULL) {
-                hal_mem_free(uvc_frame_buf);
-                uvc_frame_buf = NULL;
-                uvc_frame_buf_size = 0;
-            }
-            uvc_frame_buf = hal_mem_alloc_aligned(required_size,
-                                                  CAMERA_MEMORY_ALIGNMENT,
-                                                  MEM_LARGE);
-            if (uvc_frame_buf == NULL) {
-                LOG_DRV_ERROR("UVC frame buffer alloc failed (size=%lu)\r\n",
-                              (unsigned long)required_size);
-                device_ioctl(g_camera.dev, CAM_CMD_RETURN_PIPE2_BUFFER, pipe2_buf, 0);
-                g_uvc_ctx.pipe2_buf = NULL;
-                g_uvc_ctx.pipe2_size = 0;
-                continue;
-            }
-            uvc_frame_buf_size = required_size;
-        }
-
-        rgb888_to_yuv422_yuyv(pipe2_buf, uvc_frame_buf, width, height);
-
-        int uvc_ret = usb_uvc_show_frame(uvc_frame_buf, (int)required_size);
-        if (uvc_ret != 0) {
-            LOG_DRV_DEBUG("usb_uvc_show_frame returned %d\r\n", uvc_ret);
-        }
-
-        device_ioctl(g_camera.dev, CAM_CMD_RETURN_PIPE2_BUFFER, pipe2_buf, 0);
-
-        g_uvc_ctx.pipe2_buf = NULL;
-        g_uvc_ctx.pipe2_size = 0;
-    }
-}
-#endif
-
-static uint8_t *isp_tool_buf = NULL;
-
-/**
-* @brief  Helper for ISP to dump a frame
-* @param  hDcmipp Pointer to the dcmipp device
-* @param  Pipe    Pipe where to perform the dump ('DUMP'(0) or 'ANCILLARY'(2))
-* @param  Config  Dump with the current pipe config, or without downsizing with
-*                 a specific pixel format.
-* @param  pBuffer Pointer to the address of the dumped buffer (output parameter)
-* @param  pMeta   Pointer to buffer meta data (output parameter)
-* @retval ISP status operation
-*/
-ISP_StatusTypeDef Camera_DumpFrame(void *pDcmipp, uint32_t Pipe, ISP_DumpCfgTypeDef Config,
-uint32_t **pBuffer, ISP_DumpFrameMetaTypeDef *pMeta)
-{
-    int ret = 0, try_times = 0, isp_tool_buf_index = 0;
-    uint8_t *fb_buffer = NULL;
-    DCMIPP_HandleTypeDef *pHdcmipp = (DCMIPP_HandleTypeDef*)pDcmipp;
-    /* Check handle validity */
-    if ((pHdcmipp == NULL) || (pBuffer == NULL) || (pMeta == NULL))
-    {
-        return ISP_ERR_EINVAL;
-    }
-
-    // printf("Camera_DumpFrame\r\n");
-    // printf("Pipe: %d\r\n", Pipe);
-    // printf("Config: %d\r\n", Config);
-
-    if (isp_tool_buf == NULL) {
-        isp_tool_buf = hal_mem_alloc_aligned(PIPE1_DEFAULT_WIDTH * PIPE1_DEFAULT_HEIGHT * 3, CAMERA_MEMORY_ALIGNMENT, MEM_LARGE);
-        if (isp_tool_buf == NULL) {
-            return ISP_ERR_DCMIPP_NOMEM;
-        }
-    }
-    
-    if (g_camera.dev == NULL) {
-        return ISP_ERR_STAT_EINVAL;
-    }
-
-    if (g_camera.state.pipe1_state != PIPE_START) {
-        ret = device_ioctl(g_camera.dev, CAM_CMD_SET_PIPE1_START, NULL, 0);
-        if (ret != AICAM_OK) {
-            return ISP_ERR_DCMIPP_STATE;
-        }
-    }
-
-    do {
-        ret = device_ioctl(g_camera.dev, CAM_CMD_GET_PIPE1_BUFFER, (uint8_t *)&fb_buffer, 0);
-        if (ret <= 0) {
-            if (++try_times > 10) {
-                return ISP_ERR_DCMIPP_FRAMESIZE;
-            }
-            osDelay(1);
-        }
-    } while (ret <= 0);
-
-    printf("fb_buffer: %p\r\n", fb_buffer);
-    if (ret > PIPE1_DEFAULT_WIDTH * PIPE1_DEFAULT_HEIGHT * PIPE1_DEFAULT_BPP) {
-        device_ioctl(g_camera.dev, CAM_CMD_RETURN_PIPE1_BUFFER, fb_buffer, 0);
-        return ISP_ERR_DCMIPP_FRAMESIZE;
-    }
-
-    if (PIPE1_DEFAULT_BPP == 4) {
-        // ARGB8888 to RGB888
-        for (int i = 0; i < ret; i += 4) {
-            isp_tool_buf[isp_tool_buf_index++] = fb_buffer[i];
-            isp_tool_buf[isp_tool_buf_index++] = fb_buffer[i + 1];
-            isp_tool_buf[isp_tool_buf_index++] = fb_buffer[i + 2];
-        }
-    } else if (PIPE1_DEFAULT_BPP == 2) {
-        // RGB565 to RGB888
-        uint16_t rgb565 = 0;
-        uint8_t r5 = 0, g6 = 0, b5 = 0;
-        for (int i = 0; i < ret; i += 2) {
-            rgb565 = (fb_buffer[i + 1] << 8) | fb_buffer[i];
-            b5 = (rgb565 >> 11) & 0x1f;
-            g6 = (rgb565 >> 5) & 0x3f;
-            r5 = (rgb565 >> 0) & 0x1f;
-            isp_tool_buf[isp_tool_buf_index++] = (r5 << 3) | (r5 >> 2);
-            isp_tool_buf[isp_tool_buf_index++] = (g6 << 2) | (g6 >> 4);
-            isp_tool_buf[isp_tool_buf_index++] = (b5 << 3) | (b5 >> 2);
-        }
-    } else {
-        memcpy(isp_tool_buf, fb_buffer, ret);
-    }
-    device_ioctl(g_camera.dev, CAM_CMD_RETURN_PIPE1_BUFFER, fb_buffer, 0);
-    *pBuffer = (uint32_t *)isp_tool_buf;
-    pMeta->width = g_camera.pipe1_param.width;
-    pMeta->height = g_camera.pipe1_param.height;
-    pMeta->pitch = g_camera.pipe1_param.width * 3;
-    pMeta->size = pMeta->height * pMeta->pitch;
-    pMeta->format = ISP_FORMAT_RGB888;
-    
-    // printf("Dumped frame meta: width=%d, height=%d, pitch=%d, size=%d, format=%d\r\n",
-        // pMeta->width, pMeta->height, pMeta->pitch, pMeta->size, pMeta->format);
-    return ISP_OK;
-}
-
-ISP_AppliHelpersTypeDef appliHelpers = {
-    .GetSensorInfo = GetSensorInfo,
-    .SetSensorGain = SetSensorGain,
-    .GetSensorGain = GetSensorGain,
-    .SetSensorExposure = SetSensorExposure,
-    .GetSensorExposure = GetSensorExposure,
-    .StartPreview = Camera_StartPreview,
-    .StopPreview = Camera_StopPreview,
-    .DumpFrame = Camera_DumpFrame,
-    .SetSensorTestPattern = SetSensorTestPattern,
-};
-#endif
 
 
 void buffer_reset(pipe_buffer_t *bufs, int nb, camera_dq_t *dq)
@@ -581,45 +222,28 @@ void camera_fill_isp_iq_scene(cam_iq_scene_t scene, ISP_IQParamTypeDef *out_iq)
             out_iq->statAreaStatic.XSize = 2418U;
             out_iq->statAreaStatic.YSize = 1329U;
         }
+    } else if (scene == CAM_IQ_SCENE_NIGHT) {
+        /* IR night profile: only OS04C10 has a tuned profile; other sensors
+           keep their defaults (IR boards ship with OS04C10). */
+        if (sensor == CMW_OS04C10_Sensor) {
+            memcpy(out_iq, &ISP_IQParamCacheInit_OS04C10_NIGHT, sizeof(ISP_IQParamTypeDef));
+        }
     }
 }
 
-#define CAMERA_ISP_COEFF_UNIT   100000000
-#define CAMERA_LUMA_COEFF_R     29900000
-#define CAMERA_LUMA_COEFF_G     58700000
-#define CAMERA_LUMA_COEFF_B     11400000
-
-void camera_apply_grayscale_iq(ISP_IQParamTypeDef *iq, aicam_bool_t grayscale)
+void camera_fill_isp_iq_for_mode(uint32_t isp_mode, ISP_IQParamTypeDef *out_iq)
 {
-    int row;
-
-    if (iq == NULL) {
+    if (!out_iq) {
         return;
     }
-    if (grayscale != AICAM_TRUE) {
-        return;
+    if (isp_mode == IMAGE_ISP_MODE_NIGHT) {
+        camera_fill_isp_iq_scene(CAM_IQ_SCENE_NIGHT, out_iq);
+    } else {
+        /* DAY and AUTO both start on the tuned color profile; AUTO re-applies
+           at runtime. Standard-board modes (outdoor/indoor/custom are handled
+           by their own callers) also fall back to the tuned color base. */
+        camera_fill_isp_iq_scene(CAM_IQ_SCENE_OUTDOOR, out_iq);
     }
-
-    iq->AWBAlgo.enable = 0;
-    iq->colorConvStatic.enable = 1;
-    for (row = 0; row < 3; row++) {
-        iq->colorConvStatic.coeff[row][0] = CAMERA_LUMA_COEFF_R;
-        iq->colorConvStatic.coeff[row][1] = CAMERA_LUMA_COEFF_G;
-        iq->colorConvStatic.coeff[row][2] = CAMERA_LUMA_COEFF_B;
-    }
-    if (iq->ispGainStatic.enable) {
-        iq->ispGainStatic.ispGainR = CAMERA_ISP_COEFF_UNIT;
-        iq->ispGainStatic.ispGainG = CAMERA_ISP_COEFF_UNIT;
-        iq->ispGainStatic.ispGainB = CAMERA_ISP_COEFF_UNIT;
-    }
-}
-
-void camera_configure_pipe1_grayscale(pipe_params_t *pipe1, aicam_bool_t grayscale)
-{
-    (void)pipe1;
-    (void)grayscale;
-    /* Grayscale is applied via ISP (camera_apply_grayscale_iq); keep PIPE1 RGB565 so
-     * video pipeline / encoder stride (bpp=2) stays consistent. */
 }
 
 int camera_apply_isp_iq_runtime(ISP_HandleTypeDef *hIsp, ISP_IQParamTypeDef *iq)
@@ -799,7 +423,7 @@ static int DCMIPP_Pipe1Init(camera_t *camera)
     dcmipp_conf.output_bpp = camera->pipe1_param.bpp;
     dcmipp_conf.mode = CMW_Aspect_ratio_manual_roi;
     dcmipp_conf.enable_swap = 0;
-    dcmipp_conf.enable_gamma_conversion = 0;
+    dcmipp_conf.enable_gamma_conversion = -1;
     CAM_InitCropConfig(&dcmipp_conf.manual_conf, camera);
     ret = CMW_CAMERA_SetPipeConfig(DCMIPP_PIPE1, &dcmipp_conf, &hw_pitch);
     if(ret != HAL_OK || hw_pitch != dcmipp_conf.output_width * dcmipp_conf.output_bpp){
@@ -820,7 +444,10 @@ static int DCMIPP_Pipe2Init(camera_t *camera)
     dcmipp_conf.output_bpp = camera->pipe2_param.bpp;
     dcmipp_conf.mode = CMW_Aspect_ratio_manual_roi;
     dcmipp_conf.enable_swap = 1;
-    dcmipp_conf.enable_gamma_conversion = 0;
+    /* -1: leave per-pipe gamma to ISP_SVC_ISP_SetGamma (both pipes).
+    Passing 0 would DisableGammaConversion here and desync Pipe2 after
+    model reload, because camera_start no longer re-runs ISP_Start. */
+    dcmipp_conf.enable_gamma_conversion = -1;
     CAM_InitCropConfig(&dcmipp_conf.manual_conf, camera);
     ret = CMW_CAMERA_SetPipeConfig(DCMIPP_PIPE2, &dcmipp_conf, &hw_pitch);
     if(ret != HAL_OK || hw_pitch != dcmipp_conf.output_width * dcmipp_conf.output_bpp){
@@ -1038,11 +665,6 @@ int CMW_CAMERA_PIPE_VsyncEventCallback(uint32_t pipe)
   if (pipe == DCMIPP_PIPE1) {
     g_camera.current_frame_id++;
     app_main_pipe_vsync_event();
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-    ISP_IncMainFrameId(&hIsp);
-    ISP_GatherStatistics(&hIsp);
-    ISP_OutputMeta(&hIsp);
-#endif
   }
     
   return HAL_OK;
@@ -1097,26 +719,6 @@ static int pipe_start_common(camera_t *camera, uint32_t pipe_id, pipe_buffer_t *
         
         buffer = buffer_acquire(*pipe_buffer, pipe_param->buffer_nb, dq);
         if(buffer != NULL){
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-            if (pipe_id == DCMIPP_PIPE2) {
-                #ifdef ISP_ENABLE_UVC
-                    /* Define the preview size and fps for the UVC streaming */
-                    usb_uvc_init(pipe_param->width, pipe_param->height, pipe_param->fps);
-                #endif
-            
-                if(!isp_is_init){
-                    (void) ISP_IQParamCacheInit; /* unused */
-                    ret = ISP_Init(&hIsp, &hcamera_dcmipp, 0, &appliHelpers, &camera->isp_iq_param);
-                    if (ret) LOG_DRV_ERROR("ISP_Init error: %d\r\n", ret);
-                    isp_is_init = 1;
-                }
-                if(!isp_is_start){
-                    ret = ISP_Start(&hIsp);
-                    if (ret) LOG_DRV_ERROR("ISP start failed: %d\r\n", ret);
-                    isp_is_start = 1;
-                }
-            }
-#endif
             camera->skip_frame_counter = camera->startup_skip_frames;
             // clear possible residual hardware error flags before startup
             DCMIPP_HandleTypeDef *hdcmipp = CMW_CAMERA_GetDCMIPPHandle();
@@ -1287,10 +889,8 @@ static int camera_start(void *priv)
         return AICAM_OK;
     }
 
-#ifndef ISP_MW_TUNING_TOOL_SUPPORT
     // Set ISP initialization parameters before starting camera
     CMW_CAMERA_SetISPInitParam(&camera->isp_iq_param);
-#endif
 
     if((camera->device_ctrl_pipe & CAMERA_CTRL_PIPE1_BIT) != 0){
         ret = pipe1_start(camera);
@@ -1354,6 +954,18 @@ static void cameraProcess(void *argument)
 #if CAMERA_TASK_DELAY_MS > 0
     osDelay(CAMERA_TASK_DELAY_MS);
 #endif
+    /* IR-CUT homing edge (IR boards): the filter driver is edge-driven and
+     * its lens position is unknown after power-up. The pin idles HIGH (strap
+     * pull-up + the camera_init claim), so pulling it LOW here is one
+     * deterministic edge — the LOW level then persists through the whole
+     * CAM_Init sensor bring-up (settle window), homing the filter into the
+     * DAY position. Zero added boot time, completes BEFORE sem_init is
+     * released, and the system boots in DAY mode by default. */
+    const aicam_bool_t ircut_home =
+        (board_is_ir() == AICAM_TRUE) && (s_ircut_state != 0xFFU);
+    if (ircut_home) {
+        camera_ircut_write(0U); /* LOW = day: the homing edge */
+    }
     ret = CAM_Init(camera);
     // printf("camera init end, %lu ms\r\n", HAL_GetTick());
     if(ret != CMW_ERROR_NONE){
@@ -1362,42 +974,14 @@ static void cameraProcess(void *argument)
         osThreadExit();
         return;
     }
+    if (ircut_home) s_ircut_state = 0U; /* homed to DAY — LOW stays as the boot default */
     camera->is_init = true;
     osSemaphoreRelease(camera->sem_init);
     while (camera->is_init) {
         if (osSemaphoreAcquire(camera->sem_isp, CAMERA_ISP_SEM_TIMEOUT_MS) == osOK) {
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-            if (isp_is_start) {
-            #ifdef ISP_ENABLE_UVC
-                /* When UVC is enabled, just fetch latest PIPE2 frame and notify
-                 * UVC task. Conversion and usb_uvc_show_frame are done in the
-                 * dedicated UVC thread. */
-                if (g_camera.dev != NULL &&
-                    g_camera.state.pipe2_state == PIPE_START &&
-                    g_uvc_ctx.sem != NULL &&
-                    g_uvc_ctx.pipe2_buf == NULL) {
-                    uint8_t *pipe2_buf = NULL;
-                    int buf_size = device_ioctl(g_camera.dev,
-                                                CAM_CMD_GET_PIPE2_BUFFER,
-                                                (uint8_t *)&pipe2_buf, 0);
-
-                    if (buf_size > 0 && pipe2_buf != NULL) {
-                        g_uvc_ctx.pipe2_buf = pipe2_buf;
-                        g_uvc_ctx.pipe2_size = buf_size;
-                        osSemaphoreRelease(g_uvc_ctx.sem);
-                    }
-                }
-            #endif
-                ret = ISP_BackgroundProcess(&hIsp);
-                if (ret != ISP_OK) {
-                    LOG_DRV_ERROR("ISP background process failed: %d\r\n", ret);
-                }
-            }
-#else
             //osMutexAcquire(camera->mtx_id, osWaitForever);
             CMW_CAMERA_Run();
             //osMutexRelease(camera->mtx_id);
-#endif
         }
         // if (g_camera.current_frame_id % 30 == 0) {
         //     printf("id: %ld\r\n", g_camera.current_frame_id);
@@ -1898,6 +1482,40 @@ static int camera_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsig
             memcpy(ubuf, &camera->state, sizeof(camera_state_t));
             ret = AICAM_OK;
             break;
+
+        case CAM_CMD_IRCUT_SET:
+            /* IR-CUT filter (IR boards). Powered by the sensor rail this
+               component holds since camera_init; this ioctl waits for the
+               camera init semaphore, so the boot homing edge in
+               cameraProcess has already established a deterministic
+               position (DAY by default). The driver acts on level CHANGES only — write on
+               an actual change, skip same-level commands. */
+            if (ubuf == NULL) {
+                ret = AICAM_ERROR_INVALID_PARAM;
+                break;
+            }
+            if (s_ircut_state == 0xFFU) {
+                ret = AICAM_ERROR_NOT_SUPPORTED;
+                break;
+            }
+            {
+                uint8_t night = (*ubuf != 0U) ? 1U : 0U;
+                if (s_ircut_state != night) {
+                    camera_ircut_write(night);
+                    s_ircut_state = night;
+                }
+                /* else: same level — already in position, no edge needed. */
+            }
+            break;
+
+        case CAM_CMD_IRCUT_GET:
+            if (ubuf == NULL) {
+                ret = AICAM_ERROR_INVALID_PARAM;
+                break;
+            }
+            *ubuf = s_ircut_state;
+            ret = AICAM_OK;
+            break;
         default:
             ret = AICAM_ERROR_NOT_SUPPORTED;
             break;
@@ -1965,6 +1583,29 @@ static int camera_init(void *priv)
     camera->pwr_handle = pwr_manager_get_handle(PWR_SENSOR_NAME);
     pwr_manager_acquire(camera->pwr_handle);
 
+    /* IR-CUT filter (IR boards, PE9) belongs to this component: its driver
+     * chip is powered from the sensor rail acquired just above, so claiming
+     * the pin here guarantees every CAM_CMD_IRCUT_SET write is powered —
+     * day/night switching, sleep-wake captures and the CLI all go through
+     * the camera ioctl. Standard boards never register the pin.
+     *
+     * Claim at HIGH (the board strap holds the pin HIGH anyway): the
+     * cameraProcess homing edge pulls it LOW right after — that single
+     * edge per boot homes the filter and leaves the system in DAY mode. */
+    if (board_is_ir() == AICAM_TRUE) {
+        GPIO_InitTypeDef gpio = {0};
+        __HAL_RCC_GPIOE_CLK_ENABLE();
+        gpio.Pin = IR_CUT_A_Pin;
+        gpio.Mode = GPIO_MODE_OUTPUT_PP;
+        gpio.Pull = GPIO_NOPULL;
+        gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+        HAL_GPIO_Init(IR_CUT_A_GPIO_Port, &gpio);
+        HAL_GPIO_WritePin(IR_CUT_A_GPIO_Port, IR_CUT_A_Pin, GPIO_PIN_SET);
+        s_ircut_state = 1U; /* night — matches the level written above */
+    } else {
+        s_ircut_state = 0xFFU; /* not available on this board */
+    }
+
     camera->pipe1_param.width = PIPE1_DEFAULT_WIDTH;
     camera->pipe1_param.height = PIPE1_DEFAULT_HEIGHT;
     camera->pipe1_param.format = PIPE1_DEFAULT_FORMAT;
@@ -1993,17 +1634,6 @@ static int camera_init(void *priv)
 
     camera->device_ctrl_pipe = CAMERA_CTRL_PIPE1_BIT | CAMERA_CTRL_PIPE2_BIT;
     camera->camera_processId = osThreadNew(cameraProcess, camera, &cameraTask_attributes);
-#ifdef ISP_ENABLE_UVC
-    g_uvc_ctx.sem = osSemaphoreNew(1, 0, NULL);
-    if (g_uvc_ctx.sem != NULL) {
-        const osThreadAttr_t uvcTask_attributes = {
-            .name = "uvcSendTask",
-            .priority = (osPriority_t)osPriorityBelowNormal,
-            .stack_size = 2 * 1024
-        };
-        g_uvc_ctx.thread_id = osThreadNew(uvcSendTask, NULL, &uvcTask_attributes);
-    }
-#endif
     return 0;
 }
 
@@ -2022,21 +1652,6 @@ static int camera_deinit(void *priv)
         camera->camera_processId = NULL;
     }
 
-#ifdef ISP_ENABLE_UVC
-    if (g_uvc_ctx.thread_id != NULL) {
-        osThreadTerminate(g_uvc_ctx.thread_id);
-        g_uvc_ctx.thread_id = NULL;
-    }
-    if (g_uvc_ctx.sem != NULL) {
-        osSemaphoreDelete(g_uvc_ctx.sem);
-        g_uvc_ctx.sem = NULL;
-    }
-    if (uvc_frame_buf != NULL) {
-        hal_mem_free(uvc_frame_buf);
-        uvc_frame_buf = NULL;
-        uvc_frame_buf_size = 0;
-    }
-#endif
 
     if (camera->pwr_handle != 0) {
         pwr_manager_release(camera->pwr_handle);
@@ -2225,15 +1840,6 @@ void camera_free_unshared_buffer(uint8_t *buffer)
     hal_mem_free(buffer);
 }
 
-#ifdef ISP_MW_TUNING_TOOL_SUPPORT
-ISP_HandleTypeDef* camera_get_isp_handle(void)
-{
-    if (isp_is_init) {
-        return &hIsp;
-    }
-    return NULL;
-}
-#else
 ISP_HandleTypeDef* camera_get_isp_handle(void)
 {
     if (g_camera.is_init == false || (g_camera.state.pipe2_state != PIPE_START && g_camera.state.pipe1_state != PIPE_START)) {
@@ -2242,4 +1848,3 @@ ISP_HandleTypeDef* camera_get_isp_handle(void)
     }
     return CMW_CAMERA_GetISPHandle();
 }
-#endif

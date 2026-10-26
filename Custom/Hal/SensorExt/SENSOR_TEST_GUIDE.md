@@ -7,7 +7,7 @@ This document describes how to test the SensorExt sensors on the NE301 platform 
 ## 1. Prerequisites
 
 - I2C bus 1 connected to the sensor expansion board
-- **TFT vs. Audio (mutually exclusive):** TFT and NAU881x audio share the same peripheral (SPI6/I2S6). Only one can be connected at a time via hardware resistor soldering options. Use TFT for `sexp` modes; use NAU881x for audio tests.
+- **TFT and audio are independent:** the TFT (ST7789VW) runs on SPI6, the NAU881x audio codec on SAI1 + I2C port 1. They share no peripheral or pins and can be used at the same time. See section 8 for audio tests.
 - TFT ST7789V display connected via SPI6 (for sexp modes; requires TFT option populated)
 - Camera pipe2 already configured and running (for `sexp start` non-IR mode only)
 
@@ -206,72 +206,102 @@ For deeper testing, use the per-sensor commands. See `sensor_exemple.h` for full
 3. `sexp stop` – confirm clean stop.
 4. (Optional) `sexp start` – verify camera preview mode if pipe2 is running.
 5. (Optional) `sexp stop` – release resources.
+6. (Optional) `record test.wav 10` then `play test.wav` – verify the audio codec (independent of the TFT, see section 8).
 
 ---
 
 ## 8. Audio Test (NAU881x)
 
-### 8.1 Hardware Conflict: TFT vs. Audio
+Audio record/playback runs on the `codec` component (`Custom/Hal/codec.c`), registered at boot together with the other SensorExt commands. The legacy `nau881x` demo commands (I2S6-based) still exist in the firmware but are not the supported path.
 
-> **Important:** The TFT display (ST7789VW) and the audio codec (NAU881x) are **mutually exclusive**. Only one can be connected at a time.
->
-> Both use the same MCU peripheral (SPI6/I2S6) and share the same pins. The hardware uses **resistor soldering options** to select which device is wired: either the TFT or the NAU881x, but not both.
+### 8.1 Hardware and Initialization
 
----
+- Codec: NAU881x on I2C port 1, 7-bit address `0x1a` (visible in `i2c_tool detect`)
+- Audio data: SAI1 — Block A records (mic), Block B plays (speaker); fixed 16 kHz / 16-bit, codec in I2S slave mode
+- The TFT (SPI6) and the audio codec share no peripheral or pins; both can be tested in the same session
+- The codec initializes **automatically at boot** (SAI1 + I2C + codec bring-up). There is no init command; the commands below are available shortly after boot
+- Audio commands are compiled in non-HaLow builds only (`NETIF_WIFI_HALOW_IS_ENABLE = 0`), same as the other SensorExt commands
 
-### 8.2 Test Sequence
+### 8.2 Command Reference
 
-**Prerequisites:** NAU881x populated (TFT not connected), I2C port 1, file system for record/play.
+| Command   | Usage                  | Description                                                        |
+|-----------|------------------------|--------------------------------------------------------------------|
+| `record`  | `record [file] [secs]` | Record mic to WAV (default `record.wav`, 10 s); auto-stops when the duration elapses |
+| `stoprec` | `stoprec`              | Stop recording early; WAV header is fixed up before close          |
+| `play`    | `play [file]`          | Play a WAV file (default `record.wav`)                             |
+| `stopplay`| `stopplay`             | Stop playback early                                                |
+| `micvol`  | `micvol [0-100]`       | Mic (PGA) volume in percent; 0 = mute                              |
+| `spkvol`  | `spkvol [0-100]`       | Speaker volume in percent; 0 = mute (capped at 0 dB)               |
+| `dacvol`  | `dacvol [0-100]`       | DAC volume in percent; 0 = soft mute                               |
+| `bypass`  | `bypass on\|off`       | Route mic directly to speaker (live monitoring)                    |
+| `audiotest` | `audiotest [file]`   | Read an audio file back twice and byte-compare (storage read consistency; file must be ≥ 32 KB) |
 
-1. **Init audio (I2S6 + codec):**
-   ```
-   nau881x audio_init
-   ```
-   Expected: `nau881x: audio_init OK (I2S6 + codec ready)`
+**Notes:**
 
-2. **Test playback (C major scale):**
-   ```
-   nau881x play_scale
-   nau881x play_scale -15
-   ```
-   Optional `-15` sets volume in dB. Expected output:
-   ```
-   nau881x: play_scale: Do(C4)
-   nau881x: play_scale: Re(D4)
-   ... Mi, Fa, Sol, La, Si ...
-   nau881x: play_scale: Do(C5)
-   nau881x: play_scale: done
-   ```
+- WAV I/O is fixed at **16 kHz / 16-bit**. `play` rejects other sample rates: `Error: Only 16KHz sample rate is supported! (Current: 44100)`
+- Each `record` start resets the mic PGA gain to a fixed value, and each `play` start resets DAC gain / speaker volume. Run the volume commands **while** a session is active for live adjustment
+- `bypass off` does not re-select the DAC playback mix; start `play` (or reboot) to restore the normal playback path
 
-3. **Test play from file:**
+### 8.3 Test Sequence
+
+**Prerequisites:** NAU881x populated, I2C port 1, file system available for record/play, non-HaLow build.
+
+1. **Verify codec on the bus:**
    ```
-   nau881x play dx.wav -15
-   nau881x play_stop
+   i2c_tool detect
    ```
-   Use `play_stop` to stop playback early. WAV must be 16 kHz, 16-bit, mono or stereo.
+   Expected: device at `0x1a`.
+
+2. **Test playback:**
+   ```
+   play dx.wav
+   stopplay
+   ```
+   Use `stopplay` to stop early. Running `play` twice prints `Already playing!`. The "Play finished" log is only visible at DRIVER debug level.
+
+3. **Adjust volume live (while playing):**
+   ```
+   spkvol 80
+   dacvol 80
+   ```
+   Expected: `Speaker volume set to 80%` / `DAC volume set to 80%`.
 
 4. **Test record:**
    ```
-   nau881x record test.wav 10 32
+   record test.wav 10
    ```
-   Records 10 s to `test.wav` with PGA gain 32. If `record timeout` occurs on first run, retry once.
+   Expected:
    ```
-   nau881x: recording 10 s to test.wav (pga_gain=32)
-   nau881x: record done, 160000 samples
+   Start recording: test.wav, 10 seconds
    ```
+   Recording stops automatically after 10 s (or run `stoprec`). The output is a 16 kHz / 16-bit stereo WAV (~64 KB per second).
 
 5. **Verify recording by playback:**
    ```
-   nau881x play test.wav
+   play test.wav
    ```
+
+6. **Mic monitoring (bypass):**
+   ```
+   bypass on
+   ```
+   Expected: `MIC bypass to SPK enabled.` — speak into the mic; audio comes from the speaker. Restore the normal playback path with `play`.
+
+7. **(Optional) file read-back check:**
+   ```
+   audiotest test.wav
+   ```
+   Expected: `Audio test done: test.wav` (compares two full reads of the file byte-by-byte).
 
 ---
 
-### 8.3 Troubleshooting
+### 8.4 Troubleshooting
 
 | Symptom | Action |
 |---------|--------|
-| `0x1a` not in I2C scan | Check resistor soldering for audio option |
-| `audio_init failed` | Ensure hardware is in audio mode, not TFT |
-| `record timeout` on first record | Retry; may occur if previous play/record left I2S busy |
-| No sound | Run `nau881x` with no args to see register commands (pga_input, spk_en, etc.) |
+| `0x1a` not in I2C scan | Check codec population and I2C1 wiring |
+| Audio commands not found | Build is HaLow (`NETIF_WIFI_HALOW_IS_ENABLE=1`); audio needs a non-HaLow build |
+| `Error: Only 16KHz sample rate is supported!` | Resample the WAV to 16 kHz, 16-bit |
+| No sound during `play` | Set `spkvol`/`dacvol` above 0; verify the WAV is 16 kHz; check speaker connection |
+| Recording is silent | Raise the gain with `micvol` **during** recording (each `record` start resets it) |
+| Distorted playback | Lower `dacvol`/`spkvol`; speaker output is already capped at 0 dB |

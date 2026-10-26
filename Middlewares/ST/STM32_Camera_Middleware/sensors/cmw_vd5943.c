@@ -24,10 +24,8 @@
 #include <string.h>
 #include "cmw_camera.h"
 #include "vd1943.h"
-#ifndef ISP_MW_TUNING_TOOL_SUPPORT
 #include "isp_param_conf.h"
 extern const ISP_IQParamTypeDef *user_isp_init_param;
-#endif
 
 #define container_of(ptr, type, member) (type *) ((unsigned char *)ptr - offsetof(type,member))
 
@@ -336,7 +334,6 @@ static int32_t CMW_VD5943_Start(void *io_ctx)
 {
   int ret = CMW_ERROR_NONE;
 
-#ifndef ISP_MW_TUNING_TOOL_SUPPORT
   /* Statistic area is provided with null value so that it force the ISP Library to get the statistic
    * area information from the tuning file.
    */
@@ -354,7 +351,6 @@ static int32_t CMW_VD5943_Start(void *io_ctx)
   {
       return CMW_ERROR_PERIPH_FAILURE;
   }
-#endif
 
   ret = VD1943_Start(&((CMW_VD5943_t *)io_ctx)->ctx_driver);
   if (ret) {
@@ -366,20 +362,17 @@ static int32_t CMW_VD5943_Start(void *io_ctx)
 
 static int32_t CMW_VD5943_Run(void *io_ctx)
 {
-#ifndef ISP_MW_TUNING_TOOL_SUPPORT
   int ret;
   ret = ISP_BackgroundProcess(&((CMW_VD5943_t *)io_ctx)->hIsp);
   if (ret != ISP_OK)
   {
       return CMW_ERROR_PERIPH_FAILURE;
   }
-#endif
   return CMW_ERROR_NONE;
 }
 
 static void CMW_VD5943_VsyncEventCallback(void *io_ctx, uint32_t pipe)
 {
-#ifndef ISP_MW_TUNING_TOOL_SUPPORT
   /* Update the ISP frame counter and call its statistics handler */
   switch (pipe)
   {
@@ -394,7 +387,6 @@ static void CMW_VD5943_VsyncEventCallback(void *io_ctx, uint32_t pipe)
       ISP_IncAncillaryFrameId(&((CMW_VD5943_t *)io_ctx)->hIsp);
       break;
   }
-#endif
 }
 
 static void CMW_VD5943_FrameEventCallback(void *io_ctx, uint32_t pipe)

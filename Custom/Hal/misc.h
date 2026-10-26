@@ -60,10 +60,11 @@ typedef enum {
     MISC_CMD_BUTTON_GET_PARAMS, // Get button parameters
     MISC_CMD_BUTTON_SET_PARAMS, // Set button parameters
 
-    MISC_CMD_PWM_ON = MISC_CMD_BASE + 0x20,            // PWM on 
+    MISC_CMD_PWM_ON = MISC_CMD_BASE + 0x20,            // PWM on
     MISC_CMD_PWM_OFF,           // PWM off
-    MISC_CMD_PWM_SET_DUTY,      // PWM set duty
+    MISC_CMD_PWM_SET_DUTY,      // PWM set duty percent (0-100, clamped)
     MISC_CMD_PWM_SET_BLINK,     // PWM set blink
+    MISC_CMD_PWM_GET_DUTY,      // PWM get duty percent (0-100)
 
     MISC_CMD_ADC_GET_PERCENT = MISC_CMD_BASE + 0x30,       // Get ADC percent
     MISC_CMD_USB_GET_STATUS, // Get USB status
@@ -71,7 +72,7 @@ typedef enum {
     MISC_CMD_IO_GET_GROUP_INFO = MISC_CMD_BASE + 0x40,
     MISC_CMD_IO_SET_MODE,
     MISC_CMD_IO_SET_OUTPUT,
-    MISC_CMD_IO_SET_INT_CB,   
+    MISC_CMD_IO_SET_INT_CB,
 } MISC_CMD_E;
 
 

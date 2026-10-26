@@ -54,6 +54,21 @@ static void json_get_uint8(cJSON *obj, const char *key, uint8_t *target)
     }
 }
 
+// Helper to safely get a uint16 from a cJSON object, saturating out-of-range
+// numbers so the invariants clamp them instead of seeing a wrapped value
+static void json_get_uint16(cJSON *obj, const char *key, uint16_t *target)
+{
+    cJSON *item = cJSON_GetObjectItem(obj, key);
+    if (cJSON_IsNumber(item))
+    {
+        if (item->valuedouble <= 0)
+            *target = 0;
+        else if (item->valuedouble >= UINT16_MAX)
+            *target = UINT16_MAX;
+        else
+            *target = (uint16_t)item->valuedouble;
+    }
+}
 
 // Helper to safely get a float from a cJSON object
 static void json_get_float(cJSON *obj, const char *key, float *target)
@@ -263,7 +278,8 @@ static void parse_device_service(cJSON *json, device_service_config_t *cfg)
         json_get_bool(img_cfg, "vertical_flip", &cfg->image_config.vertical_flip);
         json_get_uint32(img_cfg, "aec", &cfg->image_config.aec);
         json_get_uint32(img_cfg, "isp_mode", &cfg->image_config.isp_mode);
-        json_get_bool(img_cfg, "grayscale", &cfg->image_config.grayscale);
+        /* "grayscale" field removed with the IR-board adaptation; imports
+         * carrying it are ignored. */
         json_get_uint32(img_cfg, "fast_capture_skip_frames", &cfg->image_config.fast_capture_skip_frames);
         json_get_uint32(img_cfg, "fast_capture_resolution", &cfg->image_config.fast_capture_resolution);
         json_get_uint32(img_cfg, "fast_capture_jpeg_quality", &cfg->image_config.fast_capture_jpeg_quality);
@@ -507,6 +523,7 @@ static void json_save_cert_data(cJSON *obj, const char *key, const char *cert_pa
         return;
     }
     json_get_string(obj, key, (char *)cert_data, cert_len);
+    json_config_ensure_cert_dir();
     void *fd = disk_file_fopen(FS_FLASH, cert_path, "w");
     if (fd == NULL)
     {
@@ -638,6 +655,8 @@ static void parse_mqtt_service(cJSON *json, mqtt_service_config_t *cfg)
     json_get_string(json, "telemetry_topic", cfg->telemetry_topic, sizeof(cfg->telemetry_topic));
     json_get_uint8(json, "telemetry_qos", &cfg->telemetry_qos);
     json_get_uint8(json, "telemetry_format", &cfg->telemetry_format);
+    json_get_uint16(json, "telemetry_batch_ms", &cfg->telemetry_batch_ms);
+    json_get_uint16(json, "telemetry_batch_bytes", &cfg->telemetry_batch_bytes);
 }
 
 static void parse_work_mode(cJSON *json, work_mode_config_t *cfg)
@@ -1036,7 +1055,6 @@ static cJSON *serialize_device_service(const device_service_config_t *cfg)
     cJSON_AddBoolToObject(img_cfg, "vertical_flip", cfg->image_config.vertical_flip);
     cJSON_AddNumberToObject(img_cfg, "aec", cfg->image_config.aec);
     cJSON_AddNumberToObject(img_cfg, "isp_mode", cfg->image_config.isp_mode);
-    cJSON_AddBoolToObject(img_cfg, "grayscale", cfg->image_config.grayscale);
     cJSON_AddNumberToObject(img_cfg, "fast_capture_skip_frames", cfg->image_config.fast_capture_skip_frames);
     cJSON_AddNumberToObject(img_cfg, "fast_capture_resolution", cfg->image_config.fast_capture_resolution);
     cJSON_AddNumberToObject(img_cfg, "fast_capture_jpeg_quality", cfg->image_config.fast_capture_jpeg_quality);
@@ -1308,6 +1326,8 @@ static cJSON *serialize_mqtt_service(const mqtt_service_config_t *cfg)
     cJSON_AddStringToObject(json, "telemetry_topic", cfg->telemetry_topic);
     cJSON_AddNumberToObject(json, "telemetry_qos", cfg->telemetry_qos);
     cJSON_AddNumberToObject(json, "telemetry_format", cfg->telemetry_format);
+    cJSON_AddNumberToObject(json, "telemetry_batch_ms", cfg->telemetry_batch_ms);
+    cJSON_AddNumberToObject(json, "telemetry_batch_bytes", cfg->telemetry_batch_bytes);
 
     return json;
 }

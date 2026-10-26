@@ -65,6 +65,19 @@ void netif_chip_id_get_mac(uint8_t *mac, netif_chip_mac_kind_t kind)
         }
         break;
 
+    case NETIF_CHIP_MAC_USB_RNDIS:
+        /* Locally administered unicast; differs from W5500/HaLow on same UID. */
+        mac[0] = 0x02U;
+        mac[1] = (uint8_t)((ui_mcu_id >> 8) & 0xFFU) ^ 0x5CU;
+        mac[2] = (uint8_t)((ui_mcu_id >> 16) & 0xFFU) ^ 0x0DU;
+        mac[3] = (uint8_t)((ui_mcu_id >> 24) & 0xFFU) ^ 0x1EU;
+        mac[4] = (uint8_t)(sum ^ 0x3AU);
+        mac[5] = (uint8_t)(xor_val ^ 0x96U);
+        if ((mac[1] | mac[2] | mac[3] | mac[4] | mac[5]) == 0U) {
+            mac[5] = 0x02U;
+        }
+        break;
+
     default:
         memset(mac, 0, 6U);
         break;

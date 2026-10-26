@@ -26,6 +26,15 @@ extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
 #endif
 
+/* USB CDC-ACM console tee: everything printf/stdout emits is mirrored to the
+ * virtual COM port (implemented by Custom/Hal/usb/usb_device_composite.c,
+ * only forwards while the host holds DTR). Weak no-op when USB is absent. */
+__WEAK void usb_console_output_hook(const char *data, int len)
+{
+  (void)data;
+  (void)len;
+}
+
 int _write(int file, char *ptr, int len)
 {
   HAL_StatusTypeDef status;
@@ -40,5 +49,6 @@ int _write(int file, char *ptr, int len)
 #else
   status = HAL_UART_Transmit(&huart2, (uint8_t*)ptr, len, 200);
 #endif
+  usb_console_output_hook(ptr, len);
   return (status == HAL_OK ? len : 0);
 }

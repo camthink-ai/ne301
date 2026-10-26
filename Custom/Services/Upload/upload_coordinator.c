@@ -253,8 +253,10 @@ static aicam_result_t persist_record(FS_Type_t fs, const char *id,
                                       aicam_capture_trigger_t trigger,
                                       wakeup_source_type_t wakeup_src,
                                       record_state_t state);
-/* move_record() now changes state in place (rewrite .json state + manifest
- * append) - `from` is retained only for signature stability at call sites. */
+/* move_record() changes state in place (rewrite .json state + manifest
+ * append). `from` is validated against the .json's current state - on a
+ * mismatch the record is left alone (manifest healed to the .json state) and
+ * the move reports idempotent success. */
 static aicam_result_t move_record(FS_Type_t fs, const char *id,
                                    record_state_t from, record_state_t to);
 static aicam_result_t parse_meta_file(FS_Type_t fs, const char *path, cJSON **out_json);
@@ -931,8 +933,7 @@ static aicam_result_t move_record(FS_Type_t fs, const char *id,
                                    record_state_t from, record_state_t to)
 {
     /* Rewrite the .json's `state` field in place and append a manifest entry
-     * with the new state. `from` is unused (kept for call-site stability). */
-    (void)from;
+     * with the new state. */
     char meta_path[128];
     path_for_meta(meta_path, sizeof(meta_path), id);
 
@@ -940,13 +941,38 @@ static aicam_result_t move_record(FS_Type_t fs, const char *id,
     if (parse_meta_file(fs, meta_path, &meta) != AICAM_OK) {
         return AICAM_ERROR;
     }
-    cJSON_ReplaceItemInObject(meta, "state", cJSON_CreateNumber((double)to));
     uint32_t ts = 0;
     cJSON *t = cJSON_GetObjectItem(meta, "timestamp");
     if (t) ts = (uint32_t)t->valuedouble;
     uint32_t size = 0;
     t = cJSON_GetObjectItem(meta, "size");
     if (t) size = (uint32_t)t->valueint;
+
+    /* Racing-transition guard: two publishers can legitimately hold the same
+     * PENDING record (a flush snapshot plus the INSTANT sync upload).
+     * Without validating `from`, every transition blindly rewrote state - a
+     * second PENDING->SENT logged a duplicate "upload ok", and a late
+     * ack_timeout (record_mark_failed) demoted an already-SENT record to
+     * FAILED so it re-uploaded on every following wake. If the .json no
+     * longer holds `from`, someone else already transitioned it: converge
+     * the manifest to the .json's actual state (also covers the window where
+     * the earlier transition's rename succeeded but its manifest append
+     * failed) and report idempotent success so callers skip their failure
+     * paths on a healthy record. A missing/garbled state field (old record)
+     * is treated as `from` - never strand the record. */
+    t = cJSON_GetObjectItem(meta, "state");
+    if (t && cJSON_IsNumber(t)) {
+        int cur = (int)t->valuedouble;
+        if (cur != (int)from &&
+            cur >= (int)RECORD_STATE_PENDING && cur <= (int)RECORD_STATE_LOCAL) {
+            cJSON_Delete(meta);
+            (void)manifest_append(fs, id, (uint8_t)cur, ts, size);
+            g_count_cache_dirty = true;
+            return AICAM_OK;
+        }
+    }
+
+    cJSON_ReplaceItemInObject(meta, "state", cJSON_CreateNumber((double)to));
 
     /* Rewrite the .json via a temp file + atomic rename, so a power cut
      * (sleep) mid-rewrite leaves the original .json intact instead of a
@@ -2151,6 +2177,31 @@ static void record_mark_source_missing(FS_Type_t fs, const char *id)
     LOG_SVC_WARN("upload: %s source image missing — moved to FAILED", id);
 }
 
+/* True when the record's .json state is a definite non-PENDING - another
+ * publisher finished it after our snapshot, so skip publishing. Also converges
+ * the manifest: if the winning transition's .json rename landed but its
+ * manifest append failed (likely on a full volume), the index still lists the
+ * record PENDING - every later flush would re-read its full JPEG only to skip
+ * it, and the pending count / flush budget would never reach zero.
+ * move_record's from-guard turns this call into a manifest-only heal.
+ * Out-of-range states (corrupt field) fail OPEN, matching
+ * record_state_from_disk: publish, and the post-ack move_record replaces
+ * the garbled field with a valid state (its from-guard treats garbage as
+ * `from`). Skipping instead would loop - every flush re-reads the record's
+ * full JPEG only to skip it, and the pending count never drains. */
+static bool record_already_handled(FS_Type_t fs, const char *id, const cJSON *meta)
+{
+    const cJSON *st = cJSON_GetObjectItem(meta, "state");
+    if (!st || !cJSON_IsNumber(st)) return false;
+    int cur = (int)st->valuedouble;
+    if (cur == (int)RECORD_STATE_PENDING) return false;
+    if (cur < (int)RECORD_STATE_PENDING || cur > (int)RECORD_STATE_LOCAL) {
+        return false;
+    }
+    (void)move_record(fs, id, RECORD_STATE_PENDING, (record_state_t)cur);
+    return true;
+}
+
 /* MQTT pipeline publish: load + publish (no ack wait). On success returns
  * AICAM_OK and *out_msg_id = the MQTT packet id. On failure bumps retry and
  * returns the error. Caller frees nothing - jpeg is freed internally. */
@@ -2167,6 +2218,16 @@ static aicam_result_t record_publish_mqtt(FS_Type_t fs, const char *id, int *out
     aicam_result_t r = record_load(fs, id, &meta, &jpeg, &jpeg_size, &m, &proto);
     if (r == AICAM_ERROR_NOT_FOUND) { record_mark_source_missing(fs, id); return r; }
     if (r != AICAM_OK) return r;
+
+    /* Not PENDING anymore (the .json transitioned after this flush's
+     * snapshot - e.g. another publisher finished the record). Skip with a
+     * distinct code so the caller counts "not attempted", not fail. */
+    if (record_already_handled(fs, id, meta)) {
+        LOG_SVC_DEBUG("upload: skip %s (no longer pending)", id);
+        buffer_free(jpeg);
+        cJSON_Delete(meta);
+        return AICAM_ERROR_INVALID_STATE;
+    }
 
     aicam_result_t result = AICAM_ERROR;
     int msg_id = -1;
@@ -2324,6 +2385,13 @@ static aicam_result_t upload_one_record_webhook(FS_Type_t fs, const char *id)
     if (r == AICAM_ERROR_NOT_FOUND) { record_mark_source_missing(fs, id); return r; }
     if (r != AICAM_OK) return r;
 
+    /* Not PENDING anymore - skip (see record_publish_mqtt). */
+    if (record_already_handled(fs, id, meta)) {
+        buffer_free(jpeg);
+        cJSON_Delete(meta);
+        return AICAM_ERROR_INVALID_STATE;
+    }
+
     aicam_result_t result = AICAM_ERROR;
     if (webhook_service_is_enabled()) {
         /* Load AI result from persisted file if present */
@@ -2359,6 +2427,27 @@ static aicam_result_t upload_one_record_webhook(FS_Type_t fs, const char *id)
     record_mark_failed(fs, id,
         result == AICAM_ERROR_UNAVAILABLE ? "network_unavailable" : "upload_failed");
     return result;
+}
+
+/* Current record state straight from the meta .json. RECORD_STATE_PENDING
+ * when the file/field is unreadable - callers only act on a definite
+ * non-PENDING, so a failed read must fail open (publish), never strand. */
+static record_state_t record_state_from_disk(FS_Type_t fs, const char *id)
+{
+    char meta_path[128];
+    path_for_meta(meta_path, sizeof(meta_path), id);
+    cJSON *meta = NULL;
+    if (parse_meta_file(fs, meta_path, &meta) != AICAM_OK) return RECORD_STATE_PENDING;
+    record_state_t s = RECORD_STATE_PENDING;
+    cJSON *t = cJSON_GetObjectItem(meta, "state");
+    if (t && cJSON_IsNumber(t)) {
+        int v = (int)t->valuedouble;
+        if (v >= (int)RECORD_STATE_PENDING && v <= (int)RECORD_STATE_LOCAL) {
+            s = (record_state_t)v;
+        }
+    }
+    cJSON_Delete(meta);
+    return s;
 }
 
 static aicam_result_t upload_one_record(FS_Type_t fs, const char *id,
@@ -2441,6 +2530,16 @@ static aicam_result_t upload_one_record(FS_Type_t fs, const char *id,
             if (mqtt_service_is_running()) {
                 (void)mqtt_service_wait_for_event(MQTT_EVENT_CONNECTED, AICAM_FALSE, wait_ms);
             }
+        }
+        /* Re-check state AFTER the channel wait (it can span 30 s): the meta
+         * parsed at entry is stale, and another publisher (a flush pass) may
+         * have finished this record meanwhile. Its outcome supersedes ours -
+         * "sent or queued" per the enqueue contract, no re-publish. */
+        if (record_state_from_disk(fs, id) != RECORD_STATE_PENDING) {
+            LOG_SVC_INFO("upload: %s already handled by another publisher, skip sync upload", id);
+            buffer_free(jpeg);
+            cJSON_Delete(meta);
+            return AICAM_OK;
         }
         if (mqtt_service_is_running() && mqtt_service_is_connected()) {
             const uint32_t threshold = 1024u * 1024u;
@@ -2697,13 +2796,14 @@ static void do_flush_pass(void)
                 ctx.attempts++;
                 if (record_self_heal_if_missing(fs, ids[i])) { ctx.failures++; continue; }
                 int mid = -1;
-                if (record_publish_mqtt(fs, ids[i], &mid) == AICAM_OK) {
+                aicam_result_t pr = record_publish_mqtt(fs, ids[i], &mid);
+                if (pr == AICAM_OK) {
                     int am = 0;
                     if (mqtt_service_get_acked_msg_id(&am, FLUSH_ACK_TIMEOUT_MS) == AICAM_OK) {
                         (void)move_record(fs, ids[i], RECORD_STATE_PENDING, RECORD_STATE_SENT);
                         ctx.successes++;
                     } else { record_mark_failed(fs, ids[i], "ack_timeout"); ctx.failures++; }
-                } else { ctx.failures++; }
+                } else if (pr != AICAM_ERROR_INVALID_STATE) { ctx.failures++; }
             }
         } else {
             uint32_t inflight = 0, next = 0;
@@ -2714,7 +2814,8 @@ static void do_flush_pass(void)
                     ctx.attempts++;
                     if (record_self_heal_if_missing(fs, ids[next])) { ctx.failures++; next++; dlup = (rtc_get_uptime_ms() >= deadline); continue; }
                     int mid = -1;
-                    if (record_publish_mqtt(fs, ids[next], &mid) == AICAM_OK) {
+                    aicam_result_t pr = record_publish_mqtt(fs, ids[next], &mid);
+                    if (pr == AICAM_OK) {
                         for (uint32_t s = 0; s < window; s++) {
                             if (!inf[s].used) {
                                 snprintf(inf[s].id, sizeof(inf[s].id), "%s", ids[next]);
@@ -2722,7 +2823,7 @@ static void do_flush_pass(void)
                                 break;
                             }
                         }
-                    } else { ctx.failures++; }
+                    } else if (pr != AICAM_ERROR_INVALID_STATE) { ctx.failures++; }
                     next++;
                     dlup = (rtc_get_uptime_ms() >= deadline);
                 }
@@ -2795,8 +2896,9 @@ static void do_flush_pass(void)
             if (rtc_get_uptime_ms() >= deadline) break;
             ctx.attempts++;
             if (record_self_heal_if_missing(fs, ids[i])) { ctx.failures++; continue; }
-            if (upload_one_record_webhook(fs, ids[i]) == AICAM_OK) ctx.successes++;
-            else ctx.failures++;
+            aicam_result_t wr = upload_one_record_webhook(fs, ids[i]);
+            if (wr == AICAM_OK) ctx.successes++;
+            else if (wr != AICAM_ERROR_INVALID_STATE) ctx.failures++;
         }
     }
 
@@ -2987,8 +3089,17 @@ aicam_result_t upload_coordinator_start(void)
     }
     g_up.state = SERVICE_STATE_RUNNING;
 
-    /* Initial sweep: any leftover pending from prior boot can flush now. */
-    upload_coordinator_kick();
+    /* Initial sweep: any leftover pending from prior boot can flush now -
+     * EXCEPT in INSTANT mode. This wake's capture is persisted PENDING and
+     * the wakeup task then uploads it synchronously; both paths wait for
+     * MQTT, so the boot-time sweep races the sync upload on the SAME record
+     * and both publish it (double upload; 2026-09-21 wake log: two identical
+     * "Publishing image" + two "upload ok" for one cap id). In INSTANT mode
+     * leftover pending drains via the success-kick after the current
+     * capture's upload (enqueue_capture) instead - same wake, seconds later. */
+    if (g_up.cfg.mode != CAPTURE_MODE_INSTANT) {
+        upload_coordinator_kick();
+    }
     UPLOAD_LOG("start ok, state=RUNNING\r\n");
     return AICAM_OK;
 }
@@ -3304,7 +3415,16 @@ static aicam_result_t direct_publish_capture(const uint8_t *jpeg_buffer,
             }
         }
     }
-    if (r == AICAM_OK) LOG_SVC_INFO("upload ok (direct): %s", meta_in->image_id);
+    if (r == AICAM_OK) {
+        LOG_SVC_INFO("upload ok (direct): %s", meta_in->image_id);
+        /* Success means the channel just carried a full image - sweep any
+         * PENDING backlog now (same reasoning as the INSTANT switch's
+         * success-kick). The storage-full + STOP fast path returns before
+         * that switch, and INSTANT no longer flushes at boot (start-sweep
+         * removal), so without this a full volume would strand the backlog
+         * for as long as it stays full - even with the link proven up. */
+        upload_coordinator_kick();
+    }
     return r;
 }
 

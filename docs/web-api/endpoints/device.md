@@ -10,10 +10,13 @@ Device info, time, logs and maintenance
 
 Source: [`Custom/Services/Web/api/api_device_module.c`](https://github.com/camthink-ai/ne301/blob/main/Custom/Services/Web/api/api_device_module.c)
 
-**24** endpoints. The ✅ marker in the Auth column means the request must carry [credentials](../authentication.md).
+**27** endpoints. The ✅ marker in the Auth column means the request must carry [credentials](../authentication.md).
 
 | Method | Path | Auth | Handler |
 |--------|------|:----:|---------|
+| `GET` | `/api/v1/device/day-night/config` | ✅ | `device_day_night_config_handler` |
+| `POST` | `/api/v1/device/day-night/config` | ✅ | `device_day_night_config_handler` |
+| `GET` | `/api/v1/device/day-night/status` | ✅ | `device_day_night_status_handler` |
 | `GET` | `/api/v1/device/info` | ✅ | `device_info_handler` |
 | `GET` | `/api/v1/device/firmware-versions` | ✅ | `firmware_versions_handler` |
 | `GET` | `/api/v1/device/version-check` | ✅ | `version_check_handler` |

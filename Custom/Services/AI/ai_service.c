@@ -25,6 +25,7 @@
 #include "drtc.h"
 #include "common_utils.h"
 #include "cbor_enc.h"
+#include "rng.h"
 
 /* ==================== AI Service Context ==================== */
 
@@ -71,6 +72,10 @@ static ai_service_context_t g_ai_service = {0};
 // Bounds the worst-case CBOR beat (32 MPE detects x 33 keypoints) with margin
 #define AI_TELEMETRY_ENCODE_BUF_SIZE (16U * 1024U)
 
+#define AI_TELEMETRY_BATCH_VERSION  2U
+// The largest cap, or a beat as large as the encode buffer alone, plus the envelope
+#define AI_TELEMETRY_BATCH_BUF_SIZE (AI_TELEMETRY_ENCODE_BUF_SIZE + 1024U)
+
 /**
  * @brief One published telemetry beat, deep-copied at inference time
  * @details The pp module rewrites its output buffers on every inference (on
@@ -82,9 +87,56 @@ typedef struct {
     uint32_t frame_id;                     // Sensor frame the inference ran on
     uint32_t inference_time_ms;            // Measured wall time of this inference
     uint64_t timestamp_ms;                 // RTC time the result was snapshotted
+    uint32_t tick;                         // OS tick (1 ms) the result was snapshotted
+    uint32_t index;                        // Beats offered before this one
     char model_name[64];                   // From nn_model_info_t.name
     aicam_bool_t valid;                    // Snapshot holds a publishable result
+    aicam_bool_t consumed;                 // Publisher has taken this beat
 } ai_telemetry_snapshot_t;
+
+/*
+ * Batches (telemetry_batch_ms > 0): several beats per message, in either format.
+ *
+ *   CBOR: {v: 2, dev, model, boot, n, dropc, t0, up0, b: [{dt, fid, it, r}, ...]}
+ *   JSON: {"type": "ai_telemetry_batch", "device", "model_name", "boot", "n", "dropc",
+ *          "timestamp_ms", "uptime_ms", "beats": [{"dt", "frame_id", "inference_time_ms",
+ *          "ai_result"}, ...]}
+ *
+ * The envelope is written when a batch opens with its first beat; each beat
+ * follows as encoded bytes, its dt (ms since the first beat) in front. The
+ * CBOR beats array header always takes a two-byte count (0x99) so it can be
+ * written at close: not the shortest form below 256 beats, which every CBOR
+ * decoder accepts.
+ */
+
+/**
+ * @brief Envelope fields, set by the first beat of a batch
+ * @note Between two batches of one (dev, boot), n - (n_prev + count_prev)
+ *       beats are missing, dropc - dropc_prev of them lost on the device and
+ *       the rest in transport.
+ */
+typedef struct {
+    char dev[64];                          // MQTT client id
+    char model[64];                        // Model name
+    uint32_t boot;                         // Random, redrawn whenever batching turns on
+    uint32_t n;                            // Index of the first beat among all beats offered
+    uint32_t dropc;                        // n minus the beats in batches closed before this one
+    uint64_t t0_ms;                        // RTC ms of the first beat
+    uint32_t up0_ms;                       // OS tick of the first beat
+} ai_telemetry_batch_env_t;
+
+/**
+ * @brief One batch in a buffer; open while count > 0
+ */
+typedef struct {
+    uint8_t *buf;                          // Payload buffer, allocated when batching first turns on
+    size_t size;                           // Buffer size in bytes
+    size_t len;                            // Bytes written
+    size_t env_len;                        // Envelope bytes, up to the first beat
+    uint32_t count;                        // Beats appended
+    uint32_t up0_ms;                       // dt base
+    uint8_t json;                          // JSON rather than CBOR
+} ai_telemetry_batch_t;
 
 static struct {
     aicam_bool_t initialized;              // Telemetry unit initialization status
@@ -98,8 +150,14 @@ static struct {
     mpe_detect_t *mpe_detects;             // Deep-copy destination (MPE)
     spe_keypoint_t *spe_keypoints;         // Deep-copy destination (SPE)
     iseg_detect_t *iseg_detects;           // Deep-copy destination (ISEG, masks omitted)
-    uint8_t *encode_buf;                   // CBOR beat encode buffer
+    uint8_t *encode_buf;                   // Beat encode buffer
     video_hub_subscriber_id_t hub_sub_id;  // Hub subscription that holds the pipeline running
+    ai_telemetry_batch_t batch;            // Open batch (publisher task only)
+    uint32_t beats_offered;                // Beats offered by the callback (callback thread only)
+    uint32_t beats_closed;                 // Beats in batches closed for publishing (task only)
+    uint32_t boot_id;                      // Random, redrawn whenever batching turns on
+    aicam_bool_t batching;                 // Batching was on at the last wake-up (task only)
+    aicam_bool_t model_changed;            // Model reloaded since the last beat batched (snapshot_mutex)
 } g_ai_telemetry = {0};
 
 static uint8_t ai_telemetry_task_stack[1024 * 4] ALIGN_32 IN_PSRAM;
@@ -1426,6 +1484,7 @@ static void ai_telemetry_result_callback(const nn_result_t *result, uint32_t fra
     }
 
     // One beat per inference; the AI node's pacing sets the rate
+    uint32_t index = g_ai_telemetry.beats_offered++;
 
     // Drop this beat rather than stall the inference thread behind a publish
     if (osMutexAcquire(g_ai_telemetry.snapshot_mutex, 10) != osOK) {
@@ -1492,6 +1551,8 @@ static void ai_telemetry_result_callback(const nn_result_t *result, uint32_t fra
     snap->frame_id = frame_id;
     snap->inference_time_ms = inference_time_ms;
     snap->timestamp_ms = rtc_get_timestamp_ms();
+    snap->tick = osKernelGetTickCount();
+    snap->index = index;
     nn_model_info_t model_info;
     if (ai_service_get_model_info(&model_info) == AICAM_OK) {
         strncpy(snap->model_name, model_info.name, sizeof(snap->model_name) - 1);
@@ -1500,6 +1561,7 @@ static void ai_telemetry_result_callback(const nn_result_t *result, uint32_t fra
         snap->model_name[0] = '\0';
     }
     snap->valid = AICAM_TRUE;
+    snap->consumed = AICAM_FALSE;
 
     osMutexRelease(g_ai_telemetry.snapshot_mutex);
 
@@ -1555,7 +1617,8 @@ static void ai_telemetry_reconcile_pipeline(void)
  *          drained but before the pp module frees the class-label / keypoint
  *          metadata that the snapshot's copied detect structs still point into.
  *          Without this a beat latched before the reload would be serialized
- *          against freed pointers.
+ *          against freed pointers. Also has the publisher task close an open
+ *          batch, which names one model.
  */
 static void ai_telemetry_invalidate_snapshot(void)
 {
@@ -1566,9 +1629,37 @@ static void ai_telemetry_invalidate_snapshot(void)
         return;
     }
     g_ai_telemetry.snapshot.valid = AICAM_FALSE;
+    g_ai_telemetry.model_changed = AICAM_TRUE;
     osMutexRelease(g_ai_telemetry.snapshot_mutex);
     if (g_ai_telemetry.event_flags) {
         osEventFlagsClear(g_ai_telemetry.event_flags, AI_TELEMETRY_FLAG_RESULT);
+    }
+}
+
+/**
+ * @brief Emit the snapshot's CBOR r value: the result map, or null
+ * @details Same absent-result semantics as the JSON path's ai_result:null -
+ *          and on a result-encode failure, rewind and publish r=null rather
+ *          than dropping the beat, so consumers keep receiving a liveness
+ *          signal. Caller holds the snapshot mutex.
+ */
+static void ai_telemetry_cbor_put_result(cbor_enc_t *enc)
+{
+    size_t result_mark = enc->len;
+    int have_result = 0;
+    if (g_ai_telemetry.snapshot.result.is_valid && !enc->overflow) {
+        int result_len = nn_encode_ai_result_cbor(&g_ai_telemetry.snapshot.result,
+                                                  enc->buf + enc->len, enc->cap - enc->len);
+        if (result_len < 0) {
+            LOG_SVC_ERROR("AI result CBOR encode failed; publishing r=null");
+            enc->len = result_mark;
+        } else {
+            enc->len += (size_t)result_len;
+            have_result = 1;
+        }
+    }
+    if (!have_result) {
+        cbor_enc_null(enc);
     }
 }
 
@@ -1583,10 +1674,11 @@ static void ai_telemetry_publish_json(void)
         return;
     }
 
-    if (!g_ai_telemetry.snapshot.valid) {
+    if (!g_ai_telemetry.snapshot.valid || g_ai_telemetry.snapshot.consumed) {
         osMutexRelease(g_ai_telemetry.snapshot_mutex);
         return;
     }
+    g_ai_telemetry.snapshot.consumed = AICAM_TRUE;
 
     cJSON *root = cJSON_CreateObject();
     if (!root) {
@@ -1645,10 +1737,11 @@ static void ai_telemetry_publish_cbor(void)
         return;
     }
 
-    if (!g_ai_telemetry.snapshot.valid) {
+    if (!g_ai_telemetry.snapshot.valid || g_ai_telemetry.snapshot.consumed) {
         osMutexRelease(g_ai_telemetry.snapshot_mutex);
         return;
     }
+    g_ai_telemetry.snapshot.consumed = AICAM_TRUE;
 
     cbor_enc_t enc;
     cbor_enc_init(&enc, g_ai_telemetry.encode_buf, AI_TELEMETRY_ENCODE_BUF_SIZE);
@@ -1664,26 +1757,7 @@ static void ai_telemetry_publish_cbor(void)
     cbor_enc_text(&enc, "it");
     cbor_enc_uint(&enc, g_ai_telemetry.snapshot.inference_time_ms);
     cbor_enc_text(&enc, "r");
-
-    // Same absent-result semantics as the JSON path's ai_result:null - and on
-    // a result-encode failure, rewind and publish r=null rather than dropping
-    // the beat, so consumers keep receiving a liveness signal
-    size_t result_mark = enc.len;
-    int have_result = 0;
-    if (g_ai_telemetry.snapshot.result.is_valid && !enc.overflow) {
-        int result_len = nn_encode_ai_result_cbor(&g_ai_telemetry.snapshot.result,
-                                                  enc.buf + enc.len, enc.cap - enc.len);
-        if (result_len < 0) {
-            LOG_SVC_ERROR("AI result CBOR encode failed; publishing r=null");
-            enc.len = result_mark;
-        } else {
-            enc.len += (size_t)result_len;
-            have_result = 1;
-        }
-    }
-    if (!have_result) {
-        cbor_enc_null(&enc);
-    }
+    ai_telemetry_cbor_put_result(&enc);
 
     size_t payload_len = 0;
     int build_status = cbor_enc_finish(&enc, &payload_len);
@@ -1714,18 +1788,370 @@ static void ai_telemetry_publish(void)
     }
 }
 
+/* ==================== Telemetry Batch Payloads ==================== */
+
+static int ai_telemetry_batch_open_json(ai_telemetry_batch_t *batch,
+                                        const ai_telemetry_batch_env_t *env)
+{
+    static const char beats[] = ",\"beats\":[";
+    cJSON *root = cJSON_CreateObject();
+    int ok = root &&
+             cJSON_AddStringToObject(root, "type", "ai_telemetry_batch") &&
+             cJSON_AddStringToObject(root, "device", env->dev) &&
+             cJSON_AddStringToObject(root, "model_name", env->model) &&
+             cJSON_AddNumberToObject(root, "boot", env->boot) &&
+             cJSON_AddNumberToObject(root, "n", env->n) &&
+             cJSON_AddNumberToObject(root, "dropc", env->dropc) &&
+             cJSON_AddNumberToObject(root, "timestamp_ms", (double)env->t0_ms) &&
+             cJSON_AddNumberToObject(root, "uptime_ms", env->up0_ms) &&
+             cJSON_PrintPreallocated(root, (char *)batch->buf, (int)batch->size, 0);
+    cJSON_Delete(root);
+    if (!ok) {
+        return -1;
+    }
+
+    // The beats array goes in place of the printed object's closing brace
+    batch->len = strlen((const char *)batch->buf) - 1;
+    if (batch->len + sizeof(beats) > batch->size) {
+        return -1;
+    }
+    memcpy(batch->buf + batch->len, beats, sizeof(beats) - 1);
+    batch->len += sizeof(beats) - 1;
+    return 0;
+}
+
+static int ai_telemetry_batch_open_cbor(ai_telemetry_batch_t *batch,
+                                        const ai_telemetry_batch_env_t *env)
+{
+    cbor_enc_t enc;
+    cbor_enc_init(&enc, batch->buf, batch->size);
+    cbor_enc_map(&enc, 9);
+    cbor_enc_text(&enc, "v");
+    cbor_enc_uint(&enc, AI_TELEMETRY_BATCH_VERSION);
+    cbor_enc_text(&enc, "dev");
+    cbor_enc_text(&enc, env->dev);
+    cbor_enc_text(&enc, "model");
+    cbor_enc_text(&enc, env->model);
+    cbor_enc_text(&enc, "boot");
+    cbor_enc_uint(&enc, env->boot);
+    cbor_enc_text(&enc, "n");
+    cbor_enc_uint(&enc, env->n);
+    cbor_enc_text(&enc, "dropc");
+    cbor_enc_uint(&enc, env->dropc);
+    cbor_enc_text(&enc, "t0");
+    cbor_enc_uint(&enc, env->t0_ms);
+    cbor_enc_text(&enc, "up0");
+    cbor_enc_uint(&enc, env->up0_ms);
+    cbor_enc_text(&enc, "b");
+    if (cbor_enc_finish(&enc, &batch->len) != 0 || batch->len + 3 > batch->size) {
+        return -1;
+    }
+
+    // Array with a uint16 count, written at close
+    batch->buf[batch->len] = 0x99;
+    batch->len += 3;
+    return 0;
+}
+
+/**
+ * @brief Write the envelope of a new batch
+ * @return 0, or -1 when it does not fit the buffer
+ */
+static int ai_telemetry_batch_open(ai_telemetry_batch_t *batch, int json,
+                                   const ai_telemetry_batch_env_t *env)
+{
+    batch->count = 0;
+    batch->json = json ? 1U : 0U;
+    batch->up0_ms = env->up0_ms;
+    int status = json ? ai_telemetry_batch_open_json(batch, env)
+                      : ai_telemetry_batch_open_cbor(batch, env);
+    batch->env_len = batch->len;
+    return status;
+}
+
+/**
+ * @brief Append a beat
+ * @param body The beat without dt, a CBOR map (under 24 pairs) or a JSON
+ *        object, whose first byte is replaced by an opening that adds dt
+ * @param cap Payload cap; the first beat of a batch is never refused
+ * @return 0 appended, 1 refused by the cap, -1 does not fit the buffer
+ */
+static int ai_telemetry_batch_append(ai_telemetry_batch_t *batch, uint32_t tick,
+                                     const uint8_t *body, size_t body_len, size_t cap)
+{
+    uint8_t *at = batch->buf + batch->len;
+    size_t room = batch->size - batch->len;
+    uint32_t dt = tick - batch->up0_ms;
+    size_t head_len = 0;
+    if (body_len < 2) {
+        return -1;
+    }
+
+    // The opening with dt (after a separator) is written in place and kept
+    // only when the beat fits
+    if (batch->json) {
+        int n = snprintf((char *)at, room, "%s{\"dt\":%lu,", batch->count ? "," : "",
+                         (unsigned long)dt);
+        if (n < 0 || (size_t)n >= room) {
+            return -1;
+        }
+        head_len = (size_t)n;
+    } else {
+        cbor_enc_t enc;
+        cbor_enc_init(&enc, at, room);
+        cbor_enc_map(&enc, (body[0] & 0x1FU) + 1U);
+        cbor_enc_text(&enc, "dt");
+        cbor_enc_uint(&enc, dt);
+        if (cbor_enc_finish(&enc, &head_len) != 0) {
+            return -1;
+        }
+    }
+
+    size_t len = batch->len + head_len + body_len - 1;
+    size_t closed_len = len + (batch->json ? 2U : 0U);
+    if (batch->count > 0 && closed_len > cap) {
+        return 1;
+    }
+    if (closed_len > batch->size) {
+        return -1;
+    }
+    memcpy(at + head_len, body + 1, body_len - 1);
+    batch->len = len;
+    batch->count++;
+    return 0;
+}
+
+/**
+ * @brief Finish the batch in place (the payload starts at buf); count is 0 after
+ * @return Payload length
+ */
+static size_t ai_telemetry_batch_close(ai_telemetry_batch_t *batch)
+{
+    if (batch->json) {
+        memcpy(batch->buf + batch->len, "]}", 2);
+        batch->len += 2;
+    } else {
+        batch->buf[batch->env_len - 2] = (uint8_t)(batch->count >> 8);
+        batch->buf[batch->env_len - 1] = (uint8_t)batch->count;
+    }
+    batch->count = 0;
+    return batch->len;
+}
+
+/* ==================== Telemetry Batch Publisher ==================== */
+
+/**
+ * @brief Close the open batch and publish it
+ * @details Its beats count as closed whether or not the publish succeeds.
+ *          Once stop is requested the batch is discarded instead: the
+ *          teardown join allows for one publish, the one already in progress.
+ */
+static void ai_telemetry_batch_flush(void)
+{
+    ai_telemetry_batch_t *batch = &g_ai_telemetry.batch;
+    if (batch->count == 0) {
+        return;
+    }
+    if (!g_ai_telemetry.task_running) {
+        batch->count = 0;
+        return;
+    }
+
+    g_ai_telemetry.beats_closed += batch->count;
+    size_t payload_len = ai_telemetry_batch_close(batch);
+    int publish_result = mqtt_service_publish_telemetry_raw(batch->buf, (int)payload_len);
+    if (publish_result < 0) {
+        // Expected while the broker is unreachable; QoS/backpressure errors land here too
+        LOG_SVC_DEBUG("Telemetry batch publish failed: %d", publish_result);
+    }
+}
+
+/**
+ * @brief Take the latched beat and encode it, without dt, into the encode buffer
+ * @details Under the snapshot mutex, as the one-beat paths: CBOR {fid, it, r},
+ *          JSON {"frame_id", "inference_time_ms", "ai_result"}. Sets the
+ *          beat's n, t0_ms and up0_ms in env and copies its model name.
+ * @param model_changed Receives whether the model was reloaded since the last call
+ * @return Encoded length, 0 when there is no new beat or it did not encode
+ */
+static size_t ai_telemetry_take_beat(int json, ai_telemetry_batch_env_t *env,
+                                     aicam_bool_t *model_changed)
+{
+    ai_telemetry_snapshot_t *snap = &g_ai_telemetry.snapshot;
+    size_t len = 0;
+    if (osMutexAcquire(g_ai_telemetry.snapshot_mutex, osWaitForever) != osOK) {
+        return 0;
+    }
+
+    *model_changed = g_ai_telemetry.model_changed;
+    g_ai_telemetry.model_changed = AICAM_FALSE;
+    if (!snap->valid || snap->consumed) {
+        osMutexRelease(g_ai_telemetry.snapshot_mutex);
+        return 0;
+    }
+    snap->consumed = AICAM_TRUE;
+    env->n = snap->index;
+    env->t0_ms = snap->timestamp_ms;
+    env->up0_ms = snap->tick;
+    memcpy(env->model, snap->model_name, sizeof(env->model));
+
+    if (json) {
+        char *out = (char *)g_ai_telemetry.encode_buf;
+        cJSON *root = cJSON_CreateObject();
+        if (root && cJSON_AddNumberToObject(root, "frame_id", snap->frame_id) &&
+            cJSON_AddNumberToObject(root, "inference_time_ms", snap->inference_time_ms)) {
+            cJSON *ai_json = snap->result.is_valid ? nn_create_ai_result_json(&snap->result) : NULL;
+            cJSON_AddItemToObject(root, "ai_result", ai_json ? ai_json : cJSON_CreateNull());
+            int printed = cJSON_PrintPreallocated(root, out, AI_TELEMETRY_ENCODE_BUF_SIZE, 0);
+            // As the CBOR r: a result too large for the encode buffer goes as null
+            if (!printed && ai_json) {
+                LOG_SVC_WARN("AI result JSON exceeds the encode buffer; publishing ai_result=null");
+                cJSON_ReplaceItemInObject(root, "ai_result", cJSON_CreateNull());
+                printed = cJSON_PrintPreallocated(root, out, AI_TELEMETRY_ENCODE_BUF_SIZE, 0);
+            }
+            len = printed ? strlen(out) : 0;
+        }
+        cJSON_Delete(root);
+    } else {
+        cbor_enc_t enc;
+        cbor_enc_init(&enc, g_ai_telemetry.encode_buf, AI_TELEMETRY_ENCODE_BUF_SIZE);
+        cbor_enc_map(&enc, 3);
+        cbor_enc_text(&enc, "fid");
+        cbor_enc_uint(&enc, snap->frame_id);
+        cbor_enc_text(&enc, "it");
+        cbor_enc_uint(&enc, snap->inference_time_ms);
+        cbor_enc_text(&enc, "r");
+        ai_telemetry_cbor_put_result(&enc);
+        if (cbor_enc_finish(&enc, &len) != 0) {
+            len = 0;
+        }
+    }
+    osMutexRelease(g_ai_telemetry.snapshot_mutex);
+
+    if (len == 0) {
+        LOG_SVC_ERROR("Failed to encode telemetry beat");
+    }
+    return len;
+}
+
+/**
+ * @brief Add the encoded beat to the open batch, or to a new one
+ * @details A beat the open batch cannot take closes it first; a beat larger
+ *          than the cap goes alone. A batch that reaches the cap closes at
+ *          once. A beat that is not added counts in dropc.
+ */
+static void ai_telemetry_batch_add(ai_telemetry_batch_env_t *env, size_t len, int json)
+{
+    ai_telemetry_batch_t *batch = &g_ai_telemetry.batch;
+    uint16_t cap = mqtt_service_get_telemetry_batch_bytes();
+    int status = 1;
+    if (batch->count > 0) {
+        status = ai_telemetry_batch_append(batch, env->up0_ms, g_ai_telemetry.encode_buf, len, cap);
+    }
+    if (status != 0) {
+        ai_telemetry_batch_flush();
+        json_config_get_mqtt_client_id(env->dev, sizeof(env->dev));
+        env->dropc = env->n - g_ai_telemetry.beats_closed;
+        status = ai_telemetry_batch_open(batch, json, env);
+        if (status == 0) {
+            status = ai_telemetry_batch_append(batch, env->up0_ms, g_ai_telemetry.encode_buf, len, cap);
+        }
+    }
+    if (status != 0) {
+        LOG_SVC_ERROR("Telemetry beat does not fit the batch buffer");
+    } else if (batch->len + (batch->json ? 2U : 0U) >= cap) {
+        ai_telemetry_batch_flush();
+    }
+}
+
+/**
+ * @brief Milliseconds until the open batch's first beat is batch_ms old (0 when due)
+ */
+static uint32_t ai_telemetry_batch_left_ms(uint32_t batch_ms)
+{
+    uint32_t age = osKernelGetTickCount() - g_ai_telemetry.batch.up0_ms;
+    return age < batch_ms ? batch_ms - age : 0;
+}
+
+/**
+ * @brief Batch the latched beat on a publisher task wake-up
+ * @details Reads the knobs on every wake: a smaller cap or a shorter window
+ *          applies through the cap and age checks. The task wakes when the
+ *          open batch is due.
+ * @return AICAM_FALSE when the one-beat path runs instead
+ */
+static aicam_bool_t ai_telemetry_batch_step(void)
+{
+    ai_telemetry_batch_t *batch = &g_ai_telemetry.batch;
+    // The Si91x client used during remote wakeup drops payloads over 1800 B, so
+    // beats go one per message there, as with batching off
+    uint16_t batch_ms = (mqtt_service_get_api_type() == MQTT_API_TYPE_SI91X)
+                            ? 0 : mqtt_service_get_telemetry_batch_ms();
+    int json = (mqtt_service_get_telemetry_format() == MQTT_TELEMETRY_FORMAT_JSON);
+
+    if (!mqtt_service_get_telemetry_enabled()) {
+        // Nothing is published while disabled: discard, the beats count in dropc
+        batch->count = 0;
+        return AICAM_FALSE;
+    }
+    // Close on age (always due once the window is 0) or on a format change,
+    // since the formats differ in envelope and separators
+    if (batch->count > 0 && (json != batch->json || ai_telemetry_batch_left_ms(batch_ms) == 0)) {
+        ai_telemetry_batch_flush();
+    }
+    if (batch_ms == 0) {
+        g_ai_telemetry.batching = AICAM_FALSE;
+        return AICAM_FALSE;
+    }
+
+    if (!g_ai_telemetry.batching) {
+        // Beats sent one per message advance n too, so each start is a new boot
+        g_ai_telemetry.batching = AICAM_TRUE;
+        if (HAL_RNG_GenerateRandomNumber(&hrng, &g_ai_telemetry.boot_id) != HAL_OK) {
+            g_ai_telemetry.boot_id = osKernelGetTickCount() ^ (uint32_t)rtc_get_timestamp_ms();
+        }
+        if (!batch->buf && (batch->buf = buffer_calloc(1, AI_TELEMETRY_BATCH_BUF_SIZE)) != NULL) {
+            batch->size = AI_TELEMETRY_BATCH_BUF_SIZE;
+        }
+        if (!batch->buf) {
+            LOG_SVC_ERROR("No memory for telemetry batches; publishing one beat per message");
+        }
+    }
+    if (!batch->buf) {
+        return AICAM_FALSE;
+    }
+
+    ai_telemetry_batch_env_t env = {.boot = g_ai_telemetry.boot_id};
+    aicam_bool_t model_changed = AICAM_FALSE;
+    size_t len = ai_telemetry_take_beat(json, &env, &model_changed);
+    // A batch names one model: close it before the reloaded model's first beat
+    if (model_changed) {
+        ai_telemetry_batch_flush();
+    }
+    if (len > 0) {
+        ai_telemetry_batch_add(&env, len, json);
+    }
+    return AICAM_TRUE;
+}
+
 /**
  * @brief Telemetry publisher task
- * @details Publishes on each new-result signal; the wait timeout doubles as
- *          the pipeline-reconciliation tick so config changes apply within ~1 s.
+ * @details Publishes on each new-result signal, or batches; the wait timeout
+ *          doubles as the pipeline-reconciliation tick so config changes apply
+ *          within ~1 s, and shortens so an open batch closes on age.
  */
 static void ai_telemetry_task(void *argument)
 {
     (void)argument;
 
     while (g_ai_telemetry.task_running) {
+        uint32_t wait_ms = 1000;
+        if (g_ai_telemetry.batch.count > 0) {
+            uint32_t left = ai_telemetry_batch_left_ms(mqtt_service_get_telemetry_batch_ms());
+            wait_ms = left < wait_ms ? left : wait_ms;
+        }
         uint32_t flags = osEventFlagsWait(g_ai_telemetry.event_flags, AI_TELEMETRY_FLAG_RESULT,
-                                          osFlagsWaitAny, 1000);
+                                          osFlagsWaitAny, wait_ms);
 
         if (!g_ai_telemetry.task_running) {
             break;
@@ -1733,6 +2159,9 @@ static void ai_telemetry_task(void *argument)
 
         ai_telemetry_reconcile_pipeline();
 
+        if (ai_telemetry_batch_step()) {
+            continue;
+        }
         if ((int32_t)flags >= 0 && (flags & AI_TELEMETRY_FLAG_RESULT)) {
             ai_telemetry_publish();
         }
@@ -1889,6 +2318,10 @@ static void ai_telemetry_deinit(void)
     if (g_ai_telemetry.encode_buf) {
         buffer_free(g_ai_telemetry.encode_buf);
         g_ai_telemetry.encode_buf = NULL;
+    }
+    if (g_ai_telemetry.batch.buf) {
+        buffer_free(g_ai_telemetry.batch.buf);
+        g_ai_telemetry.batch.buf = NULL;
     }
 }
 

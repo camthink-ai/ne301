@@ -147,6 +147,19 @@ void MX_TIM3_DeInit(void)
   HAL_TIM_PWM_DeInit(&htim3);
 }
 
+/* IR board variant: the light-board LED is an IR LED tuned in ir_ver with a
+ * fast PWM (PSC=0, ARR=199) instead of the white-LED tuning from
+ * MX_TIM3_Init (PSC=15, ARR=1599). Called from flash_init() right after
+ * MX_TIM3_Init() with compare=0, before any brightness is applied. Standard
+ * boards never call this. */
+void TIM3_config_ir_period(void)
+{
+  __HAL_TIM_SET_PRESCALER(&htim3, 0);
+  __HAL_TIM_SET_AUTORELOAD(&htim3, 199);
+  /* Latch the new PSC/ARR shadow registers and restart the counter. */
+  HAL_TIM_GenerateEvent(&htim3, TIM_EVENTSOURCE_UPDATE);
+}
+
 void TIM_set_duty(uint32_t duty)
 {
   if(duty > 100) duty = 100;

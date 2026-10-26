@@ -402,6 +402,8 @@ typedef struct {
     char telemetry_topic[MAX_TOPIC_LENGTH];      // Telemetry topic
     uint8_t telemetry_qos;                       // Telemetry QoS (0-2)
     uint8_t telemetry_format;                    // Payload format (mqtt_telemetry_format_t)
+    uint16_t telemetry_batch_ms;                 // Longest a beat waits in a batch (0 = off)
+    uint16_t telemetry_batch_bytes;              // Batch payload cap in bytes
 } mqtt_service_config_t;
 
 /**
@@ -414,14 +416,32 @@ typedef enum {
     MQTT_TELEMETRY_FORMAT_CBOR = 1               // Compact CBOR binary payload
 } mqtt_telemetry_format_t;
 
-/** Stored in image_config_t.isp_mode — built-in profiles vs NVS-backed custom IQ. */
-#define IMAGE_ISP_MODE_OUTDOOR  0u   /* default */
-#define IMAGE_ISP_MODE_INDOOR   1u
-#define IMAGE_ISP_MODE_CUSTOM   255u   /* 0xFF: use isp_config_t from NVS when valid */
+/**
+ * @brief Continuous AI telemetry batching
+ * @note telemetry_batch_ms 0 keeps one beat per message; otherwise beats are
+ *       batched into messages that close when the first beat is
+ *       telemetry_batch_ms old or the next beat would pass
+ *       telemetry_batch_bytes.
+ */
+#define MQTT_TELEMETRY_BATCH_MS_MIN          200U
+#define MQTT_TELEMETRY_BATCH_MS_MAX          10000U
+#define MQTT_TELEMETRY_BATCH_BYTES_MIN       512U
+#define MQTT_TELEMETRY_BATCH_BYTES_MAX       16384U
+#define MQTT_TELEMETRY_BATCH_BYTES_DEFAULT   5000U
 
-/** Stored in image_config_t.grayscale — ISP luma matrix when enabled (PIPE1 stays RGB565). */
-#define IMAGE_GRAYSCALE_OFF     AICAM_FALSE
-#define IMAGE_GRAYSCALE_ON      AICAM_TRUE
+/**
+ * Stored in image_config_t.isp_mode. The standard board keeps the original
+ * outdoor/indoor/custom semantics and values; the IR board uses the day/night
+ * set — DAY aliases OUTDOOR (tuned color profile), NIGHT/AUTO are IR-board
+ * only (IR night IQ profile / auto-switch by the configured source).
+ * Legal sets are validated per board variant (see json_config_mgr.c).
+ */
+#define IMAGE_ISP_MODE_OUTDOOR  0u   /* default; on IR boards this is DAY */
+#define IMAGE_ISP_MODE_INDOOR   1u   /* standard board only */
+#define IMAGE_ISP_MODE_CUSTOM   255u   /* 0xFF: standard board only, use isp_config_t from NVS when valid */
+#define IMAGE_ISP_MODE_NIGHT    2u   /* IR board only: IR night IQ profile */
+#define IMAGE_ISP_MODE_AUTO     3u   /* IR board only: auto-switch by day/night source */
+#define IMAGE_ISP_MODE_DAY      IMAGE_ISP_MODE_OUTDOOR
 
 //device service configuration structure
 typedef struct {
@@ -429,8 +449,7 @@ typedef struct {
     uint32_t contrast;                       // image contrast (0-100)
     aicam_bool_t horizontal_flip;            // image horizontal flip
     aicam_bool_t vertical_flip;              // image vertical flip
-    uint32_t isp_mode;                       // IMAGE_ISP_MODE_OUTDOOR(0) / INDOOR(1) / CUSTOM
-    aicam_bool_t grayscale;                  // AICAM_TRUE: ISP grayscale overlay (PIPE1 RGB565)
+    uint32_t isp_mode;                       // standard: OUTDOOR(0)/INDOOR(1)/CUSTOM(255); IR: DAY(0)/NIGHT(2)/AUTO(3)
     uint32_t aec;                            // image auto exposure control (0=manual, 1=auto)
     uint32_t startup_skip_frames;            // frames to skip on camera startup for stabilization (1-300)
     uint32_t fast_capture_skip_frames;       // frames to skip for fast capture (number of skipped frames for snapshot capture)
@@ -568,10 +587,56 @@ typedef struct {
                                              // captures no longer flash it; wakeup path unaffected
 } light_config_t;
 
+/**
+ * @brief Day/Night auto-switch judgment source (IR board only)
+ */
+typedef enum {
+    DAY_NIGHT_SOURCE_TIME         = 0,  // custom time range
+    DAY_NIGHT_SOURCE_LIGHT_SENSOR = 1,  // ambient light sensor (ADC percent)
+    DAY_NIGHT_SOURCE_ISP_STATS    = 2,  // ISP statistics (lux/avgL/exposure/gain)
+} day_night_source_t;
+
+/**
+ * @brief Day/Night configuration (IR board only)
+ * @note The active mode (day/night/auto) is stored in image_config_t.isp_mode
+ *       (IMAGE_ISP_MODE_DAY/NIGHT/AUTO). This struct holds the auto-switch
+ *       source selection, per-source thresholds/schedule and IR light
+ *       intensity. Dormant on standard boards (no runtime effect).
+ */
+typedef struct {
+    day_night_source_t auto_source;          // judgment source when mode == AUTO
+
+    /* TIME source */
+    uint32_t time_start_hour;                 // night window start (hour 0-23)
+    uint32_t time_start_minute;               // night window start (minute 0-59)
+    uint32_t time_end_hour;                   // night window end (hour 0-23)
+    uint32_t time_end_minute;                 // night window end (minute 0-59)
+
+    /* LIGHT_SENSOR source (0-100; lower = darker) */
+    uint8_t  light_sensor_night_threshold;   // <= enter night
+    uint8_t  light_sensor_day_threshold;     // >= return to day (hysteresis)
+
+    /* ISP_STATS source */
+    uint32_t isp_night_enter_lux;            // lux EMA <= -> night
+    uint32_t isp_day_enter_lux;              // lux EMA >= -> day
+    uint32_t isp_night_enter_exposure_us;    // us
+    uint32_t isp_night_enter_gain_mdb;       // milli-dB
+    uint8_t  isp_night_enter_avgl;           // average L (0-255)
+    uint32_t isp_day_enter_exposure_us;      // us
+    uint32_t isp_day_enter_gain_mdb;         // milli-dB
+    uint8_t  isp_day_enter_avgl;             // average L (0-255)
+    uint8_t  isp_ema_alpha_num;              // EMA smoothing numerator
+    uint8_t  isp_ema_alpha_den;              // EMA smoothing denominator
+
+    /* IR light */
+    uint8_t  ir_brightness;                  // IR light intensity when night (0-100)
+} day_night_config_t;
+
 typedef struct {
     image_config_t image_config;
     light_config_t light_config;
     isp_config_t isp_config;
+    day_night_config_t day_night_config;
 } device_service_config_t;
 
 typedef struct {
@@ -1037,6 +1102,11 @@ aicam_result_t json_config_get_mqtt_service_config(mqtt_service_config_t *mqtt_s
 aicam_result_t json_config_set_mqtt_service_config(const mqtt_service_config_t *mqtt_service_config);
 
 /**
+ * @brief Get the MQTT client id as a NUL-terminated copy
+ */
+void json_config_get_mqtt_client_id(char *client_id, size_t size);
+
+/**
  * @brief Get device service image configuration
  * @param image_config Image configuration structure pointer
  * @return aicam_result_t Operation result
@@ -1063,6 +1133,20 @@ aicam_result_t json_config_get_device_service_light_config(light_config_t *light
  * @return aicam_result_t Operation result
  */
 aicam_result_t json_config_set_device_service_light_config(const light_config_t *light_config);
+
+/**
+ * @brief Get day/night configuration (IR board feature; dormant on standard)
+ * @param day_night_config Day/Night configuration structure pointer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_get_day_night_config(day_night_config_t *day_night_config);
+
+/**
+ * @brief Set day/night configuration (IR board feature; dormant on standard)
+ * @param day_night_config Day/Night configuration structure pointer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_set_day_night_config(const day_night_config_t *day_night_config);
 
 /**
  * @brief Get ISP configuration
@@ -1184,6 +1268,11 @@ aicam_result_t json_config_set_capture_upload_config(const capture_upload_config
  * @brief Fill capture-upload struct with safe defaults
  */
 void json_config_capture_upload_defaults(capture_upload_config_t *config);
+
+/**
+ * @brief Create the LittleFS certificate directory (/certs) if it is missing
+ */
+void json_config_ensure_cert_dir(void);
 
 /**
  * @brief Get webhook custom CA certificate (from LittleFS file)
