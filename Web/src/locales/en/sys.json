@@ -36,6 +36,186 @@
       "device_information": "Device Information",
       "capture_settings": "Capture Settings"
     },
+    "app_management": {
+      "slot": {
+        "deploy": "Deploy App",
+        "manage": "Manage App",
+        "status": "App Status"
+      },
+      "page": {
+        "installed_no_business": "An administrator-installed app is committed on this device, but this web UI has no business view for it yet.",
+        "installed_no_business_hint": "Open Manage App to view identity, run once, update or uninstall.",
+        "abnormal_heading": "Cannot confirm the app state",
+        "abnormal_detail": "The device reports the app unavailable or the state query failed. Re-check the state; dangerous operations stay blocked until a definite state is confirmed.",
+        "abnormal_reason": "Reported detail",
+        "recheck": "Re-check",
+        "querying": "Querying app status...",
+        "undetermined": "Cannot confirm the app state. Please retry.",
+        "empty_title": "No app installed",
+        "empty_hint": "Install a single-file .neapp package as a high-privilege administrator to add optional features.",
+        "install_app": "Install App"
+      },
+      "state": {
+        "label": "Device state",
+        "querying": "Querying...",
+        "installed": "Installed",
+        "unavailable": "Unavailable",
+        "not_installed": "Not Installed",
+        "undetermined": "Undetermined",
+        "unavailable_note": "A previously committed app is retained but cannot execute.",
+        "undetermined_warning": "The device storage state cannot be determined. Install, run and uninstall stay disabled until the device reports a definite state."
+      },
+      "labels": {
+        "status": "Status",
+        "publisher": "Install identity",
+        "app_id": "App ID",
+        "version": "Version",
+        "tbs_sha256": "Native integrity digest SHA-256"
+      },
+      "dialog": {
+        "deploy_desc": "Choose a single-file .neapp package containing the Native app and its UI. A high-privilege administrator installs it; the device checks package structure, compatibility and content integrity.",
+        "dropzone_title": "Select a single-file .neapp package",
+        "dropzone_single": "One package containing Native and UI",
+        "browse": "Browse Files",
+        "file_unverified": "Not yet verified by the device",
+        "file_note": "Selecting a file does not install it; installation requires administrator confirmation.",
+        "verify_note": "Only device-confirmed results establish installation, update or uninstallation.",
+        "deploy_confirm": "Confirm Installation",
+        "update_confirm": "Confirm Update",
+        "manage_current": "App on this device",
+        "manage_chip": "Administrator installed app",
+        "update_row": "Update App",
+        "uninstall_row": "Uninstall App",
+        "close": "Close",
+        "back": "Back",
+        "update_title": "Update App",
+        "current_version": "Current version",
+        "uninstall_question": "Uninstall the current app?",
+        "uninstall_warning": "After uninstalling, this app's features will no longer be available and its tab will be removed from Application Management.",
+        "uninstall_data_note": "Other system configuration is not removed automatically; app data follows the device's own rules.",
+        "uninstall_confirm": "Uninstall App",
+        "running_block_note": "The app is running, so it cannot be updated or uninstalled. Stop the app first, then try again.",
+        "state_changed_note": "The device state has changed. Go back and confirm again before continuing.",
+        "app_changed_note": "The current app has changed since this confirmation was opened. Go back and confirm again."
+      },
+      "install": {
+        "submitting": "Submitting...",
+        "progress": "Uploading and verifying on the device. Do not close the page. The result shown here comes only from the device response.",
+        "installed": "The device confirmed the app is installed.",
+        "already_installed": "The device reports this package is already installed."
+      },
+      "run": {
+        "title": "Run once",
+        "note": "Runs the committed app once on explicit request. Use Stop to end a running session; there is no automatic run and no scheduler.",
+        "button": "Run once",
+        "submitting": "Running...",
+        "runtime_state": "Runtime",
+        "running": "Running",
+        "idle": "Idle",
+        "busy_note": "The app is running. The device refuses further run requests until it reports idle.",
+        "session_result": "This session's run response",
+        "session_note": "This is the response of a run request issued in this browser session. The device does not persist it; it disappears after refresh.",
+        "entry_returned": "Entry returned",
+        "entry_result": "App entry result",
+        "log_truncated": "The device truncated the log.",
+        "host_refused": "Run refused by host"
+      },
+      "stop": {
+        "button": "Stop",
+        "submitting": "Stopping...",
+        "busy_note": "The stop request is still in progress. The app entry has not returned yet; refresh later to see the final state.",
+        "host_refused": "Stop refused by host"
+      },
+      "start": {
+        "button": "Start",
+        "submitting": "Starting...",
+        "host_refused": "Start refused by host"
+      },
+      "uninstall": {
+        "submitting": "Uninstalling...",
+        "cancel": "Cancel",
+        "processing_detail": "Revoking app access and purging app-scoped data."
+      },
+      "actions": {
+        "refresh": "Refresh"
+      },
+      "auth": {
+        "unauthorized": "Your session is no longer valid. Sensitive app information is hidden.",
+        "relogin": "Log in again",
+        "forbidden": "The device refused this operation: the current credentials do not have high-privilege app management permission."
+      },
+      "errors": {
+        "indeterminate": "The request outcome is unknown. The device did not confirm the operation; the actual committed state is being queried.",
+        "pending_verification": "Waiting for the device to report its actual committed state. No success is assumed."
+      },
+      "file": {
+        "empty": "The selected file is empty.",
+        "too_large": "The selected file exceeds the device package size limit."
+      },
+      "envelope": {
+        "INVALID_REQUEST": "The device rejected the request as malformed.",
+        "METHOD_NOT_ALLOWED": "The device does not allow this HTTP method.",
+        "INTERNAL_ERROR": "The device reported an internal error.",
+        "SERVICE_UNAVAILABLE": "The device service is temporarily unavailable.",
+        "TIMEOUT": "The device did not answer in time.",
+        "TOO_MANY_REQUESTS": "Too many requests. Retry later.",
+        "GENERIC": "The device refused the request."
+      },
+      "reasons": {
+        "PARAM": "The device refused the request parameters.",
+        "BUSY": "The device is busy. The previous operation is still in progress; retry later.",
+        "BAD_PACKAGE": "The device cannot parse the package.",
+        "LEGACY_SIGNED_FORMAT_REJECTED": "This signed package format is retired. Install a NEAPP05 unsigned package.",
+        "LEGACY_SIGNED_STATE_PRESERVED": "A signed app record already exists. It was preserved and blocks unsigned installation.",
+        "LEGACY_SIGNED_PAIR_STATE_PRESERVED": "Previous signed UI or pair state exists. It was preserved and blocks unsigned installation.",
+        "UNKNOWN_FORMAT_REJECTED": "The device does not recognize this app package format.",
+        "TARGET_INCOMPATIBLE": "This package does not target this board.",
+        "ABI_INCOMPATIBLE": "The package ABI does not match this device.",
+        "RESOURCE_LIMIT": "The package exceeds a device resource limit.",
+        "STORAGE_STATE_UNKNOWN": "The device storage state is unknown. The operation was refused; rebooting the device resolves a pending intent.",
+        "STORAGE_FULL": "The device storage is full.",
+        "WRITE_FAILED": "The device failed to write the package.",
+        "COMMIT_FAILED": "The device failed to commit the install transaction.",
+        "VERSION_CONFLICT": "The same version with different content is already committed.",
+        "CONTENT_CONFLICT": "The device refuses this package because its content conflicts with the content of the committed app.",
+        "NATIVE_VERIFY_FAILED": "The native part of the package failed verification.",
+        "UI_VERIFY_FAILED": "The UI part of the package failed verification.",
+        "DOWNGRADE_REFUSED": "The device refuses to downgrade to an older version.",
+        "PUBLISHER_CONFLICT": "Another publisher already occupies this app identity.",
+        "IDENTITY_CONFLICT": "A different identity already occupies the app. Uninstall it explicitly first.",
+        "NOT_FOUND": "The device reports no such committed app.",
+        "UNAVAILABLE": "The committed app exists but is not executable on this device.",
+        "NOT_INSTALLED": "No app is committed on the device.",
+        "LOAD_FAILED": "The device failed to load the app for execution.",
+        "RUNTIME_UNAVAILABLE": "The device runtime is unavailable.",
+        "UNKNOWN": "The device reported an unrecognized failure."
+      },
+      "sidecar": {
+        "tab_label": "Line Crossing (App)",
+        "origin_unavailable": "The app site is not configured for this deployment. Only app status and management are available.",
+        "revoked_title": "Trusted app session revoked",
+        "status_native": "Native app",
+        "status_generation": "Trusted generation",
+        "status_video": "Video",
+        "status_note": "Live video and unreviewed capabilities are reported as unavailable until authorized.",
+        "dangerous_confirm_note": "The app requested resetting business counters. This destructive operation requires an explicit administrator confirmation.",
+        "dangerous_confirm_button": "Approve counter reset"
+      },
+      "uninstall_success": {
+        "title": "Uninstalled",
+        "heading": "Uninstalled",
+        "detail": "Line Crossing and its app-scoped data have been deleted."
+      },
+      "uninstall_abnormal": {
+        "title": "Uninstall incomplete",
+        "heading": "Uninstall has not completed",
+        "detail": "Old app access is disabled, but some cleanup results cannot be confirmed. Verify the recovery state first; until completion, reinstalling the same identity must not be treated as a fresh install."
+      },
+      "cleanup": {
+        "title": "Uninstall incomplete",
+        "detail": "Old app access is disabled, but some cleanup results cannot be confirmed. Verify the recovery state first; until completion, reinstalling the same identity must not be treated as a fresh install."
+      }
+    },
     "login": {
       "login_title": "Login Account",
       "login_subtitle": "Please enter your login information",

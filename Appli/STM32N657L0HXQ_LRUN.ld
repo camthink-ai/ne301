@@ -19,6 +19,7 @@ MEMORY
   AXI_SRAM_UNCACHED (xrw)   : ORIGIN = 0x341b2000, LENGTH = 312K
   /* External PSRAM APP_EXT: 0x90400000 ~ 0x93FFFFFF (60MB, see mem_map.h) */
   PSRAM (xrw)               : ORIGIN = 0x90400000, LENGTH = 60M
+  APP_HOST_RAM (xrw)        : ORIGIN = 0x93E00000, LENGTH = 2M
 }
 
 /* Sections */
@@ -177,8 +178,13 @@ SECTIONS
   {
      . = ALIGN(32);
     *(.psram_bss)
-    . = ALIGN(32);
+     . = ALIGN(32);
+    __psram_bss_end__ = .;
   } >PSRAM
+
+  __app_host_ram_base__ = ORIGIN(APP_HOST_RAM);
+  __app_host_ram_end__ = ORIGIN(APP_HOST_RAM) + LENGTH(APP_HOST_RAM);
+  ASSERT(__psram_bss_end__ <= ORIGIN(APP_HOST_RAM), "APP_HOST_RAM overlaps .psram_bss")
 
   /* Remove information from the compiler libraries */
   /DISCARD/ :

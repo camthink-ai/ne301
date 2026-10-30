@@ -1950,12 +1950,17 @@ aicam_result_t device_pref_stream_tab_handler(http_handler_context_t *ctx) {
  */
 aicam_result_t system_factory_reset_handler(http_handler_context_t *ctx) {
     if (!ctx) return AICAM_ERROR_INVALID_PARAM;
-    
+
     // Only allow POST method
     if (!web_api_verify_method(ctx, "POST")) {
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
     }
-    
+
+    if (!web_server_high_privilege_allowed(ctx)) {
+        LOG_SVC_WARN("device: factory reset refused, high-privilege admin authentication required");
+        return api_response_error(ctx, API_ERROR_FORBIDDEN, "High-privilege administrator authentication required");
+    }
+
     // Parse JSON request body
     cJSON* request_json = web_api_parse_body(ctx);
     if (!request_json) {
@@ -2215,12 +2220,23 @@ aicam_result_t device_storage_format_handler(http_handler_context_t *ctx) {
     if (!web_api_verify_method(ctx, "POST")) {
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
     }
+    if (!web_server_high_privilege_allowed(ctx)) {
+        LOG_SVC_WARN("device: storage format refused, high-privilege admin authentication required");
+        return api_response_error(ctx, API_ERROR_FORBIDDEN, "High-privilege administrator authentication required");
+    }
     if (!is_device_service_running()) {
         return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE, "Device service is not running");
     }
 
     LOG_SVC_WARN("device: formatting internal flash LittleFS (all flash data erased)");
-    storage_format();
+    int fmt_ret = storage_format();
+    if (fmt_ret != 0) {
+        char msg[WEB_API_MESSAGE_MAX];
+        snprintf(msg, sizeof(msg), "LittleFS format failed (result=%d); volume contents and integrity are unproven", fmt_ret);
+        LOG_SVC_ERROR("device: %s", msg);
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, msg);
+    }
+
     /* Rebuild the captures directory tree and invalidate the (now-empty)
      * record-count cache. */
     upload_coordinator_reload_config();

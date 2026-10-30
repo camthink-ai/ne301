@@ -40,6 +40,7 @@
  *  - FSBL: no RTOS exists, nothing to yield to — plain HAL wait.
  * --------------------------------------------------------------------------- */
 #define XSPI_POLL_SPIN_BEFORE_YIELD 64U
+#define XSPI_WEL_TIMEOUT_MS 100U
 
 #ifdef XSPI_SKIP_XSPIM_CONFIG
 #include "cmsis_os2.h"
@@ -517,10 +518,11 @@ XSPI_NOR_ChipType XSPI_NOR_DetectChip(XSPI_HandleTypeDef *hxspi)
 * @param  hxspi: XSPI handle
 * @retval None
 */
-static void XSPI_WriteEnable(XSPI_HandleTypeDef *hxspi)
+static int32_t XSPI_WriteEnable(XSPI_HandleTypeDef *hxspi)
 {
     XSPI_RegularCmdTypeDef  sCommand ={0};
     uint8_t reg[2];
+    uint32_t start_tick = HAL_GetTick();
 
     /* Enable write operations ------------------------------------------ */
     sCommand.OperationType      = HAL_XSPI_OPTYPE_COMMON_CFG;
@@ -543,7 +545,7 @@ static void XSPI_WriteEnable(XSPI_HandleTypeDef *hxspi)
 
     if (HAL_XSPI_Command(hxspi, &sCommand, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK)
     {
-        Error_Handler();
+        return -1;
     }
 
     /* Configure automatic polling mode to wait for write enabling ---- */
@@ -569,14 +571,22 @@ static void XSPI_WriteEnable(XSPI_HandleTypeDef *hxspi)
     {
         if (HAL_XSPI_Command(hxspi, &sCommand, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK)
         {
-            Error_Handler();
+            return -1;
         }
 
         if (HAL_XSPI_Receive(hxspi, reg, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK)
         {
-            Error_Handler();
+            return -1;
         }
-    } while((reg[0] & WRITE_ENABLE_MASK_VALUE) != WRITE_ENABLE_MATCH_VALUE);
+    } while((reg[0] & WRITE_ENABLE_MASK_VALUE) != WRITE_ENABLE_MATCH_VALUE
+            && (HAL_GetTick() - start_tick) < XSPI_WEL_TIMEOUT_MS);
+
+    if ((reg[0] & WRITE_ENABLE_MASK_VALUE) != WRITE_ENABLE_MATCH_VALUE)
+    {
+        return -1;
+    }
+
+    return 0;
 }
 
 /**
@@ -584,7 +594,7 @@ static void XSPI_WriteEnable(XSPI_HandleTypeDef *hxspi)
 * @param  hxspi: XSPI handle
 * @retval None
 */
-static void XSPI_AutoPollingMemReady(XSPI_HandleTypeDef *hxspi)
+static int32_t XSPI_AutoPollingMemReady(XSPI_HandleTypeDef *hxspi)
 {
     XSPI_RegularCmdTypeDef  sCommand={0};
     uint8_t reg[2];
@@ -622,12 +632,12 @@ static void XSPI_AutoPollingMemReady(XSPI_HandleTypeDef *hxspi)
     {
         if (HAL_XSPI_Command(hxspi, &sCommand, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK)
         {
-            Error_Handler();
+            return -1;
         }
 
         if (HAL_XSPI_Receive(hxspi, reg, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK)
         {
-            Error_Handler();
+            return -1;
         }
 
         /* Memory still busy: once the tight-poll burst is exhausted, back
@@ -643,8 +653,10 @@ static void XSPI_AutoPollingMemReady(XSPI_HandleTypeDef *hxspi)
 
     if ((reg[0] & MEMORY_READY_MASK_VALUE) != MEMORY_READY_MATCH_VALUE)
     {
-        Error_Handler();
+        return -1;
     }
+
+    return 0;
 }
 
 /**
@@ -936,7 +948,9 @@ int32_t XSPI_NOR_EnableMemoryMappedMode(void)
     }
 
     /* Configure automatic polling mode to wait for end of erase -------- */
-    XSPI_AutoPollingMemReady(&hxspi2);
+    if (XSPI_AutoPollingMemReady(&hxspi2) != 0) {
+        Error_Handler();
+    }
 
     /* Cached data is not up to date due to indirect write.
         Force new read by invalidating the corresponding cache lines */
@@ -1105,7 +1119,9 @@ void XSPI_NOR_ResetAndDeInit(void)
 int32_t XSPI_NOR_Erase4K(uint32_t EraseAddr)
 {
     XSPI_NOR_ChipType chip = xspi_nor_chip;
-    XSPI_WriteEnable(&hxspi2);
+    if (XSPI_WriteEnable(&hxspi2) != 0) {
+        return -1;
+    }
 
     XSPI_RegularCmdTypeDef sCommand = {0};
     sCommand.OperationType      = HAL_XSPI_OPTYPE_COMMON_CFG;
@@ -1134,7 +1150,9 @@ int32_t XSPI_NOR_Erase4K(uint32_t EraseAddr)
         return -1;
 
     // Wait for erase completion
-    XSPI_AutoPollingMemReady(&hxspi2);
+    if (XSPI_AutoPollingMemReady(&hxspi2) != 0) {
+        return -1;
+    }
 
     return 0;
 }
@@ -1155,7 +1173,9 @@ int32_t XSPI_NOR_Write(const uint8_t *pData, uint32_t WriteAddr, uint32_t Size)
             chunk = bytes_left;
 
         // 1. Enable write
-        XSPI_WriteEnable(&hxspi2);
+        if (XSPI_WriteEnable(&hxspi2) != 0) {
+            return -1;
+        }
 
         // 2. Configure write command
         sCommand.OperationType      = HAL_XSPI_OPTYPE_COMMON_CFG;
@@ -1189,7 +1209,9 @@ int32_t XSPI_NOR_Write(const uint8_t *pData, uint32_t WriteAddr, uint32_t Size)
             return -2;
 
         // 4. Wait for write completion
-        XSPI_AutoPollingMemReady(&hxspi2);
+        if (XSPI_AutoPollingMemReady(&hxspi2) != 0) {
+            return -1;
+        }
         // Update pointer and count
         current_addr += chunk;
         pData += chunk;

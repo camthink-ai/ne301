@@ -5,6 +5,7 @@
 #include "storage.h"
 #include "sd_file.h"
 #include "json_config_mgr.h"
+#include "json_config_boot_gate.h"
 #include "aicam_types.h"
 #include "aicam_error.h"
 #include "drtc.h"
@@ -24,6 +25,10 @@
 #include "factory_test.h"
 #include "rtmp_service.h"
 #include "system_service.h"
+#if NE301_APP_HOST_POC
+#include "app_host.h"
+#include "app_report_service_device.h"
+#endif
 
 
 static int cat_cmd(int argc, char* argv[]) 
@@ -266,10 +271,15 @@ static int seektest_cmd(int argc, char* argv[])
     return 0;
 }
 
-static int format_cmd(int argc, char* argv[]) 
+static int format_cmd(int argc, char* argv[])
 {
+    int ret;
     LOG_SIMPLE("The file system is being formatted...\r\n");
-    storage_format();
+    ret = storage_format();
+    if (ret != 0) {
+        LOG_SIMPLE("The file system formatting failed(ret=%d), volume state unproven\r\n", ret);
+        return -1;
+    }
     LOG_SIMPLE("The file system formatting is complete.\r\n");
     return 0;
 }
@@ -333,6 +343,11 @@ static int fget_cmd(int argc, char* argv[])
         // With key parameter, read key
         char *key = argv[1];
         char value[128] = {0};
+        if (json_config_nvs_key_is_sensitive(key)) {
+            LOG_SIMPLE("[FACTORY] Key: %s, Value: (redacted)\r\n", key);
+            LOG_SIMPLE("[USER]    Key: %s, Value: (redacted)\r\n", key);
+            return 0;
+        }
         int ret_factory = storage_nvs_read(NVS_FACTORY, key, value, sizeof(value)-1);
         if (ret_factory > 0) {
             LOG_SIMPLE("[FACTORY] Key: %s, Value: %s\r\n", key, value);
@@ -1258,6 +1273,10 @@ void register_cmds(void)
     factory_test_register_commands();
     rtmp_cmd_register();
     system_service_pir_debug_register_commands();
+#if NE301_APP_HOST_POC
+    app_host_cmd_register();
+    app_report_service_device_cmd_register();
+#endif
 
     
     // LOG_SIMPLE("[CLI] All commands registered (%d util commands + driver commands)\r\n", 

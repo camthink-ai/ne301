@@ -280,7 +280,7 @@ void file_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data
             file_upload_send_response(c, API_ERROR_UNAUTHORIZED, "Authentication required");
             return;
         }
-        char u[32]={0}, p[32]={0};
+        char u[AUTH_BASIC_DECODE_BUF_LEN]={0}, p[AUTH_BASIC_DECODE_BUF_LEN]={0};
         mg_http_creds(hm, u, sizeof(u), p, sizeof(p));
         if (!u[0] || !p[0] || strcmp(u, AUTH_ADMIN_USERNAME) || !auth_mgr_verify_password(p)) {
             file_upload_send_response(c, API_ERROR_UNAUTHORIZED, "Invalid credentials");

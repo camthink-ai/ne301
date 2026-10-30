@@ -6,6 +6,10 @@
 #include "core_init.h"
 #include "version.h"
 #include "cmsis_os2.h"
+#include "mbedtls/build_info.h"
+#if defined(MBEDTLS_THREADING_C) && defined(MBEDTLS_THREADING_ALT)
+#include "threading_alt.h"
+#endif
 #include <stdio.h>
 #include <string.h>
 
@@ -32,6 +36,10 @@ aicam_result_t core_system_init(void)
     
     g_core_system_info.state = CORE_STATE_INITIALIZING;
     g_core_system_info.init_time = osKernelGetTickCount();
+
+#if defined(MBEDTLS_THREADING_C) && defined(MBEDTLS_THREADING_ALT)
+    mbedtls_threading_alt_init();
+#endif
     
     // printf("[CORE] Starting L2 Core System initialization...\r\n");
     

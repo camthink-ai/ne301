@@ -18,6 +18,7 @@ DEVICE_MODEL ?= 0x3010
 # ==============================================
 include version.mk
 include stedgeai.mk
+.DEFAULT_GOAL := all
 
 # Directories
 BUILD_DIR = build
@@ -186,6 +187,14 @@ all: $(BUILD_DIR) fsbl app web model wakecore
 	@echo "  Model: $(BUILD_DIR)/$(MODEL_NAME).bin"
 	@echo "  WakeCore(U0): $(BUILD_DIR)/$(U0_NAME).bin"
 	@echo "========================================="
+
+.PHONY: app-native-vnext-test
+app-native-vnext-test:
+	$(MAKE) -C tests/app_native_vnext CC=cc test
+
+.PHONY: app-host-enable-test
+app-host-enable-test:
+	$(MAKE) -C tests/app_host_enable CC=cc test
 
 ######################################
 # Generic Build Template

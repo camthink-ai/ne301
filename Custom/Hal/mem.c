@@ -97,6 +97,11 @@ static void *mem_pool_alloc(mem_handle_t handle, size_t size)
     MEM_LOCK(handle);
     p = ngx_slab_alloc(handle->pool, size);
     MEM_UNLOCK(handle);
+    ngx_slab_pool_t *sp = handle->pool;
+    if (p != NULL && !ngx_slab_ptr_in_pool(sp, p, size)) {
+        LOG_DRV_ERROR("slab alloc out of pool: ptr=%p size=%lu\r\n", p, (unsigned long)size);
+        return NULL;
+    }
 
     return p;
 }
@@ -110,6 +115,11 @@ static void *mem_pool_alloc_aligned(mem_handle_t handle, size_t size, size_t ali
     MEM_LOCK(handle);
     p = ngx_slab_alloc_aligned(handle->pool, size, alignment);
     MEM_UNLOCK(handle);
+    ngx_slab_pool_t *sp = handle->pool;
+    if (p != NULL && !ngx_slab_ptr_in_pool(sp, p, size)) {
+        LOG_DRV_ERROR("slab alloc aligned out of pool: ptr=%p size=%lu\r\n", p, (unsigned long)size);
+        return NULL;
+    }
 
     return p;
 }

@@ -91,6 +91,7 @@ C_SOURCES += ../Custom/Core/System/event_bus.c
 C_SOURCES += ../Custom/Core/System/framework.c
 C_SOURCES += ../Custom/Core/System/json_config_mgr.c
 C_SOURCES += ../Custom/Core/System/json_config_nvs.c
+C_SOURCES += ../Custom/Core/System/json_config_boot_gate.c
 C_SOURCES += ../Custom/Core/System/json_config_json.c
 C_SOURCES += ../Custom/Core/System/json_config_utils.c
 C_SOURCES += ../Custom/Core/System/ota_header.c
@@ -135,6 +136,8 @@ C_SOURCES += ../Custom/Hal/sd_file.c
 C_SOURCES += ../Custom/Hal/si91x_ncp_host.c
 C_SOURCES += ../Custom/Hal/rs485_driver.c
 C_SOURCES += ../Custom/Hal/storage.c
+C_SOURCES += ../Custom/Hal/storage_media_gate.c
+C_SOURCES += ../Custom/Hal/storage_nvs_session.c
 C_SOURCES += ../Custom/Hal/system_top.c
 C_SOURCES += ../Custom/Hal/u0_module.c
 C_SOURCES += ../Custom/Hal/usbx_host.c
@@ -217,6 +220,7 @@ C_SOURCES += ../Custom/Services/Web/web_api.c
 C_SOURCES += ../Custom/Services/Web/web_assets.c
 C_SOURCES += ../Custom/Services/Web/web_recovery.c
 C_SOURCES += ../Custom/Services/Web/web_server.c
+C_SOURCES += ../Custom/Services/Web/web_host_policy.c
 C_SOURCES += ../Custom/Services/Web/web_service.c
 C_SOURCES += ../Custom/Services/Web/websocket_stream_server.c
 C_SOURCES += ../Custom/Services/Web/api/api_ai_management_module.c
@@ -583,6 +587,7 @@ ASM_SOURCES_S += ../Middlewares/ST/threadx/ports/cortex_M55/gnu/src/tx_timer_int
 ######################################
 C_DEFS = $(COMMON_DEFS)
 C_DEFS += -DXSPI_SKIP_XSPIM_CONFIG
+
 # C_DEFS += -DSTM32N6_DK_BOARD
 
 # Basic
@@ -676,6 +681,36 @@ ifneq ($(findstring -DISP_MW_TUNING_TOOL_SUPPORT,$(C_DEFS)),)
 endif
 
 ######################################
+# App Host PoC (64MB PSRAM boards only)
+######################################
+APP_HOST_POC ?= 1
+ifeq ($(APP_HOST_POC),1)
+ifneq ($(filter -DBOARD_PSRAM_SIZE=64,$(COMMON_DEFS)),)
+ C_DEFS += -DNE301_APP_HOST_POC=1
+ C_SOURCES += ../Custom/Services/AppHost/app_host.c
+ C_SOURCES += ../Custom/Services/AppHost/app_host_validate.c
+ C_SOURCES += ../Custom/Services/AppHost/app_admission.c
+ C_SOURCES += ../Custom/Services/AppHost/app_installer.c
+ C_SOURCES += ../Custom/Services/AppHost/app_installer_storage.c
+ C_SOURCES += ../Custom/Services/AppHost/app_state_store.c
+ C_SOURCES += ../Custom/Services/AppHost/app_host_run.c
+ C_SOURCES += ../Custom/Services/AppHost/app_host_run_device.c
+ C_SOURCES += ../Custom/Services/AppHost/app_host_session.c
+ C_SOURCES += ../Custom/Services/AppHost/app_host_live.c
+ C_SOURCES += ../Custom/Services/AppHost/app_host_session_device.c
+ C_SOURCES += ../Custom/Services/AppHost/app_host_control.c
+ C_SOURCES += ../Custom/Services/AppHost/app_report_service.c
+ C_SOURCES += ../Custom/Services/AppHost/app_report_service_device.c
+C_SOURCES += ../Custom/Services/AppHost/app_report_policy.c
+ C_SOURCES += ../Custom/Services/Web/api/api_app_install_module.c
+ C_SOURCES += ../Custom/Services/Web/api/api_app_session_module.c
+ C_SOURCES += ../Custom/Services/Web/api/api_app_control_module.c
+else
+$(error APP_HOST_POC=1 requires BOARD_PSRAM_SIZE=64)
+endif
+endif
+
+######################################
 # Assembly-specific Defines
 ######################################
 AS_DEFS =
@@ -722,6 +757,11 @@ AS_INCLUDES += -I../Middlewares/ST/usbx/common/usbx_device_classes/inc
 # C Include Paths (Organized by Category)
 ######################################
 C_INCLUDES =
+
+ifeq ($(APP_HOST_POC),1)
+C_INCLUDES += -I../Custom/Services/AppHost
+C_INCLUDES += -I../Custom/Services/Video
+endif
 
 # Core
 C_INCLUDES += -ICore/Inc

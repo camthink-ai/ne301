@@ -27,6 +27,7 @@ export default function Login() {
   const [isPasswordVisible, setIsPasswordVisible] = useState(false);
   const usernameRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
+  const isSubmittingRef = useRef(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errors, setErrors] = useState<{ username?: string; password?: string }>({});
 
@@ -59,10 +60,11 @@ export default function Login() {
   }
 
   const handleLogin = async () => {
-    if (!validateForm()) {
+    if (isSubmittingRef.current || !validateForm()) {
       return;
     }
 
+    isSubmittingRef.current = true;
     setIsLoading(true);
 
     const username = usernameRef.current?.value || '';
@@ -87,6 +89,7 @@ export default function Login() {
     } catch (error) {
       console.error(error)
     } finally {
+      isSubmittingRef.current = false;
       setIsLoading(false);
     }
   }
@@ -98,7 +101,7 @@ export default function Login() {
           <CardTitle className="text-text-primary text-2xl font-bold">{i18n._('sys.login.login_title')}</CardTitle>
         </CardHeader>
         <CardContent>
-          <form onSubmit={(e) => { e.preventDefault(); handleLogin(); }}>
+          <form id="login-form" onSubmit={(e) => { e.preventDefault(); handleLogin(); }}>
             <div className="flex flex-col gap-6">
               <div className="grid gap-2">
                 <Label htmlFor="username">{i18n._('common.username')}</Label>
@@ -152,9 +155,9 @@ export default function Login() {
         <CardFooter className="flex-col gap-2">
           <Button
             type="submit"
+            form="login-form"
             variant="primary"
             className="w-full"
-            onClick={handleLogin}
             disabled={isLoading}
           >
             {isLoading ? `${i18n._('common.loading')}...` : i18n._('common.login')}

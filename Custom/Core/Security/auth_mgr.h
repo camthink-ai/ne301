@@ -24,6 +24,14 @@ extern "C" {
 #define AUTH_ADMIN_USERNAME         "admin"
 #define AUTH_SESSION_ID_MIN         1000
 #define AUTH_SESSION_ID_MAX         9999
+#define AUTH_DEFAULT_PASSWORD       "hicamthink"
+#define AUTH_CREDENTIAL_RECORD_MAX  128
+#define AUTH_CREDENTIAL_SALT_LEN    16
+#define AUTH_CREDENTIAL_KEY_LEN     32
+#define AUTH_PBKDF2_ITERATIONS      4096u
+#define AUTH_CREDENTIAL_RECORD_PREFIX "A1:"
+#define AUTH_BASIC_DECODE_MAX_LEN   AUTH_MAX_PASSWORD_LEN
+#define AUTH_BASIC_DECODE_BUF_LEN   (AUTH_BASIC_DECODE_MAX_LEN + 1)
 
 /* ==================== Types and Enums ==================== */
 
@@ -51,13 +59,19 @@ typedef struct {
     aicam_bool_t is_active;                            // Session active status
 } auth_session_t;
 
+typedef struct {
+    aicam_bool_t authenticated;
+    aicam_bool_t default_password_active;
+    aicam_bool_t high_privilege_allowed;
+} auth_verdict_t;
+
 /* ==================== Configuration Macros ==================== */
 
 #define AUTH_MGR_CONFIG_DEFAULT() \
     { \
         .session_timeout_ms = AUTH_SESSION_TIMEOUT_MS, \
         .enable_session_timeout = AICAM_TRUE, \
-        .admin_password = "hicamthink" \
+        .admin_password = AUTH_DEFAULT_PASSWORD \
     }
 
 /* ==================== Public API Functions ==================== */
@@ -117,13 +131,22 @@ auth_result_t auth_mgr_validate_session(uint32_t session_id, auth_session_t *ses
  */
 auth_result_t auth_mgr_change_password(const char *password);
 
-/**
- * @brief Get admin password
- * @param password_buffer Output buffer for password
- * @param buffer_size Size of password buffer
- * @return auth_result_t Operation result
- */
-auth_result_t auth_mgr_get_password(char *password_buffer, size_t buffer_size);
+void auth_mgr_revoke_all_sessions(void);
+
+aicam_bool_t auth_mgr_credential_is_record(const char *value);
+
+aicam_result_t auth_mgr_credential_record_encode(const char *password,
+                                                 char *record,
+                                                 size_t record_size);
+
+aicam_bool_t auth_mgr_credential_record_verify(const char *record,
+                                               const char *password);
+
+aicam_bool_t auth_mgr_default_password_active(void);
+
+uint32_t auth_mgr_credential_epoch(void);
+
+auth_verdict_t auth_mgr_authorize(const char *username, const char *password);
 
 /* ==================== Utility Functions ==================== */
 

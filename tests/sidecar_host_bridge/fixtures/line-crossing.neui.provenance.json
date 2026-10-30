@@ -1,0 +1,76 @@
+{
+  "bundle_len": 451394,
+  "bundle_path": "tests/sidecar_host_bridge/fixtures/line-crossing.neui",
+  "bundle_sha256": "a9117afcfeae8f3295352a00531c46284a9120799d41a825cd6d307eb4af77bc",
+  "files": [
+    {
+      "file_len": 6939,
+      "path": "assets/FileSaver.min-D428eXCv.js",
+      "sha256": "37ca34e7ab99ebf9a005aaaee56a1004b196411f9410a0cd25c0ebf9024b7aec"
+    },
+    {
+      "file_len": 298272,
+      "path": "assets/index-B-RCOpzx.js",
+      "sha256": "55d0ea2399a427eaeeb30413f1dcbb369af9112dd838cd1d56018ca029432b68"
+    },
+    {
+      "file_len": 41608,
+      "path": "assets/index-D-isHcyK.css",
+      "sha256": "caa915f0cbaf7e9b499bebc8b7232cc85b96c359c8a3230040dee379794021f1"
+    },
+    {
+      "file_len": 100839,
+      "path": "assets/jmuxer.min.js",
+      "sha256": "87b8dac054a9d2e06dacb8eccb1b3580c39af8634180bc36012c1b7d958c7442"
+    },
+    {
+      "file_len": 682,
+      "path": "assets/videoWorker-CwSEKqUk.js",
+      "sha256": "0f07f17eac982a2ff1eeff58b50c41a69d5237363397cd2ce5415a7c9ea0f439"
+    },
+    {
+      "file_len": 2000,
+      "path": "assets/websocket-init-yiJ-u6et.js",
+      "sha256": "9987a6188be31e521fa577338e11d85b2bfaa0ce4b67b263bdbcde3931df6800"
+    },
+    {
+      "file_len": 399,
+      "path": "index.html",
+      "sha256": "528d4dd3100fc736641b8e58441e3df9239f6bbcc28e74bfd35512618feb8086"
+    }
+  ],
+  "format": "neui-sidecar-v1",
+  "generator": "neui_pack_v1.py 1.0.0 (harryhua-ai/ne30x-app package/sidecar)",
+  "manifest": {
+    "app_id": "line-crossing",
+    "file_count": 7,
+    "host_ui_abi": 1,
+    "publisher_id": "test-publisher",
+    "sidecar_version": "1.0.0"
+  },
+  "native_binding": {
+    "native_offline_verified": true,
+    "native_package_path": "docs/evidence/spec-v3/golden.neapp.v3 (deterministic replica, byte-identical)",
+    "native_package_sha256": "c74f7e468a9b63403bbaa8d36816bfd5250ffd68f66ebffc7d994440f1e22342",
+    "native_publisher_key_match": true,
+    "native_tbs_sha256": "d793a455e3ccda715c8ee9ae95a718cf0fc2627c0ff20969f23e7ea9349b349e"
+  },
+  "non_production_trust_root": "signing key is the PUBLIC NON-PRODUCTION secp256r1 d=1 test identity (spki_sha256 5cd252fb0ce8932436faf8ccd1040981b89ee4ad6b9fe9e2a2b7e71aacb27cd3); not a production trust anchor and never a device production root",
+  "rebuild_recipe": [
+    "git -C <ne30x-app clone> fetch origin 1f48bdd5a78e789e2a2bd62a3ce460eda9292a10 && git archive 1f48bdd5... | tar -x -C /tmp/ne30x-1f48bdd5",
+    "cd /tmp/ne30x-1f48bdd5/tests/line-crossing-ui && pnpm install --frozen-lockfile --ignore-scripts && npm --prefix browser-runner ci && node browser-runner/build.mjs",
+    "python3 tests/package-v3/make_v3_test_image.py --out /tmp/ne30x-build/lc-v3-test-image.bin --expect-sha256 aa8c3ef6e4082656c76255807bee5a7c562ad212a0c3e2a4f009a62129cdee69",
+    "python3 package/neapp_pack_v3.py --image /tmp/ne30x-build/lc-v3-test-image.bin --out /tmp/ne30x-build/golden-replica.neapp.v3 --key <d1 pem> --publisher-id test-publisher --app-id line-crossing --version 3.0.0 --host-caps 0xff --event-max 2048 --state-quota 4096 --report-max 6144 --control-max 256 --snapshot-max 1024 --source-commit 1f48bdd5a78e789e2a2bd62a3ce460eda9292a10",
+    "python3 package/sidecar/neui_pack_v1.py --asset-root tests/line-crossing-ui/.build/production --out line-crossing.neui --key <d1 pem> --publisher-id test-publisher --app-id line-crossing --version 1.0.0 --native-package /tmp/ne30x-build/golden-replica.neapp.v3 --native-trust <trust-d1.json>",
+    "python3 package/sidecar/neui_verify_v1.py --bundle line-crossing.neui --trust <trust-d1.json> --native-package /tmp/ne30x-build/golden-replica.neapp.v3 --native-trust <trust-d1.json>"
+  ],
+  "signature": "ECDSA over secp256r1 (P-256), SHA-256, strict DER",
+  "signature_len": 71,
+  "signer_spki_sha256": "5cd252fb0ce8932436faf8ccd1040981b89ee4ad6b9fe9e2a2b7e71aacb27cd3",
+  "source_app_issue": "ne30x-app #32",
+  "source_commit": "1f48bdd5a78e789e2a2bd62a3ce460eda9292a10",
+  "source_repo": "https://github.com/harryhua-ai/ne30x-app (accepted App #32 exact main)",
+  "spec_authority": "ne301 issue #79 \u00a712 (frozen Sidecar v1 wire); cross-repo bridge freeze ne301 issue #84 comment 6229932486",
+  "tbs_len": 451323,
+  "ui_tbs_sha256": "fc8bd17703aec3a9b6f0e2875e99731fcbe59be4e68efee6083c6e5553ecb92e"
+}

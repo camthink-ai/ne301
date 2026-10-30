@@ -40,6 +40,8 @@ aicam_result_t webhook_service_push_capture(
     const mqtt_image_metadata_t *metadata,
     const mqtt_ai_result_t *ai_result);
 
+aicam_result_t webhook_service_push_json(const uint8_t *json, uint32_t json_len);
+
 /**
  * @brief Send a test push with a minimal payload
  */

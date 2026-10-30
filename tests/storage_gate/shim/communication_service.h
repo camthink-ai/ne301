@@ -1,0 +1,11 @@
+#ifndef SHIM_COMMUNICATION_SERVICE_H
+#define SHIM_COMMUNICATION_SERVICE_H
+typedef enum {
+    COMM_TYPE_NONE = 0,
+    COMM_TYPE_WIFI,
+    COMM_TYPE_HALOW,
+    COMM_TYPE_CELLULAR,
+    COMM_TYPE_POE,
+    COMM_TYPE_MAX
+} communication_type_t;
+#endif
