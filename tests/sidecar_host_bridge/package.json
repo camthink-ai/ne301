@@ -1,0 +1,17 @@
+{
+  "name": "ne301-sidecar-host-bridge-e2e",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build:host": "node build-host.mjs",
+    "test:browser": "node --test browser.test.mjs",
+    "test": "node run-all.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.64.0",
+    "vite": "7.3.7"
+  }
+}

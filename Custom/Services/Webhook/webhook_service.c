@@ -424,6 +424,81 @@ aicam_result_t webhook_service_test_push(void)
     return webhook_do_push(test_jpeg, sizeof(test_jpeg), NULL, NULL);
 }
 
+aicam_result_t webhook_service_push_json(const uint8_t *json, uint32_t json_len)
+{
+    webhook_config_t cfg;
+    aicam_bool_t use_https;
+    network_tls_config_t tls_config;
+    char *custom_ca_cert = NULL;
+    http_client_config_t http_cfg;
+    http_client_handle_t client;
+    char auth_header[384];
+    int ret;
+    int status_code;
+
+    if (json == NULL || json_len == 0u || json_len > 16384u) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    if (json_config_get_webhook_config(&cfg) != AICAM_OK || !cfg.enable) {
+        LOG_SVC_DEBUG("Webhook: disabled, skipping JSON report push");
+        return AICAM_ERROR;
+    }
+
+    if (!cfg.url[0]) {
+        LOG_SVC_WARN("Webhook: no URL configured for JSON report push");
+        return AICAM_ERROR;
+    }
+
+    use_https = (strncmp(cfg.url, "https://", 8) == 0);
+    if (use_https) {
+        if (webhook_build_tls_config(&tls_config, &custom_ca_cert) != AICAM_OK) {
+            LOG_SVC_ERROR("Webhook: failed to build TLS config for JSON report");
+            return AICAM_ERROR;
+        }
+    }
+
+    memset(&http_cfg, 0, sizeof(http_cfg));
+    http_cfg.url = cfg.url;
+    http_cfg.method = HTTP_METHOD_POST;
+    http_cfg.post_data = (const char *)json;
+    http_cfg.post_len = (int)json_len;
+    http_cfg.content_type = "application/json";
+    http_cfg.timeout_ms = WEBHOOK_TIMEOUT_MS;
+    http_cfg.tls_config = use_https ? (const http_client_tls_config_t *)&tls_config : NULL;
+
+    client = http_client_init(&http_cfg);
+    if (!client) {
+        LOG_SVC_ERROR("Webhook: failed to create HTTP client for JSON report");
+        if (custom_ca_cert) buffer_free(custom_ca_cert);
+        return AICAM_ERROR;
+    }
+
+    if (webhook_build_auth_header(&cfg, auth_header, sizeof(auth_header)) == AICAM_OK) {
+        http_client_set_header(client, "Authorization", auth_header);
+    }
+
+    ret = http_client_perform(client);
+    status_code = http_client_get_status_code(client);
+
+    http_client_cleanup(client);
+    if (custom_ca_cert) buffer_free(custom_ca_cert);
+
+    if (ret != 0) {
+        LOG_SVC_ERROR("Webhook: JSON report HTTP request failed (ret=%d)", ret);
+        return AICAM_ERROR;
+    }
+
+    if (status_code < 200 || status_code >= 300) {
+        LOG_SVC_WARN("Webhook: JSON report server returned %d", status_code);
+        return AICAM_ERROR;
+    }
+
+    LOG_SVC_INFO("Webhook: JSON report push OK (status=%d, size=%lu)",
+                 status_code, (unsigned long)json_len);
+    return AICAM_OK;
+}
+
 aicam_result_t webhook_service_wait_pending(uint32_t timeout_ms)
 {
     if (!g_webhook.running || !g_webhook.queue) {

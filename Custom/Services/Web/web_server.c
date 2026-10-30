@@ -4,13 +4,19 @@
  */
 
 #include "web_server.h"
+#include "web_host_policy.h"
+#include "api_app_session_module.h"
 #include "debug.h"
 #include "buffer_mgr.h"
 #include "mongoose.h"
+#include "lwip/sockets.h"
 #include "aicam_types.h"
 #include "aicam_error.h"
 #include "cmsis_os2.h"
-#include "web_assets.h"
+ #include "web_assets.h"
+ #ifdef NE301_APP_HOST_POC
+ #include "app_sidecar_lifecycle.h"
+ #endif
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,7 +36,7 @@
 #include "web_recovery.h"
 #include "netif_manager.h"
 
-#define WEB_SERVER_STACK_SIZE (1024 * 32)
+#define WEB_SERVER_STACK_SIZE (1024 * 160)
 #define WEB_SERVER_AP_SLEEP_TIMER_STACK_SIZE (1024 * 8)
 
  /* ==================== Web Debug Logging (see WEB_DEBUG in web_config.h) ==================== */
@@ -49,10 +55,198 @@
  
  /* ==================== Internal Function Declarations ==================== */
  
- static void web_server_event_handler(struct mg_connection *c, int ev, void *ev_data);
+ 
+aicam_result_t web_host_policy_refresh_from_netif(void)
+{
+    web_host_policy_netif_entry_t entries[8];
+    netif_info_t *list = NULL;
+    aicam_bool_t enumerated;
+    uint32_t now = (uint32_t)osKernelGetTickCount();
+    static uint32_t last_refresh_tick;
+    int count;
+    int used = 0;
+    int i;
+
+    if (last_refresh_tick != 0u && now - last_refresh_tick < 2000u) {
+        return AICAM_ERROR;
+    }
+    last_refresh_tick = now;
+    count = nm_get_netif_list(&list);
+    enumerated = (count > 0 && list != NULL) ? AICAM_TRUE : AICAM_FALSE;
+    if (enumerated == AICAM_TRUE) {
+        for (i = 0; i < count && used < (int)(sizeof(entries) / sizeof(entries[0])); i++) {
+            entries[used].ip_addr[0] = list[i].ip_addr[0];
+            entries[used].ip_addr[1] = list[i].ip_addr[1];
+            entries[used].ip_addr[2] = list[i].ip_addr[2];
+            entries[used].ip_addr[3] = list[i].ip_addr[3];
+            entries[used].host_name = list[i].host_name;
+            entries[used].is_local =
+                (list[i].type == NETIF_TYPE_LOCAL) ? AICAM_TRUE : AICAM_FALSE;
+            entries[used].is_up =
+                (list[i].state == NETIF_STATE_UP) ? AICAM_TRUE : AICAM_FALSE;
+            used++;
+        }
+    }
+    if (enumerated != AICAM_TRUE) {
+        nm_free_netif_list(list);
+        return AICAM_ERROR;
+    }
+    web_host_policy_apply_netif_entries(entries, used, 0u, NULL, NULL, 0u);
+    nm_free_netif_list(list);
+    return AICAM_OK;
+}
+
+static web_listener_role_t web_conn_role(const struct mg_connection *c)
+{
+    uint16_t local_port = mg_ntohs(c->loc.port);
+
+    if (local_port == g_web_server.config.port) {
+        return WEB_LISTENER_ADMIN;
+    }
+    return WEB_LISTENER_UNKNOWN;
+}
+
+static void web_conn_local_ip(const struct mg_connection *c, char *buf, size_t cap)
+{
+    struct sockaddr_in sa;
+    socklen_t sa_len = sizeof(sa);
+    struct mg_addr addr;
+
+    if (buf == NULL || cap == 0u) {
+        return;
+    }
+    buf[0] = '\0';
+    if (c == NULL) {
+        return;
+    }
+    memset(&sa, 0, sizeof(sa));
+    if (getsockname((MG_SOCKET_TYPE)(size_t)c->fd, (struct sockaddr *)&sa, &sa_len) == 0 &&
+        sa.sin_family == AF_INET) {
+        memset(&addr, 0, sizeof(addr));
+        memcpy(addr.ip, &sa.sin_addr, sizeof(sa.sin_addr));
+        (void)mg_snprintf(buf, cap, "%M", mg_print_ip, &addr);
+    } else {
+        (void)mg_snprintf(buf, cap, "%M", mg_print_ip, &c->loc);
+    }
+    if (buf[0] == '\0' || strcmp(buf, "0.0.0.0") == 0) {
+        buf[0] = '\0';
+    }
+}
+
+static void web_preflight_reply(struct mg_connection *c, const char *origin,
+                                const char *host)
+{
+    char conn_local_ip[48];
+
+    web_conn_local_ip(c, conn_local_ip, sizeof(conn_local_ip));
+    if (web_host_policy_classify_conn(host, conn_local_ip) == WEB_HOST_ADMIN &&
+        web_host_policy_origin_allowed_conn(origin, host, conn_local_ip) == AICAM_TRUE) {
+        char cors_headers[512];
+        snprintf(cors_headers, sizeof(cors_headers),
+                 "Connection: close\r\n"
+                 "Access-Control-Allow-Origin: %.200s\r\n"
+                 "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
+                 "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
+                 "Access-Control-Max-Age: 600\r\n",
+                 origin);
+        mg_http_reply(c, 204, cors_headers, "");
+    } else {
+        mg_http_reply(c, 403, "Content-Type: application/json\r\n",
+                      "{\"error\":\"preflight forbidden\"}");
+    }
+    c->is_draining = 1;
+}
+
+static aicam_bool_t web_stream_auth_verified(struct mg_http_message *hm)
+{
+    http_handler_context_t ctx;
+    struct mg_str *v = mg_http_get_header(hm, "Authorization");
+
+    if (v == NULL || v->len == 0u) {
+        return AICAM_FALSE;
+    }
+    memset(&ctx, 0, sizeof(ctx));
+    if (v->len >= sizeof(ctx.request.authorization)) {
+        return AICAM_FALSE;
+    }
+    snprintf(ctx.request.authorization, sizeof(ctx.request.authorization),
+             "%.*s", (int)v->len, v->buf);
+    ctx.msg = hm;
+    return (auth_verify_user(&ctx) == AICAM_OK) ? AICAM_TRUE : AICAM_FALSE;
+}
+
+static aicam_bool_t web_stream_entry_allowed(struct mg_connection *c,
+                                             struct mg_http_message *hm)
+{
+    char host[128];
+    char uri[192];
+    char method[16];
+    char origin[256];
+    char conn_local_ip[48];
+    struct mg_str *v;
+    aicam_bool_t origin_present;
+    web_entry_verdict_t verdict;
+
+    if (hm->uri.len >= sizeof(uri) || hm->method.len >= sizeof(method)) {
+        return AICAM_FALSE;
+    }
+    snprintf(uri, sizeof(uri), "%.*s", (int)hm->uri.len, hm->uri.buf);
+    snprintf(method, sizeof(method), "%.*s", (int)hm->method.len, hm->method.buf);
+    v = mg_http_get_header(hm, "Host");
+    if (v == NULL || v->len == 0u || v->len >= sizeof(host)) {
+        return AICAM_FALSE;
+    }
+    snprintf(host, sizeof(host), "%.*s", (int)v->len, v->buf);
+    v = mg_http_get_header(hm, "Origin");
+    origin_present = (v != NULL) ? AICAM_TRUE : AICAM_FALSE;
+    if (v != NULL) {
+        if (v->len >= sizeof(origin)) {
+            return AICAM_FALSE;
+        }
+        snprintf(origin, sizeof(origin), "%.*s", (int)v->len, v->buf);
+    } else {
+        origin[0] = '\0';
+    }
+    web_conn_local_ip(c, conn_local_ip, sizeof(conn_local_ip));
+    verdict = web_host_policy_entry_role_conn(host, uri, method, origin,
+                                              origin_present, web_conn_role(c),
+                                              conn_local_ip);
+    if (verdict == WEB_ENTRY_UNKNOWN_HOST &&
+        web_host_policy_refresh_from_netif() == AICAM_OK) {
+        verdict = web_host_policy_entry_role_conn(host, uri, method, origin,
+                                                  origin_present,
+                                                  web_conn_role(c),
+                                                  conn_local_ip);
+    }
+    if (verdict != WEB_ENTRY_ALLOW) {
+        WEB_LOG("[STREAM] blocked entry verdict=%d host='%s' origin='%s'",
+                (int)verdict, host, origin);
+        if (verdict == WEB_ENTRY_CROSS_SITE) {
+            mg_http_reply(c, 403, "Content-Type: application/json\r\n",
+                          "{\"error\":\"cross-site forbidden\"}");
+        } else {
+            mg_http_reply(c, 403, "Content-Type: application/json\r\n",
+                          "{\"error\":\"forbidden host\"}");
+        }
+        c->is_draining = 1;
+        return AICAM_FALSE;
+    }
+    if (web_stream_auth_verified(hm) != AICAM_TRUE) {
+        WEB_LOG("[STREAM] unauthorized host='%s' origin='%s' %s",
+                host, origin, uri);
+        mg_http_reply(c, 401, "Content-Type: application/json\r\n",
+                      "{\"error\":\"unauthorized\"}");
+        c->is_draining = 1;
+        return AICAM_FALSE;
+    }
+    return AICAM_TRUE;
+}
+
+static void web_server_event_handler(struct mg_connection *c, int ev, void *ev_data);
  static aicam_result_t web_server_handle_request(struct mg_connection *c, struct mg_http_message *hm);
  static aicam_result_t web_server_handle_api_request(http_handler_context_t* ctx);
  static aicam_result_t web_server_handle_static_request(http_handler_context_t* ctx);
+ static aicam_result_t web_server_handle_sidecar_request(http_handler_context_t* ctx);
  static aicam_result_t web_server_allocate_route_capacity(size_t new_capacity);
  static aicam_result_t web_server_find_route(const char* path, const char* method, const api_route_t** route);
  static aicam_result_t web_server_validate_request(http_handler_context_t* ctx);
@@ -79,6 +273,8 @@
 static void web_server_task_function(void* argument)
 {
     (void)argument;
+    web_host_policy_begin_admin_update();
+    web_host_policy_end_admin_update(NULL);
     /* Build listening address */
     char listen_addr[64];
     #if IS_HTTPS
@@ -95,11 +291,14 @@ static void web_server_task_function(void* argument)
         return;
     }
 
+    (void)web_host_policy_refresh_from_netif();
+
     g_web_server.running = AICAM_TRUE;
     while (g_web_server.running)
     {
         mg_mgr_poll(&g_web_server.mgr, 10);
     }
+
 }
 
 static void web_server_ap_sleep_timer_task_function(void* argument)
@@ -298,7 +497,6 @@ static void web_conn_forget(struct mg_connection *c)
  
      g_web_server.running = AICAM_FALSE;
  
- 
      return AICAM_OK;
  }
  
@@ -493,12 +691,57 @@ aicam_result_t api_response_error_data(http_handler_context_t* ctx,
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
         // check if the request is for ota upload
         if (mg_match(hm->uri, mg_str(API_PATH_PREFIX "/system/ota/upload"), NULL)) {
+            if (web_conn_role(c) != WEB_LISTENER_ADMIN) {
+                mg_http_reply(c, 403, "Content-Type: application/json\r\n",
+                              "{\"error\":\"forbidden host\"}");
+                c->is_draining = 1;
+                return;
+            }
+            if (mg_match(hm->method, mg_str("OPTIONS"), NULL)) {
+                char host[128];
+                char origin[256];
+                if (web_conn_role(c) != WEB_LISTENER_ADMIN) {
+                    mg_http_reply(c, 403, "Content-Type: application/json\r\n",
+                                  "{\"error\":\"forbidden host\"}");
+                    c->is_draining = 1;
+                    return;
+                }
+                struct mg_str *v = mg_http_get_header(hm, "Host");
+                struct mg_str *o = mg_http_get_header(hm, "Origin");
+                if (v == NULL || v->len == 0u || v->len >= sizeof(host)) {
+                    mg_http_reply(c, 403, "Content-Type: application/json\r\n",
+                                  "{\"error\":\"forbidden host\"}");
+                    c->is_draining = 1;
+                    return;
+                }
+                snprintf(host, sizeof(host), "%.*s", (int)v->len, v->buf);
+                if (o != NULL && o->len < sizeof(origin)) {
+                    snprintf(origin, sizeof(origin), "%.*s", (int)o->len, o->buf);
+                } else {
+                    origin[0] = '\0';
+                }
+                WEB_LOG("[STREAM] preflight host='%s' origin='%s'", host, origin);
+                web_preflight_reply(c, origin, host);
+                return;
+            }
+            if (web_stream_entry_allowed(c, hm) != AICAM_TRUE) {
+                return;
+            }
             ota_upload_stream_processor(c, ev, ev_data);
             return;
         }
         // check if the request is for file upload - stream to disk
         if (mg_match(hm->uri, mg_str(API_PATH_PREFIX "/files/upload"), NULL) &&
             mg_match(hm->method, mg_str("POST"), NULL)) {
+            if (web_conn_role(c) != WEB_LISTENER_ADMIN) {
+                mg_http_reply(c, 403, "Content-Type: application/json\r\n",
+                              "{\"error\":\"forbidden host\"}");
+                c->is_draining = 1;
+                return;
+            }
+            if (web_stream_entry_allowed(c, hm) != AICAM_TRUE) {
+                return;
+            }
             file_upload_stream_processor(c, ev, ev_data);
             return;
         }
@@ -608,17 +851,58 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
         return result;
     }
 
-    /* Handle CORS preflight OPTIONS request */
-    if (strcmp(ctx.request.method, "OPTIONS") == 0) {
-        WEB_LOG("[REQ] OPTIONS %s (preflight)", ctx.request.uri);
-        mg_http_reply(c, 200,
-                      "Connection: close\r\n"
-                      "Access-Control-Allow-Origin: *\r\n"
-                      "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-                      "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
-                      "Access-Control-Max-Age: 86400\r\n",
-                      "");
+    /* Host classification and cross-site write protection: fail-closed for
+     * unknown or malformed Host, App host serves only /appsite assets,
+     * state-changing methods need a same-site Origin. Origin-less side
+     * effects are rejected: ambient Basic is indistinguishable from an
+     * explicit CLI credential at the protocol level, so authorized
+     * non-browser tools must send a same-site Origin header.
+     * A refresh cooldown keeps DHCP address changes
+     * working without re-enumerating interfaces on every request. */
+    char conn_local_ip[48];
+    web_conn_local_ip(c, conn_local_ip, sizeof(conn_local_ip));
+    web_entry_verdict_t verdict = web_host_policy_entry_role_conn(
+        ctx.request.host, ctx.request.uri, ctx.request.method,
+        ctx.request.origin, ctx.request.origin_present, web_conn_role(c),
+        conn_local_ip);
+    if (verdict == WEB_ENTRY_UNKNOWN_HOST &&
+        web_host_policy_refresh_from_netif() == AICAM_OK) {
+        verdict = web_host_policy_entry_role_conn(
+            ctx.request.host, ctx.request.uri, ctx.request.method,
+            ctx.request.origin, ctx.request.origin_present, web_conn_role(c),
+            conn_local_ip);
+    }
+    if (verdict == WEB_ENTRY_APP_HOST_API &&
+        web_conn_role(c) == WEB_LISTENER_ADMIN &&
+        strncmp(ctx.request.uri, "/appsite/", 9) == 0 &&
+        (strcmp(ctx.request.method, "GET") == 0 ||
+         strcmp(ctx.request.method, "HEAD") == 0) &&
+        web_sidecar_projection_same_origin_allowed()) {
+        verdict = WEB_ENTRY_ALLOW;
+    }
+    if (verdict == WEB_ENTRY_UNKNOWN_HOST ||
+        verdict == WEB_ENTRY_APP_HOST_API) {
+        WEB_LOG("[REQ] rejected host '%s' %s", ctx.request.host, ctx.request.uri);
+        mg_http_reply(c, 403, "Content-Type: application/json\r\n", "{\"error\":\"forbidden host\"}");
         c->is_draining = 1;
+        return AICAM_OK;
+    }
+    if (verdict == WEB_ENTRY_CROSS_SITE) {
+        WEB_LOG("[REQ] blocked cross-site %s %s origin='%s'", ctx.request.method, ctx.request.uri, ctx.request.origin);
+        mg_http_reply(c, 403, "Content-Type: application/json\r\n", "{\"error\":\"cross-site forbidden\"}");
+        c->is_draining = 1;
+        return AICAM_OK;
+    }
+
+    /* Handle CORS preflight OPTIONS request only for allowed admin origins */
+    if (strcmp(ctx.request.method, "OPTIONS") == 0) {
+        if (web_conn_role(c) != WEB_LISTENER_ADMIN) {
+            mg_http_reply(c, 403, "Content-Type: application/json\r\n",
+                          "{\"error\":\"preflight forbidden\"}");
+            c->is_draining = 1;
+            return AICAM_OK;
+        }
+        web_preflight_reply(c, ctx.request.origin, ctx.request.host);
         return AICAM_OK;
     }
 
@@ -635,7 +919,17 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
      if (g_web_server.config.enable_logging) {
          web_server_log_request(&ctx);
      }
- 
+
+#ifdef NE301_APP_HOST_POC
+     if (strncmp(hm->uri.buf, "/appsite/", 9) == 0) {
+         result = web_server_handle_sidecar_request(&ctx);
+         if (ctx.response.data && !ctx.response.data_borrowed) {
+             buffer_free(ctx.response.data);
+         }
+         return result;
+     }
+#endif
+
      /* Handle API request */
      if (g_web_server.api_router.base_path && strncmp(hm->uri.buf, g_web_server.api_router.base_path, strlen(g_web_server.api_router.base_path)) == 0) {
          LOG_SVC_INFO("[WEB] handle api request\r\n");
@@ -826,6 +1120,24 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
      } else {
          ctx->request.authorization[0] = '\0';
      }
+
+     /* Parse Host */
+     struct mg_str* req_host = mg_http_get_header(ctx->msg, "Host");
+     if (req_host) {
+         snprintf(ctx->request.host, sizeof(ctx->request.host), "%.*s", (int)req_host->len, req_host->buf);
+     } else {
+         ctx->request.host[0] = '\0';
+     }
+
+     /* Parse Origin */
+     struct mg_str* req_origin = mg_http_get_header(ctx->msg, "Origin");
+     if (req_origin) {
+         ctx->request.origin_present = AICAM_TRUE;
+         snprintf(ctx->request.origin, sizeof(ctx->request.origin), "%.*s", (int)req_origin->len, req_origin->buf);
+     } else {
+         ctx->request.origin_present = AICAM_FALSE;
+         ctx->request.origin[0] = '\0';
+     }
  
      /* Set timestamp: kernel tick (ms) — consumed by WEB_DEBUG duration log in http_send_response */
      ctx->request.timestamp = (uint32_t) osKernelGetTickCount();
@@ -889,10 +1201,7 @@ aicam_result_t http_send_response(http_handler_context_t* ctx) {
     mg_http_reply(ctx->conn,
                  http_status,
                  "Content-Type: application/json\r\n"
-                 "Connection: close\r\n"
-                 "Access-Control-Allow-Origin: *\r\n"
-                 "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-                 "Access-Control-Allow-Headers: Content-Type, Authorization\r\n",
+                 "Connection: close\r\n",
                  "%s", json_str);
 
     WEB_LOG("[RSP] %s %s -> http=%d err=%s (%lu ms)",
@@ -917,6 +1226,91 @@ aicam_result_t http_send_response(http_handler_context_t* ctx) {
  
  
  /* ==================== Static Resource Management ==================== */
+
+#ifdef NE301_APP_HOST_POC
+static void web_server_sidecar_reject(struct mg_connection *c, int code, const char *reason)
+{
+    mg_printf(c,
+              "HTTP/1.1 %d %s\r\n"
+              "Content-Type: text/plain\r\n"
+              "Content-Length: 9\r\n"
+              "Cache-Control: no-store\r\n"
+              "Connection: close\r\n"
+              "\r\n"
+              "rejected\n",
+              code, reason);
+}
+
+static aicam_result_t web_server_handle_sidecar_request(http_handler_context_t* ctx)
+{
+    char decoded_uri[320];
+    char asset_path[APP_SIDECAR_PATH_MAX + 2u];
+    uint64_t route_generation = 0u;
+    uint32_t asset_index = 0u;
+    uint8_t *payload = NULL;
+    size_t payload_len = 0u;
+
+    if (strcmp(ctx->request.method, "GET") != 0) {
+        web_server_sidecar_reject(ctx->conn, 405, "Method Not Allowed");
+        ctx->conn->is_draining = 1;
+        return AICAM_OK;
+    }
+
+    if (!web_sidecar_projection_refresh()) {
+        LOG_SVC_INFO("[SIDECAR] asset route refused: no trusted ACTIVE descriptor");
+        web_server_sidecar_reject(ctx->conn, 404, "Not Found");
+        ctx->conn->is_draining = 1;
+        return AICAM_OK;
+    }
+
+    mg_url_decode(ctx->msg->uri.buf, ctx->msg->uri.len, decoded_uri, sizeof(decoded_uri), 0);
+
+    if (!web_sidecar_route_parse(decoded_uri, &route_generation, asset_path,
+                                 sizeof(asset_path)) ||
+        route_generation != web_sidecar_projection_generation() ||
+        !web_sidecar_asset_resolve(asset_path, &asset_index)) {
+        LOG_SVC_INFO("[SIDECAR] asset route refused: unregistered path or stale generation");
+        web_server_sidecar_reject(ctx->conn, 404, "Not Found");
+        ctx->conn->is_draining = 1;
+        return AICAM_OK;
+    }
+
+    payload = (uint8_t *)buffer_calloc(1, web_sidecar_asset_file_len(asset_index));
+    if (payload == NULL) {
+        web_server_sidecar_reject(ctx->conn, 503, "Service Unavailable");
+        ctx->conn->is_draining = 1;
+        return AICAM_OK;
+    }
+
+    if (!web_sidecar_asset_load(asset_index, payload,
+                                web_sidecar_asset_file_len(asset_index),
+                                &payload_len) ||
+        payload_len == 0u) {
+        LOG_SVC_WARN("[SIDECAR] asset content failed hash/length verification: %s",
+                     asset_path);
+        buffer_free(payload);
+        web_server_sidecar_reject(ctx->conn, 404, "Not Found");
+        ctx->conn->is_draining = 1;
+        return AICAM_OK;
+    }
+
+    mg_printf(ctx->conn,
+              "HTTP/1.1 200 OK\r\n"
+              "Content-Type: %s\r\n"
+              "Content-Length: %u\r\n"
+              "Cache-Control: no-store\r\n"
+              "X-Content-Type-Options: nosniff\r\n"
+              "Cross-Origin-Resource-Policy: cross-origin\r\n"
+              "Connection: close\r\n"
+              "\r\n",
+              web_sidecar_asset_mime(asset_path),
+              (unsigned int)payload_len);
+    mg_send(ctx->conn, payload, payload_len);
+    buffer_free(payload);
+    ctx->conn->is_draining = 1;
+    return AICAM_OK;
+}
+#endif
 
 static aicam_result_t web_server_handle_static_request(http_handler_context_t* ctx)
 {
@@ -1050,17 +1444,15 @@ static aicam_result_t web_server_handle_static_request(http_handler_context_t* c
      if (!ctx) {
          return AICAM_ERROR_INVALID_PARAM;
      }
- 
+
      /* Check Authorization header */
      if (ctx->request.authorization[0] == '\0') {
          return AICAM_ERROR_UNAUTHORIZED;
      }
 
-     LOG_SVC_INFO("[AUTH] Authorization header: %s\r\n", ctx->request.authorization);
-     
      // parse the authorization header
-     char username[32] = {0};
-     char password[32] = {0};
+    char username[AUTH_BASIC_DECODE_BUF_LEN] = {0};
+    char password[AUTH_BASIC_DECODE_BUF_LEN] = {0};
 
      mg_http_creds(ctx->msg, username, sizeof(username), password, sizeof(password));
 
@@ -1068,16 +1460,29 @@ static aicam_result_t web_server_handle_static_request(http_handler_context_t* c
          return AICAM_ERROR_UNAUTHORIZED;
      }
 
-     LOG_SVC_INFO("[AUTH] Username: %s\r\n", username);
-     LOG_SVC_INFO("[AUTH] Password: %s\r\n", password);
+     LOG_SVC_INFO("[AUTH] Credentials received for user: %s", username);
 
+     auth_verdict_t verdict = auth_mgr_authorize(username, password);
 
-     if(strcmp(username, AUTH_ADMIN_USERNAME) != 0 || !auth_mgr_verify_password(password)) {
+     memset(password, 0, sizeof(password));
+
+     if (verdict.authenticated != AICAM_TRUE) {
          return AICAM_ERROR_UNAUTHORIZED;
      }
 
      ctx->authenticated = AICAM_TRUE;
+     ctx->high_privilege = verdict.high_privilege_allowed;
      return AICAM_OK;
+ }
+
+ aicam_bool_t web_server_high_privilege_allowed(http_handler_context_t* ctx)
+ {
+     if (!ctx) {
+         return AICAM_FALSE;
+     }
+
+     return (ctx->authenticated == AICAM_TRUE && ctx->high_privilege == AICAM_TRUE) ?
+            AICAM_TRUE : AICAM_FALSE;
  }
  
  aicam_result_t auth_check_permission(http_handler_context_t* ctx, permission_t required_permission)

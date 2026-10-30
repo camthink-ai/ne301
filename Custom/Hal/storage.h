@@ -14,6 +14,7 @@
 #include "nvs.h"
 #include "mem_map.h"
 #include "fsbl_app_common.h"
+#include "storage_media_gate.h"
 
 #define FLASH_BLOCK_SIZE        4096
 #define FS_BASE_MEM_START       FLASH_BASE
@@ -145,7 +146,8 @@ void storage_lock(void);
 void storage_unlock(void);
 void storage_lock_ext(void);
 void storage_unlock_ext(void);
-void storage_format(void);
+int storage_format(void);
+storage_media_state_t storage_nvs_media_state(NVS_Type_t type);
 int storage_file_ops_switch(void);
 void storage_register(void);
 

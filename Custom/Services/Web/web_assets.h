@@ -53,9 +53,34 @@ const web_asset_t* web_asset_find(const char* path);
  * @return Number of assets, or 0 if not initialized
  */
 uint32_t web_asset_get_count(void);
- 
+
+#ifdef NE301_APP_HOST_POC
+aicam_bool_t web_sidecar_projection_refresh(void);
+
+aicam_bool_t web_sidecar_projection_valid(void);
+
+uint64_t web_sidecar_projection_generation(void);
+aicam_bool_t web_sidecar_projection_same_origin_allowed(void);
+
+uint16_t web_sidecar_projection_file_count(void);
+
+aicam_bool_t web_sidecar_route_parse(const char *uri, uint64_t *generation,
+                                     char *path_out, size_t cap);
+
+aicam_bool_t web_sidecar_asset_resolve(const char *path, uint32_t *out_index);
+
+aicam_bool_t web_sidecar_asset_load(uint32_t index, uint8_t *buf, size_t cap,
+                                    size_t *len);
+
+const char *web_sidecar_asset_mime(const char *path);
+
+uint32_t web_sidecar_asset_file_len(uint32_t index);
+
+void web_sidecar_projection_reset(void);
+#endif
+
  #ifdef __cplusplus
  }
  #endif
- 
+
  #endif // WEB_ASSETS_H

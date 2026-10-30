@@ -1,6 +1,6 @@
 {
   "base_path": "/api/v1",
-  "total_endpoints": 176,
+  "total_endpoints": 193,
   "modules": {
     "ai_management": {
       "source": "Custom/Services/Web/api/api_ai_management_module.c",
@@ -44,9 +44,129 @@
         }
       ]
     },
+    "app_control": {
+      "source": "Custom/Services/Web/api/api_app_control_module.c",
+      "source_sha256": "2231da8b431f7ae3",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/v1/app/control/config",
+          "handler": "app_control_config_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/app/control/reset",
+          "handler": "app_control_reset_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/app/control/status",
+          "handler": "app_control_status_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/app/business/snapshot",
+          "handler": "app_control_snapshot_handler",
+          "require_auth": true
+        }
+      ]
+    },
+    "app_install": {
+      "source": "Custom/Services/Web/api/api_app_install_module.c",
+      "source_sha256": "1e72fa342dcd1df3",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/v1/app/install",
+          "handler": "app_install_package_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/app/installed",
+          "handler": "app_install_state_handler",
+          "require_auth": true
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/v1/app/installed",
+          "handler": "app_install_remove_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/app/run",
+          "handler": "app_install_run_handler",
+          "require_auth": true
+        }
+      ]
+    },
+    "app_session": {
+      "source": "Custom/Services/Web/api/api_app_session_module.c",
+      "source_sha256": "2517aa4399b51da2",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/v1/app/session/start",
+          "handler": "app_session_start_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/app/session/stop",
+          "handler": "app_session_stop_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/app/session/status",
+          "handler": "app_session_status_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/app/report/service",
+          "handler": "app_report_service_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/app/sidecar/ui",
+          "handler": "app_sidecar_ui_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/app/sidecar/bridge/grant",
+          "handler": "app_bridge_grant_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/app/sidecar/bridge",
+          "handler": "app_bridge_call_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/app/sidecar/bridge/confirm",
+          "handler": "app_bridge_confirm_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/app/sidecar/bridge/revoke",
+          "handler": "app_bridge_revoke_handler",
+          "require_auth": true
+        }
+      ]
+    },
     "auth": {
       "source": "Custom/Services/Web/api/api_auth_module.c",
-      "source_sha256": "d866579fde8b0901",
+      "source_sha256": "b226d056142f00db",
       "routes": [
         {
           "method": "POST",
@@ -112,7 +232,7 @@
     },
     "device": {
       "source": "Custom/Services/Web/api/api_device_module.c",
-      "source_sha256": "80e72b6afc378195",
+      "source_sha256": "6dd6efed2756bcbb",
       "routes": [
         {
           "method": "GET",
@@ -262,7 +382,7 @@
     },
     "file": {
       "source": "Custom/Services/Web/api/api_file_module.c",
-      "source_sha256": "cd241dabfb4616aa",
+      "source_sha256": "5b45257f5ced1f97",
       "routes": [
         {
           "method": "GET",
@@ -904,7 +1024,7 @@
     },
     "ota": {
       "source": "Custom/Services/Web/api/api_ota_module.c",
-      "source_sha256": "8a97bdaab6de8c61",
+      "source_sha256": "c744b291b1766e2b",
       "routes": [
         {
           "method": "POST",

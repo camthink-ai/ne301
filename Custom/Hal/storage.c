@@ -1,4 +1,9 @@
+#include <errno.h>
+
 #include "storage.h"
+#include "storage_media_gate.h"
+#include "storage_nvs_session.h"
+#include "json_config_boot_gate.h"
 #include "debug.h"
 #include "../FSBL/Core/Inc/xspim.h"
 #include "common_utils.h"
@@ -6,6 +11,34 @@
 #include "crc.h"
 #include "iwdg.h"
 #include "tx_api.h"
+
+#include "stm32n6xx_hal.h"
+
+static void storage_flash_invalidate_dcache(uint32_t offset, size_t size)
+{
+    uintptr_t base = (uintptr_t)FS_BASE_MEM_START + offset;
+    uintptr_t start = base & ~((uintptr_t)31u);
+    uintptr_t end = (base + size + 31u) & ~((uintptr_t)31u);
+    SCB_InvalidateDCache_by_Addr((uint32_t *)start, (uint32_t)(end - start));
+}
+
+static void storage_mm_window_lock(TX_THREAD **self, UINT *old_threshold)
+{
+    *self = tx_thread_identify();
+    *old_threshold = 0u;
+    if (*self != NULL) {
+        tx_thread_preemption_change(*self, 0u, old_threshold);
+    }
+}
+
+static void storage_mm_window_unlock(TX_THREAD *self, UINT old_threshold)
+{
+    if (self != NULL) {
+        tx_thread_preemption_change(self, old_threshold, &old_threshold);
+    }
+}
+
+static uint32_t g_storage_flash_pace_cnt;
 
 #define LFS_LOCK(sys)   do{ if ((sys)->thread_safe && (sys)->lock) (sys)->lock(); }while(0)
 #define LFS_UNLOCK(sys) do{ if ((sys)->thread_safe && (sys)->unlock) (sys)->unlock(); }while(0)
@@ -47,15 +80,20 @@ static int mem_block_read(const struct lfs_config *cfg, lfs_block_t block,
     mem_block_dev_t *dev = (mem_block_dev_t *)cfg->context;
     uint32_t addr = dev->start_addr + block * dev->block_size + off;
     storage_lock();
+    TX_THREAD *mm_self;
+    UINT mm_old;
+    storage_mm_window_lock(&mm_self, &mm_old);
     XSPI_NOR_DisableMemoryMappedMode();
     if (XSPI_NOR_Read((uint8_t *)buffer, addr, size) != 0) {
         XSPI_NOR_EnableMemoryMappedMode();
+        storage_mm_window_unlock(mm_self, mm_old);
         /* Must not return locked: this mutex guards every flash/NVS/littlefs
          * op — leaking it here froze all of them until reboot. */
         storage_unlock();
         return LFS_ERR_IO;
     }
     XSPI_NOR_EnableMemoryMappedMode();
+    storage_mm_window_unlock(mm_self, mm_old);
     storage_unlock();
     return LFS_ERR_OK;
 }
@@ -73,6 +111,9 @@ static int mem_block_prog(const struct lfs_config *cfg, lfs_block_t block,
     }
 
     storage_lock();
+    TX_THREAD *mm_self;
+    UINT mm_old;
+    storage_mm_window_lock(&mm_self, &mm_old);
     XSPI_NOR_DisableMemoryMappedMode();
     if (XSPI_NOR_Read(old_data, addr, size) != 0) {
         ret = LFS_ERR_IO;
@@ -86,9 +127,11 @@ static int mem_block_prog(const struct lfs_config *cfg, lfs_block_t block,
         ret = LFS_ERR_IO;
         goto out;
     }
+    storage_flash_invalidate_dcache(addr, size);
 
 out:
     XSPI_NOR_EnableMemoryMappedMode();
+    storage_mm_window_unlock(mm_self, mm_old);
     storage_unlock();
     return ret;
 }
@@ -104,6 +147,9 @@ static int mem_block_erase(const struct lfs_config *cfg, lfs_block_t block)
     }
 
     storage_lock();
+    TX_THREAD *mm_self;
+    UINT mm_old;
+    storage_mm_window_lock(&mm_self, &mm_old);
     XSPI_NOR_DisableMemoryMappedMode();
     uint32_t block_addr = dev->start_addr + block * dev->block_size;
     if (XSPI_NOR_Erase4K(block_addr) != 0) {
@@ -111,16 +157,55 @@ static int mem_block_erase(const struct lfs_config *cfg, lfs_block_t block)
         goto out;
     }
     dev->erase_counts[block]++;
+    storage_flash_invalidate_dcache(block_addr, dev->block_size);
 
 out:
     XSPI_NOR_EnableMemoryMappedMode();
+    storage_mm_window_unlock(mm_self, mm_old);
     storage_unlock();
     return ret;
 }
 
-static int mem_block_sync(const struct lfs_config *cfg) 
+static int mem_block_sync(const struct lfs_config *cfg)
 {
     return LFS_ERR_OK;
+}
+
+static int storage_lfs_region_blank_probe(mem_block_dev_t *dev, int *is_blank)
+{
+    struct lfs_config probe_cfg;
+    static uint8_t probe_buf[256];
+    size_t total, pos;
+
+    if (!dev || !is_blank || dev->block_size == 0 || dev->block_count == 0) {
+        return -1;
+    }
+
+    memset(&probe_cfg, 0, sizeof(probe_cfg));
+    probe_cfg.context = dev;
+
+    *is_blank = 1;
+    total = dev->block_size * dev->block_count;
+    pos = 0;
+    while (pos < total) {
+        size_t len = total - pos;
+        if (len > sizeof(probe_buf)) {
+            len = sizeof(probe_buf);
+        }
+        if (mem_block_read(&probe_cfg, (lfs_block_t)(pos / dev->block_size),
+                           (lfs_off_t)(pos % dev->block_size), probe_buf, len) != LFS_ERR_OK) {
+            *is_blank = 0;
+            return -1;
+        }
+        for (size_t i = 0; i < len; i++) {
+            if (probe_buf[i] != 0xFF) {
+                *is_blank = 0;
+                break;
+            }
+        }
+        pos += len;
+    }
+    return 0;
 }
 
 static uint8_t storage_lfs_isready(void)
@@ -274,7 +359,13 @@ static int storage_lfs_remove(void *context, const char *path)
     LFS_LOCK(sys);
     int res = lfs_remove(&sys->lfs, path);
     LFS_UNLOCK(sys);
-    return res == LFS_ERR_OK ? 0 : -1;
+    if (res == LFS_ERR_OK) {
+        return 0;
+    }
+    if (res == LFS_ERR_NOENT) {
+        return -ENOENT;
+    }
+    return -1;
 }
 
 static int storage_lfs_rename(void *context, const char *oldpath, const char *newpath) 
@@ -344,7 +435,10 @@ static int storage_lfs_stat(void *context, const char *filename, struct stat *st
         }
         return 0; // File exists
     }
-    return -1; // File does not exist
+    if (res == LFS_ERR_NOENT) {
+        return -ENOENT;
+    }
+    return -1;
 }
 
 static int storage_lfs_mkdir(void *context, const char *path)
@@ -510,8 +604,23 @@ static int lfs_mem_init(lfs_mem_system_t *sys,
     LFS_LOCK(sys);
     int err = lfs_mount(&sys->lfs, &sys->config);
     if (err) {
-        lfs_format(&sys->lfs, &sys->config);
-        err = lfs_mount(&sys->lfs, &sys->config);
+        int blank = 0;
+        int probe_rc = storage_lfs_region_blank_probe(&sys->mem_dev, &blank);
+        if (probe_rc == 0 && blank) {
+            err = lfs_format(&sys->lfs, &sys->config);
+            if (err) {
+                printf("lfs format on verified blank volume failed(ret = %d)\r\n", err);
+            } else {
+                err = lfs_mount(&sys->lfs, &sys->config);
+            }
+        } else {
+            if (probe_rc != 0) {
+                printf("lfs mount failed(ret = %d); blank probe read error(ret = %d), volume preserved, not formatted\r\n", err, probe_rc);
+            } else {
+                printf("lfs mount failed(ret = %d); volume not blank, preserved, not formatted\r\n", err);
+            }
+            err = LFS_ERR_CORRUPT;
+        }
     }
     LFS_UNLOCK(sys);
 
@@ -529,15 +638,29 @@ int storage_file_ops_switch(void)
 
 int storage_flash_write(uint32_t offset, void *data, size_t size)
 {
+    if (!storage_media_gate_range_writable(offset, size)) {
+        printf("flash write refused by media gate(offset=%u, size=%u), target partition untrusted\r\n", (unsigned int)offset, (unsigned int)size);
+        return -1;
+    }
     storage_lock();
+    TX_THREAD *mm_self;
+    UINT mm_old;
+    storage_mm_window_lock(&mm_self, &mm_old);
     XSPI_NOR_DisableMemoryMappedMode();
     if (XSPI_NOR_Write((uint8_t *)data, offset, size) != 0) {
         XSPI_NOR_EnableMemoryMappedMode();
+        storage_mm_window_unlock(mm_self, mm_old);
         storage_unlock();
-        return -1; 
+        return -1;
     }
     XSPI_NOR_EnableMemoryMappedMode();
+    storage_mm_window_unlock(mm_self, mm_old);
+    storage_flash_invalidate_dcache(offset, size);
     storage_unlock();
+    if (++g_storage_flash_pace_cnt >= 8u) {
+        g_storage_flash_pace_cnt = 0u;
+        osDelay(1);
+    }
     return 0;
 }
 
@@ -553,6 +676,11 @@ int storage_flash_read(uint32_t offset, void *data, size_t size)
 int storage_flash_erase(uint32_t offset, size_t num_blk)
 {
     if (offset % FLASH_BLOCK_SIZE != 0) {
+        return -1;
+    }
+
+    if (!storage_media_gate_range_writable(offset, num_blk * FLASH_BLOCK_SIZE)) {
+        printf("flash erase refused by media gate(offset=%u, num_blk=%u), target partition untrusted\r\n", (unsigned int)offset, (unsigned int)num_blk);
         return -1;
     }
 
@@ -697,21 +825,33 @@ bool storage_is_lfs_mounted(void)
 static int storage_flash_erase4K(uint32_t offset, size_t size)
 {
     (void)size; //NVS and LFS only use 4K erase
-    
+
+    if (!storage_media_gate_range_writable(offset, FLASH_BLOCK_SIZE)) {
+        printf("flash erase4K refused by media gate(offset=%u), target partition untrusted\r\n", (unsigned int)offset);
+        return -1;
+    }
+
     storage_lock();
+    TX_THREAD *mm_self;
+    UINT mm_old;
+    storage_mm_window_lock(&mm_self, &mm_old);
     XSPI_NOR_DisableMemoryMappedMode();
     if(offset % FS_FLASH_BLK != 0) {
         XSPI_NOR_EnableMemoryMappedMode();
+        storage_mm_window_unlock(mm_self, mm_old);
         storage_unlock();
         return -1; 
     }
 
     if (XSPI_NOR_Erase4K(offset) != 0) {
         XSPI_NOR_EnableMemoryMappedMode();
+        storage_mm_window_unlock(mm_self, mm_old);
         storage_unlock();
         return -1; 
     }
     XSPI_NOR_EnableMemoryMappedMode();
+    storage_mm_window_unlock(mm_self, mm_old);
+    storage_flash_invalidate_dcache(offset, 4096u);
     storage_unlock();
     return 0;
 }
@@ -777,33 +917,30 @@ static uint32_t sysclk_hal_crc32(void *data, size_t size)
     return CRC_Calculate(data, (uint32_t)size);
 }
 
-static int storage_nvs_init(nvs_fs_t *nvs, uint32_t flash_offset, size_t sector_size, size_t sector_count) 
+static void *nvs_mutex_new(void)
 {
-    int ret = 0;
-    if (!nvs) {
-        return -1;
-    }
+    return osMutexNew(NULL);
+}
 
-    nvs->offset = flash_offset;
-    nvs->ate_wra = flash_offset;
-    nvs->data_wra = flash_offset + sizeof(struct nvs_ate);
-    nvs->sector_size = sector_size;
-    nvs->sector_count = sector_count;
-    nvs->flash_parameters.write_block_size = NVS_FLASH_WRITE_BLOCK_SIZE;
-    nvs->flash_parameters.erase_value = NVS_FLASH_ERASE_VALUE;
+static void nvs_mutex_del(void *mutex_id)
+{
+    osMutexDelete(mutex_id);
+}
 
-    nvs->flash_ops.flash_write = storage_flash_write;
-    nvs->flash_ops.flash_read = storage_flash_read;
-    nvs->flash_ops.flash_erase = storage_flash_erase4K;
-    nvs->flash_ops.flash_write_protection_set = NULL;
+static int storage_nvs_init(nvs_fs_t *nvs, uint32_t flash_offset, size_t sector_size, size_t sector_count, int gate_partition)
+{
+    storage_nvs_session_io_t io;
 
-    nvs->mutex_ops.lock = nvs_lock;
-    nvs->mutex_ops.unlock = nvs_unlock;
-    nvs->mutex = osMutexNew(NULL);
+    io.flash_ops.flash_write = storage_flash_write;
+    io.flash_ops.flash_read = storage_flash_read;
+    io.flash_ops.flash_erase = storage_flash_erase4K;
+    io.flash_ops.flash_write_protection_set = NULL;
+    io.mutex_new = nvs_mutex_new;
+    io.mutex_del = nvs_mutex_del;
+    io.lock = nvs_lock;
+    io.unlock = nvs_unlock;
 
-    ret = nvs_init(nvs);
-    if (ret != 0) osMutexDelete(nvs->mutex);
-    return ret;
+    return storage_nvs_session_init(nvs, flash_offset, sector_size, sector_count, gate_partition, &io);
 }
 
 void lfs_lock(void)
@@ -856,30 +993,18 @@ int storage_init(void *priv)
 
     init_system_state(storage_flash_read, storage_flash_write, storage_flash_erase);
 
-    ret = storage_nvs_init(&storage->nvs_fact, NVS_FACT_FLASH_OFFSET, NVS_FLASH_BLK, NVS_FACT_BLK_SIZE);
-    if (ret != 0) {  //Try again after erasing
-        printf("nvs_fact init failed(ret = %d), erasing and reboot...\r\n", ret);
-        storage_flash_erase(NVS_FACT_FLASH_OFFSET, NVS_FACT_BLK_SIZE);
-        osDelay(1000);
-#if ENABLE_U0_MODULE
-        u0_module_clear_wakeup_flag();
-        u0_module_reset_chip_n6();
-#endif
-        HAL_NVIC_SystemReset();
-        return ret;
+    storage_media_gate_reset();
+    storage_media_gate_register_region(NVS_FACT_FLASH_OFFSET, NVS_FACT_FLASH_SIZE, STORAGE_MEDIA_GATE_FACTORY);
+    storage_media_gate_register_region(NVS_USER_FLASH_OFFSET, NVS_USER_FLASH_SIZE, STORAGE_MEDIA_GATE_USER);
+
+    ret = storage_nvs_init(&storage->nvs_fact, NVS_FACT_FLASH_OFFSET, NVS_FLASH_BLK, NVS_FACT_BLK_SIZE, STORAGE_MEDIA_GATE_FACTORY);
+    if (ret != 0) {
+        printf("nvs_fact init failed(ret = %d), partition preserved, writes refused, boot continues\r\n", ret);
     }
 
-    ret = storage_nvs_init(&storage->nvs_user, NVS_USER_FLASH_OFFSET, NVS_FLASH_BLK, NVS_USER_BLK_SIZE);
-    if (ret != 0) {  //Try again after erasing
-        printf("nvs_user init failed(ret = %d), erasing and reboot...\r\n", ret);
-        storage_flash_erase(NVS_USER_FLASH_OFFSET, NVS_USER_BLK_SIZE);
-        osDelay(1000);
-#if ENABLE_U0_MODULE
-        u0_module_clear_wakeup_flag();
-        u0_module_reset_chip_n6();
-#endif
-        HAL_NVIC_SystemReset();
-        return ret;
+    ret = storage_nvs_init(&storage->nvs_user, NVS_USER_FLASH_OFFSET, NVS_FLASH_BLK, NVS_USER_BLK_SIZE, STORAGE_MEDIA_GATE_USER);
+    if (ret != 0) {
+        printf("nvs_user init failed(ret = %d), partition preserved, writes refused, boot continues\r\n", ret);
     }
 
     storage->file_ops_handle = file_ops_register(FS_FLASH, &lfs_file_ops, &storage->lfs_sys);
@@ -893,6 +1018,7 @@ int storage_init(void *priv)
 int storage_nvs_write(NVS_Type_t type, const char *key, const void *data, size_t len)
 {
     nvs_fs_t *nvs;
+    int rc;
     if (!g_storage.is_init) {
         return -1;
     }
@@ -905,11 +1031,18 @@ int storage_nvs_write(NVS_Type_t type, const char *key, const void *data, size_t
         return -1;
     }
 
+    if (!storage_media_gate_writable((int)type)) {
+        printf("nvs write refused by media gate(part=%d, key=%s), media state untrusted, bytes preserved\r\n", (int)type, key ? key : "");
+        return -1;
+    }
+
     if (nvs->ready != true) {
         return -1;
     }
 
-    return nvs_write(nvs, key, data, len);
+    rc = nvs_write(nvs, key, data, len);
+    storage_nvs_session_note_result((int)type, rc);
+    return rc;
 }
 
 int storage_nvs_read(NVS_Type_t type, const char *key, void *data, size_t len)
@@ -933,6 +1066,7 @@ int storage_nvs_read(NVS_Type_t type, const char *key, void *data, size_t len)
 int storage_nvs_delete(NVS_Type_t type, const char *key)
 {
     nvs_fs_t *nvs;
+    int rc;
     if (!g_storage.is_init) {
         return -1;
     }
@@ -945,12 +1079,20 @@ int storage_nvs_delete(NVS_Type_t type, const char *key)
         return -1;
     }
 
-    return nvs_delete(nvs, key);
+    if (!storage_media_gate_writable((int)type)) {
+        printf("nvs delete refused by media gate(part=%d, key=%s), media state untrusted, bytes preserved\r\n", (int)type, key ? key : "");
+        return -1;
+    }
+
+    rc = nvs_delete(nvs, key);
+    storage_nvs_session_note_result((int)type, rc);
+    return rc;
 }
 
 int storage_nvs_clear(NVS_Type_t type)
 {
     nvs_fs_t *nvs;
+    int rc;
     if (!g_storage.is_init) {
         return -1;
     }
@@ -963,7 +1105,22 @@ int storage_nvs_clear(NVS_Type_t type)
         return -1;
     }
 
-    return nvs_clear(nvs);
+    if (!storage_media_gate_writable((int)type)) {
+        printf("nvs clear refused by media gate(part=%d), media state untrusted, bytes preserved\r\n", (int)type);
+        return -1;
+    }
+
+    rc = nvs_clear(nvs);
+    storage_nvs_session_note_result((int)type, rc);
+    return rc;
+}
+
+storage_media_state_t storage_nvs_media_state(NVS_Type_t type)
+{
+    if (type != NVS_FACTORY && type != NVS_USER) {
+        return STORAGE_MEDIA_UNTRUSTED;
+    }
+    return storage_media_gate_state((int)type);
 }
 
 void storage_nvs_dump(NVS_Type_t type)
@@ -974,7 +1131,7 @@ void storage_nvs_dump(NVS_Type_t type)
     if (!g_storage.is_init) {
         return;
     }
-    
+
     if(type == NVS_FACTORY) {
         nvs = &g_storage.nvs_fact;
     }else if(type == NVS_USER) {
@@ -992,7 +1149,15 @@ void storage_nvs_dump(NVS_Type_t type)
         if (info.len == 0) {
             continue; // Skip empty entries
         }
+        if (json_config_nvs_key_is_sensitive(info.key)) {
+            LOG_SIMPLE("Key: %s, Value: (redacted)", info.key);
+            continue;
+        }
         char *buf = hal_mem_alloc_large(info.len + 1);
+        if (buf == NULL) {
+            LOG_SIMPLE("alloc failed, dump aborted\r\n");
+            break;
+        }
         memset(buf, 0, info.len + 1);
         int value_len = nvs_read(nvs, info.key, buf, info.len);
         if (value_len > 0)
@@ -1005,13 +1170,18 @@ void storage_nvs_dump(NVS_Type_t type)
 void storage_power_save(void)
 {
     // To reduce power consumption (~5mA), switch back to XSPI memory-mapped mode after reading.
+    TX_THREAD *mm_self;
+    UINT mm_old;
+    storage_mm_window_lock(&mm_self, &mm_old);
     XSPI_NOR_DisableMemoryMappedMode();
     XSPI_NOR_EnableMemoryMappedMode();
+    storage_mm_window_unlock(mm_self, mm_old);
 }
 
 void storage_lock(void)
 {
     osMutexAcquire(g_storage.mtx_id, osWaitForever);
+    HAL_IWDG_Refresh(&hiwdg);
 }
 
 void storage_unlock(void)
@@ -1030,10 +1200,12 @@ void storage_unlock_ext(void)
     osMutexRelease(g_storage.mtx_id);
 }
 
-void storage_format(void)
+int storage_format(void)
 {
+    int ret = -1;
+
     if (g_storage.is_init != true) {
-        return;
+        return -1;
     }
 
     if (g_storage.lfs_sys.thread_safe && g_storage.lfs_sys.lock && g_storage.lfs_sys.unlock) {
@@ -1045,6 +1217,9 @@ void storage_format(void)
         // Remount after successful format
         err = lfs_mount(&g_storage.lfs_sys.lfs, &g_storage.lfs_sys.config);
         g_storage.lfs_sys.mounted = (err == LFS_ERR_OK);
+    } else {
+        g_storage.lfs_sys.mounted = false;
+        printf("storage_format lfs_format failed(ret = %d), volume state unproven\r\n", err);
     }
     /* Invalidate the free-space cache — used-block count is meaningless after
      * a format/remount. */
@@ -1053,6 +1228,9 @@ void storage_format(void)
     if (g_storage.lfs_sys.thread_safe && g_storage.lfs_sys.lock && g_storage.lfs_sys.unlock) {
         g_storage.lfs_sys.unlock();
     }
+
+    ret = (err == LFS_ERR_OK && g_storage.lfs_sys.mounted) ? 0 : -1;
+    return ret;
 
 }
 

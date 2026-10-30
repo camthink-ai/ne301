@@ -70,6 +70,9 @@ void mbedtls_sha256_init(mbedtls_sha256_context *ctx)
   __disable_irq();
   /* mutex cannot be initialized twice */
   if (hash_context_count == 0) mbedtls_mutex_init(&hash_mutex);
+#if defined(MBEDTLS_THREADING_ALT)
+  else if (hash_mutex.mutex == NULL) mbedtls_mutex_init(&hash_mutex);
+#endif
   hash_context_count++;
   __enable_irq();
 #endif /* MBEDTLS_THREADING_C */

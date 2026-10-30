@@ -155,7 +155,6 @@ static void parse_auth_mgr(cJSON *json, auth_mgr_config_t *cfg)
 {
     json_get_uint32(json, "session_timeout_ms", &cfg->session_timeout_ms);
     json_get_bool(json, "enable_session_timeout", &cfg->enable_session_timeout);
-    json_get_string(json, "admin_password", cfg->admin_password, sizeof(cfg->admin_password));
 }
 
 static void parse_isp_config(cJSON *json, isp_config_t *cfg)
@@ -944,7 +943,8 @@ static cJSON *serialize_auth_mgr(const auth_mgr_config_t *cfg)
     cJSON *json = cJSON_CreateObject();
     cJSON_AddNumberToObject(json, "session_timeout_ms", cfg->session_timeout_ms);
     cJSON_AddBoolToObject(json, "enable_session_timeout", cfg->enable_session_timeout);
-    cJSON_AddStringToObject(json, "admin_password", cfg->admin_password); // Security Note: Storing password in JSON is sensitive
+    cJSON_AddBoolToObject(json, "admin_password_configured",
+                          (cfg->admin_password[0] != '\0' || cfg->admin_credential[0] != '\0'));
     return json;
 }
 

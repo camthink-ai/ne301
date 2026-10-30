@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>NE301 Host Admin Bridge Fixture</title>
+  </head>
+  <body>
+    <div id="status" data-testid="host-status">booting</div>
+    <div id="projection" data-testid="host-projection"></div>
+    <div id="snapshot" data-testid="host-snapshot"></div>
+    <div id="revoke" data-testid="host-revoked" hidden></div>
+    <div id="forged" data-testid="host-forged-rejected"></div>
+    <div id="frame-slot" data-testid="host-frame-slot"></div>
+    <div id="confirm-dangerous" data-testid="host-confirm-dangerous" hidden>
+      <button id="confirm-dangerous-button" data-testid="host-confirm-dangerous-button" type="button">confirm destructive reset</button>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
