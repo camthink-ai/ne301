@@ -100,6 +100,8 @@
  #define NVS_KEY_IMAGE_ISP_MODE          "img_isp_mode"
  #define NVS_KEY_IMAGE_SKIP_FRAMES       "img_skip"
  #define NVS_KEY_IMAGE_FAST_SKIP_FRAMES  "img_fast_skip"
+/* QS AE fast convergence: last verified exposure/gain seed (AE77 magic) */
+#define NVS_KEY_AE_LAST_STATE           "ae_state"
  #define NVS_KEY_IMAGE_FAST_RESOLUTION   "img_fast_res"
  #define NVS_KEY_IMAGE_FAST_JPEG_QUALITY "img_fast_jq"
  #define NVS_KEY_CAPTURE_DISABLE_COMM    "capture_un_comm"
