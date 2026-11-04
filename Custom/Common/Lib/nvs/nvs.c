@@ -193,6 +193,35 @@ static int nvs_flash_cmp_const(nvs_fs_t *fs, uint32_t addr, uint8_t value,
     return 0;
 }
 
+static int nvs_flash_data_cmp(nvs_fs_t *fs, uint32_t addr_a, uint32_t addr_b,
+                  uint16_t len)
+{
+    int rc;
+    size_t bytes_to_cmp, remaining;
+    uint8_t buf_a[NVS_BLOCK_SIZE];
+    uint8_t buf_b[NVS_BLOCK_SIZE];
+
+    remaining = len;
+    while (remaining) {
+        bytes_to_cmp = MIN(NVS_BLOCK_SIZE, remaining);
+        rc = nvs_flash_rd(fs, addr_a, buf_a, bytes_to_cmp);
+        if (rc) {
+            return rc;
+        }
+        rc = nvs_flash_rd(fs, addr_b, buf_b, bytes_to_cmp);
+        if (rc) {
+            return rc;
+        }
+        if (memcmp(buf_a, buf_b, bytes_to_cmp) != 0) {
+            return 1;
+        }
+        remaining -= bytes_to_cmp;
+        addr_a += bytes_to_cmp;
+        addr_b += bytes_to_cmp;
+    }
+    return 0;
+}
+
 static int nvs_flash_block_move(nvs_fs_t *fs, uint32_t addr, size_t len)
 {
     int rc;
@@ -282,6 +311,23 @@ static int nvs_ate_cmp_const(const struct nvs_ate *entry, uint8_t value)
     }
 
     return 0;
+}
+
+static int nvs_ate_data_legal(nvs_fs_t *fs, const struct nvs_ate *ate,
+                  size_t ate_size)
+{
+    uint32_t data_top = (uint32_t)fs->sector_size - 2U * ate_size;
+
+    if (((uint32_t)ate->offset % fs->flash_parameters.write_block_size) != 0U) {
+        return 0;
+    }
+    if ((uint32_t)ate->offset > data_top) {
+        return 0;
+    }
+    if (((uint32_t)ate->offset + nvs_al_size(fs, ate->len)) > data_top) {
+        return 0;
+    }
+    return 1;
 }
 
 static int nvs_flash_wrt_entry(nvs_fs_t *fs, const char *key, const void *data,
@@ -399,8 +445,11 @@ static int nvs_sector_close(nvs_fs_t *fs)
 {
     struct nvs_ate close_ate;
     size_t ate_size;
+    uint32_t resume_ate_wra;
+    int rc;
 
     ate_size = nvs_al_size(fs, sizeof(struct nvs_ate));
+    resume_ate_wra = fs->ate_wra;
 
     memset(close_ate.key, 0xFF, NVS_KEY_SIZE);
     close_ate.len = 0U;
@@ -411,7 +460,11 @@ static int nvs_sector_close(nvs_fs_t *fs)
 
     nvs_ate_crc8_update(&close_ate);
 
-    nvs_flash_ate_wrt(fs, &close_ate);
+    rc = nvs_flash_ate_wrt(fs, &close_ate);
+    if (rc) {
+        fs->ate_wra = resume_ate_wra;
+        return rc;
+    }
 
     nvs_sector_advance(fs, &fs->ate_wra);
 
@@ -510,6 +563,116 @@ static int nvs_gc(nvs_fs_t *fs)
     return 0;
 }
 
+static int nvs_recovery_reclaim_provable(nvs_fs_t *fs, uint32_t reclaim_base,
+					 size_t ate_size)
+{
+    int rc;
+    struct nvs_ate close_ate, slot_ate;
+    uint32_t slot;
+
+    rc = nvs_flash_ate_rd(fs, reclaim_base + fs->sector_size - ate_size,
+			  &close_ate);
+    if (rc) {
+	return rc;
+    }
+    if (!nvs_ate_cmp_const(&close_ate, fs->flash_parameters.erase_value)) {
+	return 0;
+    }
+    if (nvs_ate_crc8_check(&close_ate)) {
+	return 0;
+    }
+    if ((close_ate.len != 0U) ||
+	(close_ate.offset >= (uint16_t)(fs->sector_size - ate_size)) ||
+	((close_ate.offset % ate_size) != 0U)) {
+	return 0;
+    }
+    slot = close_ate.offset;
+    while (slot <= (uint32_t)fs->sector_size - 2U * ate_size) {
+	rc = nvs_flash_ate_rd(fs, reclaim_base + slot, &slot_ate);
+	if (rc) {
+	    return rc;
+	}
+	if (!nvs_ate_cmp_const(&slot_ate, fs->flash_parameters.erase_value)) {
+	    return 0;
+	}
+	if (nvs_ate_crc8_check(&slot_ate)) {
+	    return 0;
+	}
+	if (!nvs_ate_data_legal(fs, &slot_ate, ate_size)) {
+	    return 0;
+	}
+	slot += ate_size;
+    }
+    return 1;
+}
+
+static int nvs_recovery_active_duplicated(nvs_fs_t *fs, uint32_t reclaim_base,
+					  size_t ate_size)
+{
+    int rc;
+    struct nvs_ate act_ate, rcl_ate;
+    uint32_t act_addr, act_data_addr, rcl_addr, rcl_low, rcl_top;
+    uint32_t act_data_top;
+
+    rc = nvs_flash_ate_rd(fs, reclaim_base + fs->sector_size - ate_size,
+			  &rcl_ate);
+    if (rc) {
+	return rc;
+    }
+    rcl_low = reclaim_base + rcl_ate.offset;
+    rcl_top = reclaim_base + fs->sector_size - 2U * ate_size;
+
+    act_data_top = (fs->ate_wra & ADDR_SECT_MASK) + fs->sector_size -
+		   2U * ate_size;
+    act_addr = act_data_top;
+    while ((act_addr >= fs->data_wra) && (act_addr <= act_data_top)) {
+	rc = nvs_flash_ate_rd(fs, act_addr, &act_ate);
+	if (rc) {
+	    return rc;
+	}
+	if (!nvs_ate_cmp_const(&act_ate, fs->flash_parameters.erase_value)) {
+	    act_addr -= ate_size;
+	    continue;
+	}
+	if (nvs_ate_crc8_check(&act_ate) || act_ate.len == 0U) {
+	    return 0;
+	}
+	if (!nvs_ate_data_legal(fs, &act_ate, ate_size)) {
+	    return 0;
+	}
+	if (rcl_low > rcl_top) {
+	    return 0;
+	}
+	rcl_addr = rcl_low;
+	while (1) {
+	    rc = nvs_flash_ate_rd(fs, rcl_addr, &rcl_ate);
+	    if (rc) {
+		return rc;
+	    }
+	    if (!nvs_ate_crc8_check(&rcl_ate) &&
+		(strncmp(rcl_ate.key, act_ate.key, NVS_KEY_SIZE) == 0)) {
+		break;
+	    }
+	    if (rcl_addr >= rcl_top) {
+		return 0;
+	    }
+	    rcl_addr += ate_size;
+	}
+	if (rcl_ate.len != act_ate.len) {
+	    return 0;
+	}
+	act_data_addr = (act_addr & ADDR_SECT_MASK) + act_ate.offset;
+	rc = nvs_flash_data_cmp(fs, act_data_addr,
+				reclaim_base + rcl_ate.offset,
+				act_ate.len);
+	if (rc != 0) {
+	    return (rc < 0) ? rc : 0;
+	}
+	act_addr -= ate_size;
+    }
+    return 1;
+}
+
 static int nvs_startup(nvs_fs_t *fs)
 {
     int rc;
@@ -519,9 +682,7 @@ static int nvs_startup(nvs_fs_t *fs)
     uint16_t i, closed_sectors = 0;
     uint8_t erase_value = fs->flash_parameters.erase_value;
 
-    /* printf("[NVS] startup: offset=0x%x, sector_count=%d, sector_size=%d\r\n",
-     *        (unsigned int)fs->offset, fs->sector_count, fs->sector_size);
-     */
+    fs->startup_flags = 0U;
 
     fs->mutex_ops.lock(fs->mutex);
 
@@ -581,10 +742,11 @@ static int nvs_startup(nvs_fs_t *fs)
             fs->data_wra += nvs_al_size(fs, last_ate.len);
 
             if (fs->ate_wra == fs->data_wra && last_ate.len) {
-                // printf("[NVS] ERROR: ate/data overlap (ESPIPE)\r\n");
                 rc = -ESPIPE;
                 goto end;
             }
+        } else {
+            fs->startup_flags |= NVS_STARTUP_TEAR_SEEN;
         }
 
         fs->ate_wra -= ate_size;
@@ -610,14 +772,34 @@ static int nvs_startup(nvs_fs_t *fs)
     nvs_sector_advance(fs, &addr);
     rc = nvs_flash_cmp_const(fs, addr, erase_value, fs->sector_size);
     if (rc < 0) {
-        // printf("[NVS] ERROR: next sector cmp failed at 0x%x, rc=%d\r\n", (unsigned int)addr, rc);
         goto end;
     }
     if (rc) {
-        // printf("[NVS] next sector not empty at 0x%x, erasing...\r\n", (unsigned int)addr);
+        int proven;
+        if (fs->startup_flags & NVS_STARTUP_TEAR_SEEN) {
+            fs->startup_flags |= NVS_STARTUP_RECOVERY_DEFERRED;
+            rc = 0;
+            goto end;
+        }
+        proven = nvs_recovery_reclaim_provable(fs, addr, ate_size);
+        if (proven < 0) {
+            rc = proven;
+            goto end;
+        }
+        if (proven > 0) {
+            proven = nvs_recovery_active_duplicated(fs, addr, ate_size);
+            if (proven < 0) {
+                rc = proven;
+                goto end;
+            }
+        }
+        if (proven == 0) {
+            fs->startup_flags |= NVS_STARTUP_RECOVERY_DEFERRED;
+            rc = 0;
+            goto end;
+        }
         rc = nvs_flash_erase_sector(fs, fs->ate_wra);
         if (rc) {
-            // printf("[NVS] ERROR: erase_sector failed, rc=%d\r\n", rc);
             goto end;
         }
         fs->ate_wra &= ADDR_SECT_MASK;
@@ -625,7 +807,6 @@ static int nvs_startup(nvs_fs_t *fs)
         fs->data_wra = (fs->ate_wra & ADDR_SECT_MASK);
         rc = nvs_gc(fs);
         if (rc) {
-            // printf("[NVS] ERROR: gc failed, rc=%d\r\n", rc);
             goto end;
         }
     }
@@ -634,6 +815,40 @@ end:
     // printf("[NVS] startup end: rc=%d\r\n", rc);
     fs->mutex_ops.unlock(fs->mutex);
     return rc;
+}
+
+int nvs_blank_check(nvs_fs_t *fs, int *is_blank)
+{
+    static uint8_t buf[NVS_BLOCK_SIZE];
+    size_t total, pos;
+    int rc;
+
+    if (!fs || !is_blank) {
+        return -EINVAL;
+    }
+
+    *is_blank = 1;
+    total = (size_t)fs->sector_size * (size_t)fs->sector_count;
+    pos = 0U;
+    while (pos < total) {
+        size_t len = total - pos;
+        if (len > sizeof(buf)) {
+            len = sizeof(buf);
+        }
+        rc = fs->flash_ops.flash_read((uint32_t)(fs->offset + (int)pos), buf, len);
+        if (rc) {
+            *is_blank = 0;
+            return rc;
+        }
+        for (size_t i = 0U; i < len; i++) {
+            if (buf[i] != fs->flash_parameters.erase_value) {
+                *is_blank = 0;
+                break;
+            }
+        }
+        pos += len;
+    }
+    return 0;
 }
 
 int nvs_clear(nvs_fs_t *fs)
@@ -857,9 +1072,11 @@ err:
 
 size_t nvs_read(nvs_fs_t *fs, const char *key, void *data, size_t len)
 {
-    int rc;
+    size_t rc;
 
+    fs->mutex_ops.lock(fs->mutex);
     rc = nvs_read_hist(fs, key, data, len, 0);
+    fs->mutex_ops.unlock(fs->mutex);
     return rc;
 }
 
@@ -951,6 +1168,10 @@ int nvs_entry_next(nvs_iterator_t *it)
                 }
             }
             if (!already_dumped) {
+                if (it->key_count >= (int)(sizeof(it->dumped_keys) / sizeof(it->dumped_keys[0]))) {
+                    it->finished = 1;
+                    return -ENOSPC;
+                }
                 strncpy(it->dumped_keys[it->key_count], it->curr_ate.key, NVS_KEY_SIZE);
                 it->dumped_keys[it->key_count][NVS_KEY_SIZE] = '\0';
                 it->key_count++;

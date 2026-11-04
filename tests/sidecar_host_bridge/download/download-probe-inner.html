@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Download probe</title></head>
+  <body>
+    <button id="go" type="button">save</button>
+    <script>
+      document.getElementById('go').addEventListener('click', () => {
+        const blob = new Blob(['probe-bytes'], { type: 'application/octet-stream' })
+        const url = URL.createObjectURL(blob)
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = 'probe-download.bin'
+        document.body.appendChild(anchor)
+        anchor.click()
+        anchor.remove()
+      })
+    </script>
+  </body>
+</html>

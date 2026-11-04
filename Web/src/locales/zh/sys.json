@@ -36,6 +36,186 @@
       "device_information": "设备信息",
       "capture_settings": "抓拍设置"
     },
+    "app_management": {
+      "slot": {
+        "deploy": "部署 App",
+        "manage": "管理应用",
+        "status": "应用状态"
+      },
+      "page": {
+        "installed_no_business": "此设备已安装一个由管理员安装的 App，但当前 Web 尚无对应的业务界面。",
+        "installed_no_business_hint": "点击「管理应用」可查看身份、运行一次、更新或卸载。",
+        "abnormal_heading": "无法确认应用当前状态",
+        "abnormal_detail": "设备报告应用不可用，或当前查询失败。请重新查询；在设备给出明确状态前，危险操作保持禁用。",
+        "abnormal_reason": "报告详情",
+        "recheck": "重新查询",
+        "querying": "正在查询应用状态…",
+        "undetermined": "无法确认应用状态，请重试。",
+        "empty_title": "尚未安装应用",
+        "empty_hint": "由高权限管理员安装单文件 .neapp 包以扩展设备功能。",
+        "install_app": "安装应用"
+      },
+      "state": {
+        "label": "设备状态",
+        "querying": "查询中...",
+        "installed": "已安装",
+        "unavailable": "不可执行",
+        "not_installed": "未安装",
+        "undetermined": "无法判定",
+        "unavailable_note": "设备保留了一份已提交的应用记录，但当前无法执行。",
+        "undetermined_warning": "设备存储状态无法判定。在设备给出明确状态前，安装、运行和卸载均保持禁用。"
+      },
+      "labels": {
+        "status": "状态",
+        "publisher": "安装身份",
+        "app_id": "应用 ID",
+        "version": "版本",
+        "tbs_sha256": "Native 完整性摘要 SHA-256"
+      },
+      "dialog": {
+        "deploy_desc": "选择包含 Native 应用和业务 UI 的单文件 .neapp 包，由高权限管理员安装；设备会检查包结构、兼容性和内容完整性。",
+        "dropzone_title": "选择单文件 .neapp 安装包",
+        "dropzone_single": "一个包同时包含 Native 和 UI",
+        "browse": "选择文件",
+        "file_unverified": "尚未经设备验证",
+        "file_note": "选择文件不会安装应用；安装需要管理员显式确认。",
+        "verify_note": "仅设备确认的结果可作为安装、更新或卸载成功的依据。",
+        "deploy_confirm": "确认部署",
+        "update_confirm": "确认更新",
+        "manage_current": "当前设备上的应用",
+        "manage_chip": "管理员安装的应用",
+        "update_row": "更新应用",
+        "uninstall_row": "卸载应用",
+        "close": "关闭",
+        "back": "返回",
+        "update_title": "更新应用",
+        "current_version": "当前版本",
+        "uninstall_question": "确定卸载当前应用吗？",
+        "uninstall_warning": "卸载后，当前应用的业务功能将不可用，其业务标签将从应用管理中移除。",
+        "uninstall_data_note": "其他系统配置不自动清除；App 数据按设备实际规则处理。",
+        "uninstall_confirm": "卸载应用",
+        "running_block_note": "应用正在运行，无法更新或卸载；请先停止应用后再试。",
+        "state_changed_note": "设备状态已发生变化，请返回重新确认后再继续操作。",
+        "app_changed_note": "当前应用已变化，请返回重新确认。"
+      },
+      "install": {
+        "submitting": "提交中...",
+        "progress": "正在上传并由设备验证，请勿关闭页面。此处结果仅来自设备响应。",
+        "installed": "设备已确认应用安装成功。",
+        "already_installed": "设备报告该包已安装。"
+      },
+      "run": {
+        "title": "运行一次",
+        "note": "仅在管理员显式操作时运行一次已提交的应用，运行中的会话可通过“停止”结束；不提供自动运行或常驻调度。",
+        "button": "运行一次",
+        "submitting": "运行中...",
+        "runtime_state": "运行状态",
+        "running": "运行中",
+        "idle": "空闲",
+        "busy_note": "应用正在运行，设备在报告空闲前会拒绝再次运行请求。",
+        "session_result": "本次会话的运行响应",
+        "session_note": "这是本次浏览器会话中运行请求的响应，设备不持久保存，刷新后即消失。",
+        "entry_returned": "入口是否返回",
+        "entry_result": "应用入口返回值",
+        "log_truncated": "设备已截断日志。",
+        "host_refused": "Host 拒绝运行"
+      },
+      "stop": {
+        "button": "停止",
+        "submitting": "停止中...",
+        "busy_note": "停止请求仍在进行中，应用入口尚未返回；请稍后刷新查看最终状态。",
+        "host_refused": "Host 拒绝停止"
+      },
+      "start": {
+        "button": "启动",
+        "submitting": "启动中...",
+        "host_refused": "Host 拒绝启动"
+      },
+      "uninstall": {
+        "submitting": "卸载中...",
+        "cancel": "取消",
+        "processing_detail": "正在撤销 App 访问权限并清理专属数据。"
+      },
+      "actions": {
+        "refresh": "刷新"
+      },
+      "auth": {
+        "unauthorized": "登录状态已失效，敏感应用信息已隐藏。",
+        "relogin": "重新登录",
+        "forbidden": "设备已拒绝该操作：当前凭据没有高权限应用管理权限。"
+      },
+      "errors": {
+        "indeterminate": "请求结果未知：设备未确认该操作，正在核对设备实际已提交状态。",
+        "pending_verification": "正在等待设备报告实际已提交状态，不会假报成功。"
+      },
+      "file": {
+        "empty": "所选文件为空。",
+        "too_large": "所选文件超出设备包大小限制。"
+      },
+      "envelope": {
+        "INVALID_REQUEST": "设备认为请求格式不正确。",
+        "METHOD_NOT_ALLOWED": "设备不允许该 HTTP 方法。",
+        "INTERNAL_ERROR": "设备报告内部错误。",
+        "SERVICE_UNAVAILABLE": "设备服务暂时不可用。",
+        "TIMEOUT": "设备未及时响应。",
+        "TOO_MANY_REQUESTS": "请求过于频繁，请稍后重试。",
+        "GENERIC": "设备拒绝了该请求。"
+      },
+      "reasons": {
+        "PARAM": "设备拒绝了请求参数。",
+        "BUSY": "设备忙：上一个操作仍在进行，请稍后重试。",
+        "BAD_PACKAGE": "设备无法解析该安装包。",
+        "LEGACY_SIGNED_FORMAT_REJECTED": "该签名包格式已停用，请安装 NEAPP05 无签名包。",
+        "LEGACY_SIGNED_STATE_PRESERVED": "设备存在旧签名安装记录，已保留原数据并阻止无签名安装。",
+        "LEGACY_SIGNED_PAIR_STATE_PRESERVED": "设备存在旧签名 UI 或 Pair 状态，已保留原数据并阻止无签名安装。",
+        "UNKNOWN_FORMAT_REJECTED": "设备无法识别该应用包格式。",
+        "TARGET_INCOMPATIBLE": "该安装包不适用于此板卡。",
+        "ABI_INCOMPATIBLE": "安装包 ABI 与设备不匹配。",
+        "RESOURCE_LIMIT": "安装包超出设备资源限制。",
+        "STORAGE_STATE_UNKNOWN": "设备存储状态未知，操作被拒绝；重启设备可解决未完成的写入意图。",
+        "STORAGE_FULL": "设备存储空间不足。",
+        "WRITE_FAILED": "设备写入安装包失败。",
+        "COMMIT_FAILED": "设备提交安装事务失败。",
+        "VERSION_CONFLICT": "设备已存在同版本但内容不同的包。",
+        "CONTENT_CONFLICT": "设备拒绝该安装包：内容与已安装应用冲突。",
+        "NATIVE_VERIFY_FAILED": "安装包原生（Native）部分校验失败。",
+        "UI_VERIFY_FAILED": "安装包界面（UI）部分校验失败。",
+        "DOWNGRADE_REFUSED": "设备拒绝降级到旧版本。",
+        "PUBLISHER_CONFLICT": "该应用身份已被其他发行方占用。",
+        "IDENTITY_CONFLICT": "该应用已被不同身份占用，请先显式卸载。",
+        "NOT_FOUND": "设备报告没有该已提交应用。",
+        "UNAVAILABLE": "已提交的应用存在，但当前设备上无法执行。",
+        "NOT_INSTALLED": "设备上没有已提交的应用。",
+        "LOAD_FAILED": "设备加载应用执行失败。",
+        "RUNTIME_UNAVAILABLE": "设备运行环境不可用。",
+        "UNKNOWN": "设备报告了未知失败。"
+      },
+      "sidecar": {
+        "tab_label": "Line Crossing (App)",
+        "origin_unavailable": "当前部署未配置 App 独立站点，仅提供应用状态与管理入口。",
+        "revoked_title": "App 会话已撤销",
+        "status_native": "原生 App",
+        "status_generation": "会话世代",
+        "status_video": "视频",
+        "status_note": "在获得真实授权之前，直播视频与未受审能力一律按不可用处理。",
+        "dangerous_confirm_note": "业务 App 请求清零业务计数器。该危险操作需要管理员显式确认。",
+        "dangerous_confirm_button": "确认清零计数器"
+      },
+      "uninstall_success": {
+        "title": "已卸载",
+        "heading": "已卸载",
+        "detail": "Line Crossing 及其专属数据已删除。"
+      },
+      "uninstall_abnormal": {
+        "title": "卸载尚未完成",
+        "heading": "卸载尚未完成",
+        "detail": "旧 App 访问已停用，但部分数据清理结果无法确认。请先核对恢复状态；确认完成前，不允许将同身份重装视为全新安装。"
+      },
+      "cleanup": {
+        "title": "卸载尚未完成",
+        "detail": "旧 App 访问已停用，但部分数据清理结果无法确认。请先核对恢复状态；确认完成前，不允许将同身份重装视为全新安装。"
+      }
+    },
     "login": {
       "login_title": "登录账户",
       "login_subtitle": "请输入您的登录信息",

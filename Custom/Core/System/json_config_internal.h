@@ -27,15 +27,53 @@
  
  typedef struct {
      aicam_bool_t initialized;
+     aicam_bool_t config_healthy;
+     aicam_bool_t credential_trusted;
      aicam_global_config_t current_config;
      uint32_t save_count;
      uint64_t last_save_time;
  } json_config_mgr_context_t;
- 
+
  /* ==================== Global Context (defined in json_config_mgr.c) ==================== */
- 
+
  extern json_config_mgr_context_t g_json_config_ctx;
  extern const aicam_global_config_t default_config;
+
+ aicam_bool_t json_config_nvs_session_credential_trusted(void);
+ aicam_bool_t json_config_nvs_credential_undecided(void);
+enum {
+    JSON_CONFIG_CRED_FAULT_NONE = 0,
+    JSON_CONFIG_CRED_FAULT_GATE_REFUSED = 1,
+    JSON_CONFIG_CRED_FAULT_WRITE_FAIL = 2,
+    JSON_CONFIG_CRED_FAULT_VERIFY_UNREADABLE = 3,
+    JSON_CONFIG_CRED_FAULT_VERIFY_MISMATCH = 4,
+    JSON_CONFIG_CRED_FAULT_UNSTABLE_READ = 5,
+    JSON_CONFIG_CRED_FAULT_MARKER_UNRESOLVED = 6
+};
+
+enum {
+    JSON_CONFIG_CRED_MARKER_ABSENT = 0,
+    JSON_CONFIG_CRED_MARKER_PRESENT = 1,
+    JSON_CONFIG_CRED_MARKER_INVALID = 2,
+    JSON_CONFIG_CRED_MARKER_UNREADABLE = 3,
+    JSON_CONFIG_CRED_MARKER_UNRESOLVED = 4
+};
+
+enum {
+    JSON_CONFIG_CRED_DISP_NONE = 0,
+    JSON_CONFIG_CRED_DISP_TRUSTED_RECORD = 1,
+    JSON_CONFIG_CRED_DISP_TRUSTED_MIGRATED = 2,
+    JSON_CONFIG_CRED_DISP_TRUSTED_FIRST_BOOT_DEFAULT = 3,
+    JSON_CONFIG_CRED_DISP_FAIL_CLOSED_MEDIA = 4,
+    JSON_CONFIG_CRED_DISP_FAIL_CLOSED_MARKER_UNRESOLVED = 5,
+    JSON_CONFIG_CRED_DISP_FAIL_CLOSED_COMMIT_MISSING_NONBLANK = 6,
+    JSON_CONFIG_CRED_DISP_FAIL_CLOSED_UNKNOWN_KEY = 7
+};
+
+ int json_config_nvs_credential_last_fault(void);
+ int json_config_nvs_credential_last_fault_rc(void);
+ int json_config_nvs_boot_marker_status(void);
+ int json_config_nvs_credential_last_disposition(void);
  
  /* ==================== NVS Key Name Definitions ==================== */
  
@@ -90,6 +128,7 @@
 #define NVS_KEY_AUTH_SESSION_TIMEOUT    "auth_sess_to"
 #define NVS_KEY_AUTH_ENABLE_TIMEOUT     "auth_en_to"
 #define NVS_KEY_AUTH_PASSWORD           "auth_password"
+#define NVS_KEY_AUTH_PENDING            "auth_password_pending"
  
  // Device service configuration key names
  #define NVS_KEY_IMAGE_BRIGHTNESS        "img_bright"
@@ -409,6 +448,10 @@ aicam_result_t json_config_load_poe_config_from_nvs(poe_config_persist_t *config
 aicam_result_t json_config_save_mqtt_service_config_to_nvs(const mqtt_service_config_t *config);
 // RTMP config now part of video_stream_mode, use json_config_get/set_video_stream_mode()
 aicam_result_t json_config_save_auth_mgr_config_to_nvs(const auth_mgr_config_t *config);
+aicam_result_t json_config_nvs_persist_credential_record(const char *password,
+                                                         char *record_out,
+                                                         size_t record_size);
+void json_config_nvs_forget_legacy_credential(void);
 aicam_result_t json_config_save_webhook_config_to_nvs(const webhook_config_t *config);
 aicam_result_t json_config_load_webhook_from_nvs(webhook_config_t *config);
 aicam_result_t json_config_save_capture_upload_to_nvs(const capture_upload_config_t *config);

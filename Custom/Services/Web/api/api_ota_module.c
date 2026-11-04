@@ -24,6 +24,7 @@
 #include "nn.h"
 #include "cmsis_os2.h"
 #include "mqtt_service.h"
+#include "app_host_session.h"
 #include "system_service.h"
 #include "device_service.h"
 #include "ai_service.h"
@@ -1290,17 +1291,6 @@ void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data)
     if (ev == MG_EV_HTTP_HDRS) {
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
 
-        /* Handle CORS preflight OPTIONS request */
-        if (mg_match(hm->method, mg_str("OPTIONS"), NULL)) {
-            mg_http_reply(c, 200,
-                            "Access-Control-Allow-Origin: *\r\n"
-                            "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-                            "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
-                            "Access-Control-Max-Age: 86400\r\n",
-                            "");
-            return;
-        }
-        
         struct mg_str *cl = mg_http_get_header(hm, "Content-Length");
         size_t total_len = cl ? (size_t)atol(cl->buf) : 0;
         
@@ -1363,6 +1353,23 @@ void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data)
          * and again on data below — or a >90s burn in low-power mode would be
          * killed mid-flash by the "no web operation" sleep path. */
         web_server_ap_sleep_timer_reset();
+
+        {
+            app_host_session_stop_out_t app_stop_out;
+            app_session_result_t app_stop_rc =
+                app_host_session_stop(8000u, &app_stop_out);
+            if (app_stop_rc == APP_SESSION_OK) {
+                LOG_SVC_INFO("App session stopped cooperatively for OTA upgrade");
+            } else if (app_stop_rc != APP_SESSION_ERR_NOT_RUNNING) {
+                LOG_SVC_WARN("App session stop before OTA rc=%d, upgrade refused",
+                             (int)app_stop_rc);
+                c->fn_data = NULL;
+                buffer_free(ctx);
+                ota_send_response(c, API_ERROR_SERVICE_UNAVAILABLE,
+                                  "App session is busy, OTA upgrade refused");
+                return;
+            }
+        }
 
         // Stop MQTT service during OTA to free up network resources
         // MQTT auto-reconnect can interfere with OTA upload due to network lock contention

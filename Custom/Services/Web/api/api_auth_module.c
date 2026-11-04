@@ -20,13 +20,13 @@
 /**
  * @brief Login handler
  */
-static aicam_result_t login_handler(http_handler_context_t* ctx) {
+aicam_result_t login_handler(http_handler_context_t* ctx) {
     if (!ctx) return AICAM_ERROR_INVALID_PARAM;
-    
+
     if (!web_api_verify_method(ctx, "POST")) {
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Method Not Allowed");
     }
-    
+
     if (!web_api_verify_content_type(ctx, "application/json")) {
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid Content-Type");
     }
@@ -41,7 +41,14 @@ static aicam_result_t login_handler(http_handler_context_t* ctx) {
     const char* password = web_api_get_string(request, "password");
 
     //check the username and password
-    aicam_bool_t auth_result = auth_mgr_verify_password(password);
+    aicam_bool_t auth_result = AICAM_FALSE;
+    if (password != NULL) {
+        auth_result = auth_mgr_verify_password(password);
+    }
+
+    cJSON_Delete(request);
+    request = NULL;
+    password = NULL;
 
     //send the response
     if (auth_result == AICAM_TRUE) {
@@ -49,56 +56,61 @@ static aicam_result_t login_handler(http_handler_context_t* ctx) {
     } else {
         return api_response_error(ctx, API_BUSINESS_ERROR_INVALID_PASSWORD, "Login failed, invalid password");
     }
-
-    return AICAM_OK;
-    
 }
 
 /**
  * @brief Change password handler
  */
-static aicam_result_t change_password_handler(http_handler_context_t* ctx) {
+aicam_result_t change_password_handler(http_handler_context_t* ctx) {
     if (!ctx) return AICAM_ERROR_INVALID_PARAM;
-    
+
     if (!web_api_verify_method(ctx, "POST")) {
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Method Not Allowed");
     }
-    
+
     if (!web_api_verify_content_type(ctx, "application/json")) {
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid Content-Type");
     }
-    
+
+    if (ctx->authenticated != AICAM_TRUE) {
+        return api_response_error(ctx, API_ERROR_UNAUTHORIZED, "Authentication required");
+    }
+
     cJSON* request = web_api_parse_body(ctx);
     if (!request) {
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid JSON");
     }
-    
+
     const char* password = web_api_get_string(request, "password");
 
     if (!password) {
+        cJSON_Delete(request);
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Missing required parameters");
     }
 
     //check the password length
-    if (strlen(password) < 8 || strlen(password) > 32) {
+    size_t password_len = strlen(password);
+    if (password_len < 8 || password_len > 32) {
+        cJSON_Delete(request);
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid password length");
     }
 
+    char new_password[33];
+    memcpy(new_password, password, password_len + 1);
+
     cJSON_Delete(request);
-    
-    if (!password) {
-            return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Missing required parameters");
-    }
-    
-    auth_result_t auth_result = auth_mgr_change_password(password);
-    
+    request = NULL;
+    password = NULL;
+
+    auth_result_t auth_result = auth_mgr_change_password(new_password);
+
+    memset(new_password, 0, sizeof(new_password));
+
     if (auth_result == AUTH_RESULT_SUCCESS) {
         return api_response_success(ctx, NULL, "Password changed successfully");
     } else {
         return api_response_error(ctx, API_BUSINESS_ERROR_INVALID_PASSWORD, "Invalid credentials");
     }
-
-    return AICAM_OK;
 }
 
 /* ==================== Module Definition ==================== */

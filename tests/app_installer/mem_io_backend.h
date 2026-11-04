@@ -1,0 +1,376 @@
+#ifndef MEM_IO_BACKEND_H
+#define MEM_IO_BACKEND_H
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+#include "app_installer.h"
+
+#define MEM_MAX_FILES 96
+#define MEM_MAX_FILE 4211176u
+#define MEM_MAX_KEYS 16
+#define MEM_MAX_VALUE 1024
+
+typedef struct {
+    char path[128];
+    uint8_t *data;
+    size_t len;
+    aicam_bool_t present;
+    int corrupt_reads;
+} mem_file_t;
+
+typedef struct {
+    char key[48];
+    uint8_t data[MEM_MAX_VALUE];
+    size_t len;
+    aicam_bool_t present;
+} mem_kv_t;
+
+typedef struct {
+    mem_file_t files[MEM_MAX_FILES];
+    mem_kv_t keys[MEM_MAX_KEYS];
+    int tx_held;
+    int fail_next_file_writes;
+    int fail_next_file_reads;
+    int fail_next_file_removes;
+    int fail_next_file_stats;
+    int fail_next_kv_writes;
+    int fail_next_kv_reads;
+    int fail_next_kv_deletes;
+    char fail_kv_read_key[48];
+    int fail_kv_read_key_skip;
+    char fail_kv_write_key[48];
+    int fail_kv_write_key_skip;
+    char fail_kv_delete_key[48];
+    int fail_kv_delete_key_skip;
+    int strict_exact_size;
+    uint64_t free_bytes_value;
+    aicam_bool_t free_bytes_enabled;
+    size_t fail_big_alloc_above;
+    unsigned fail_big_alloc_after;
+    unsigned big_alloc_calls;
+} mem_io_t;
+
+static mem_io_t g_io;
+
+static void mem_reset(void)
+{
+    size_t i;
+    for (i = 0u; i < MEM_MAX_FILES; i++) {
+        free(g_io.files[i].data);
+    }
+    memset(&g_io, 0, sizeof(g_io));
+    g_io.free_bytes_value = 64u * 1024u * 1024u;
+    g_io.free_bytes_enabled = AICAM_TRUE;
+}
+
+static mem_file_t *mem_find_file(const char *path)
+{
+    size_t i;
+    for (i = 0; i < MEM_MAX_FILES; i++) {
+        if (g_io.files[i].present == AICAM_TRUE &&
+            strcmp(g_io.files[i].path, path) == 0) {
+            return &g_io.files[i];
+        }
+    }
+    return NULL;
+}
+
+static mem_kv_t *mem_find_key(const char *key)
+{
+    size_t i;
+    for (i = 0; i < MEM_MAX_KEYS; i++) {
+        if (g_io.keys[i].present == AICAM_TRUE &&
+            strcmp(g_io.keys[i].key, key) == 0) {
+            return &g_io.keys[i];
+        }
+    }
+    return NULL;
+}
+
+static int count_files(void)
+{
+    int n = 0;
+    size_t i;
+    for (i = 0; i < MEM_MAX_FILES; i++) {
+        if (g_io.files[i].present == AICAM_TRUE) {
+            n++;
+        }
+    }
+    return n;
+}
+
+static app_install_io_result_t mem_file_write(void *ctx, const char *path,
+                                              const uint8_t *data, size_t len)
+{
+    mem_io_t *io = (mem_io_t *)ctx;
+    mem_file_t *f;
+    uint8_t *copy;
+    (void)ctx;
+    if (io->fail_next_file_writes > 0) {
+        io->fail_next_file_writes--;
+        return APP_INSTALL_IO_ERROR;
+    }
+    if (len > MEM_MAX_FILE) {
+        return APP_INSTALL_IO_ERROR;
+    }
+    copy = (uint8_t *)malloc((len > 0u) ? len : 1u);
+    if (copy == NULL) {
+        return APP_INSTALL_IO_ERROR;
+    }
+    if (len > 0u) {
+        memcpy(copy, data, len);
+    }
+    f = mem_find_file(path);
+    if (f == NULL) {
+        size_t i;
+        for (i = 0; i < MEM_MAX_FILES; i++) {
+            if (g_io.files[i].present != AICAM_TRUE) {
+                f = &g_io.files[i];
+                break;
+            }
+        }
+    }
+    if (f == NULL) {
+        free(copy);
+        return APP_INSTALL_IO_ERROR;
+    }
+    free(f->data);
+    f->data = copy;
+    memset(f->path, 0, sizeof(f->path));
+    snprintf(f->path, sizeof(f->path), "%s", path);
+    f->len = len;
+    f->present = AICAM_TRUE;
+    f->corrupt_reads = 0;
+    return APP_INSTALL_IO_OK;
+}
+
+static app_install_io_result_t mem_file_read(void *ctx, const char *path,
+                                             uint8_t *buf, size_t cap, size_t *len)
+{
+    mem_io_t *io = (mem_io_t *)ctx;
+    mem_file_t *f;
+    (void)ctx;
+    if (io->fail_next_file_reads > 0) {
+        io->fail_next_file_reads--;
+        return APP_INSTALL_IO_ERROR;
+    }
+    f = mem_find_file(path);
+    if (f == NULL) {
+        return APP_INSTALL_IO_NOT_FOUND;
+    }
+    if (f->corrupt_reads > 0) {
+        f->corrupt_reads--;
+        if (cap > 0) {
+            memcpy(buf, f->data, f->len < cap ? f->len : cap);
+            buf[0] ^= 0xFFu;
+        }
+        *len = f->len;
+        return APP_INSTALL_IO_OK;
+    }
+    if (f->len > cap) {
+        return APP_INSTALL_IO_ERROR;
+    }
+    memcpy(buf, f->data, f->len);
+    *len = f->len;
+    return APP_INSTALL_IO_OK;
+}
+
+static app_install_io_result_t mem_file_remove(void *ctx, const char *path)
+{
+    mem_io_t *io = (mem_io_t *)ctx;
+    mem_file_t *f;
+    (void)ctx;
+    if (io->fail_next_file_removes > 0) {
+        io->fail_next_file_removes--;
+        return APP_INSTALL_IO_ERROR;
+    }
+    f = mem_find_file(path);
+    if (f == NULL) {
+        return APP_INSTALL_IO_NOT_FOUND;
+    }
+    free(f->data);
+    f->data = NULL;
+    f->len = 0u;
+    f->present = AICAM_FALSE;
+    return APP_INSTALL_IO_OK;
+}
+
+static app_install_io_result_t mem_file_stat(void *ctx, const char *path, size_t *len)
+{
+    mem_io_t *io = (mem_io_t *)ctx;
+    mem_file_t *f;
+    (void)ctx;
+    if (io->fail_next_file_stats > 0) {
+        io->fail_next_file_stats--;
+        return APP_INSTALL_IO_ERROR;
+    }
+    f = mem_find_file(path);
+    if (f == NULL) {
+        return APP_INSTALL_IO_NOT_FOUND;
+    }
+    *len = f->len;
+    return APP_INSTALL_IO_OK;
+}
+
+static app_install_io_result_t mem_kv_write(void *ctx, const char *key,
+                                            const uint8_t *data, size_t len)
+{
+    mem_io_t *io = (mem_io_t *)ctx;
+    mem_kv_t *kv;
+    if (io->fail_next_kv_writes > 0) {
+        io->fail_next_kv_writes--;
+        return APP_INSTALL_IO_ERROR;
+    }
+    if (io->fail_kv_write_key[0] != '\0' && strcmp(key, io->fail_kv_write_key) == 0) {
+        if (io->fail_kv_write_key_skip > 0) {
+            io->fail_kv_write_key_skip--;
+        } else {
+            io->fail_kv_write_key[0] = '\0';
+            return APP_INSTALL_IO_ERROR;
+        }
+    }
+    if (len > MEM_MAX_VALUE) {
+        return APP_INSTALL_IO_ERROR;
+    }
+    kv = mem_find_key(key);
+    if (kv == NULL) {
+        size_t i;
+        for (i = 0; i < MEM_MAX_KEYS; i++) {
+            if (g_io.keys[i].present != AICAM_TRUE) {
+                kv = &g_io.keys[i];
+                break;
+            }
+        }
+    }
+    if (kv == NULL) {
+        return APP_INSTALL_IO_ERROR;
+    }
+    memset(kv->key, 0, sizeof(kv->key));
+    snprintf(kv->key, sizeof(kv->key), "%s", key);
+    memcpy(kv->data, data, len);
+    kv->len = len;
+    kv->present = AICAM_TRUE;
+    return APP_INSTALL_IO_OK;
+}
+
+static app_install_io_result_t mem_kv_read(void *ctx, const char *key,
+                                           uint8_t *buf, size_t cap, size_t *len)
+{
+    mem_io_t *io = (mem_io_t *)ctx;
+    mem_kv_t *kv;
+    if (io->fail_next_kv_reads > 0) {
+        io->fail_next_kv_reads--;
+        return APP_INSTALL_IO_ERROR;
+    }
+    if (io->fail_kv_read_key[0] != '\0' && strcmp(key, io->fail_kv_read_key) == 0) {
+        if (io->fail_kv_read_key_skip > 0) {
+            io->fail_kv_read_key_skip--;
+        } else {
+            io->fail_kv_read_key[0] = '\0';
+            return APP_INSTALL_IO_ERROR;
+        }
+    }
+    kv = mem_find_key(key);
+    if (kv == NULL) {
+        return APP_INSTALL_IO_NOT_FOUND;
+    }
+    if (kv->len > cap ||
+        (io->strict_exact_size != 0 && kv->len != cap)) {
+        return APP_INSTALL_IO_ERROR;
+    }
+    memcpy(buf, kv->data, kv->len);
+    *len = kv->len;
+    return APP_INSTALL_IO_OK;
+}
+
+static app_install_io_result_t mem_kv_delete(void *ctx, const char *key)
+{
+    mem_io_t *io = (mem_io_t *)ctx;
+    mem_kv_t *kv;
+    if (io->fail_next_kv_deletes > 0) {
+        io->fail_next_kv_deletes--;
+        return APP_INSTALL_IO_ERROR;
+    }
+    if (io->fail_kv_delete_key[0] != '\0' && strcmp(key, io->fail_kv_delete_key) == 0) {
+        if (io->fail_kv_delete_key_skip > 0) {
+            io->fail_kv_delete_key_skip--;
+        } else {
+            io->fail_kv_delete_key[0] = '\0';
+            return APP_INSTALL_IO_ERROR;
+        }
+    }
+    kv = mem_find_key(key);
+    if (kv == NULL) {
+        return APP_INSTALL_IO_NOT_FOUND;
+    }
+    kv->present = AICAM_FALSE;
+    return APP_INSTALL_IO_OK;
+}
+
+static app_install_io_result_t mem_free_bytes(void *ctx, uint64_t *out)
+{
+    mem_io_t *io = (mem_io_t *)ctx;
+    if (io->free_bytes_enabled != AICAM_TRUE) {
+        return APP_INSTALL_IO_ERROR;
+    }
+    *out = io->free_bytes_value;
+    return APP_INSTALL_IO_OK;
+}
+
+static aicam_bool_t mem_tx_begin(void *ctx)
+{
+    mem_io_t *io = (mem_io_t *)ctx;
+    if (io->tx_held != 0) {
+        return AICAM_FALSE;
+    }
+    io->tx_held = 1;
+    return AICAM_TRUE;
+}
+
+static void mem_tx_end(void *ctx)
+{
+    mem_io_t *io = (mem_io_t *)ctx;
+    io->tx_held = 0;
+}
+
+static void *mem_big_alloc(void *ctx, size_t len)
+{
+    mem_io_t *io = (mem_io_t *)ctx;
+    io->big_alloc_calls++;
+    if (io->fail_big_alloc_above != 0u && len > io->fail_big_alloc_above) {
+        return NULL;
+    }
+    if (io->fail_big_alloc_after != 0u &&
+        io->big_alloc_calls > io->fail_big_alloc_after) {
+        return NULL;
+    }
+    return malloc(len);
+}
+
+static void mem_big_free(void *ctx, void *ptr)
+{
+    (void)ctx;
+    free(ptr);
+}
+
+static void mem_io_init(app_install_io_t *io)
+{
+    memset(io, 0, sizeof(*io));
+    io->ctx = &g_io;
+    io->file_write = mem_file_write;
+    io->file_read = mem_file_read;
+    io->file_remove = mem_file_remove;
+    io->file_stat = mem_file_stat;
+    io->kv_write = mem_kv_write;
+    io->kv_read = mem_kv_read;
+    io->kv_delete = mem_kv_delete;
+    io->free_bytes = mem_free_bytes;
+    io->tx_begin = mem_tx_begin;
+    io->tx_end = mem_tx_end;
+    io->big_alloc = mem_big_alloc;
+    io->big_free = mem_big_free;
+}
+#endif

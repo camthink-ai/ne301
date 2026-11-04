@@ -166,6 +166,9 @@ void pp_deinit(void);
 // Find post-processing implementation
 const pp_vtable_t* pp_find(const char *name);
 
+// Classify the model family of a registered postprocess type name
+pp_type_t pp_name_type(const char *name);
+
 // support model list
 int32_t pp_model_support_list(char **list, uint32_t *nb_models);
 

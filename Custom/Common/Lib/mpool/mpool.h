@@ -83,6 +83,14 @@ typedef struct {
     void             *addr;
 } ngx_slab_pool_t;
 
+static inline bool ngx_slab_ptr_in_pool(const ngx_slab_pool_t *pool, const void *p, size_t size)
+{
+    uintptr_t addr = (uintptr_t)p;
+    uintptr_t start = (uintptr_t)pool->start;
+    uintptr_t end = (uintptr_t)pool->end;
+    return addr >= start && addr < end && size <= end - start && addr <= end - size;
+}
+
 typedef struct {
     size_t         pool_size, used_size, used_pct;
     size_t         pages, free_page;
