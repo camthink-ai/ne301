@@ -31,6 +31,9 @@ extern "C" {
 #define NVS_BLOCK_SIZE 32
 #define NVS_KEY_SIZE 24
 
+#define NVS_STARTUP_TEAR_SEEN        0x01
+#define NVS_STARTUP_RECOVERY_DEFERRED 0x02
+
 /* Allocation Table Entry */
 struct nvs_ate {
 	char key[NVS_KEY_SIZE];	/* data key */
@@ -83,6 +86,7 @@ typedef struct nvs_fs {
 				 */
 	uint16_t sector_count;	/* amount of sectors in the filesystem */
 	bool ready;		/* is the filesystem initialized ? */
+	uint8_t startup_flags;
     nvs_flash_ops_t flash_ops;
 	struct flash_parameter flash_parameters;
     nvs_mutex_ops_t mutex_ops;
@@ -120,6 +124,8 @@ typedef struct {
  * @retval -ERRNO errno code if error
  */
 int nvs_init(nvs_fs_t *fs);
+
+int nvs_blank_check(nvs_fs_t *fs, int *is_blank);
 
 /**
  * @brief nvs_clear

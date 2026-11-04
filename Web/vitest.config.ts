@@ -11,6 +11,11 @@ export default defineConfig({
         resources: 'usable',
       },
     },
+    server: {
+      deps: {
+        inline: [/@lingui/, /zustand/, /react-router/, /@testing-library\/react/, /@radix-ui/],
+      },
+    },
   },
   resolve: {
     alias: {

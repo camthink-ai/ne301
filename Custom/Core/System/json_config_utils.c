@@ -83,11 +83,23 @@
          return AICAM_ERROR_INVALID_PARAM;
      }
      
-    // Validate device admin password
-    if (strlen(config->auth_mgr.admin_password) == 0 || strlen(config->auth_mgr.admin_password) >= sizeof(config->auth_mgr.admin_password)) {
-        LOG_CORE_INFO("Invalid admin password length: %zu (must be 1-%zu characters)", strlen(config->auth_mgr.admin_password), sizeof(config->auth_mgr.admin_password) - 1);
-         return AICAM_ERROR_INVALID_PARAM;
-     }
+    {
+        size_t admin_password_len = strlen(config->auth_mgr.admin_password);
+        size_t admin_credential_len = strlen(config->auth_mgr.admin_credential);
+        if (admin_credential_len == 0 &&
+            (admin_password_len == 0 || admin_password_len >= sizeof(config->auth_mgr.admin_password)))
+        {
+            LOG_CORE_INFO("Invalid admin password length: %zu (must be 1-%zu characters)",
+                          admin_password_len, sizeof(config->auth_mgr.admin_password) - 1);
+            return AICAM_ERROR_INVALID_PARAM;
+        }
+        if (admin_credential_len >= sizeof(config->auth_mgr.admin_credential))
+        {
+            LOG_CORE_INFO("Invalid admin credential record length: %zu (must be shorter)",
+                          admin_credential_len);
+            return AICAM_ERROR_INVALID_PARAM;
+        }
+    }
      
      return AICAM_OK;
  }

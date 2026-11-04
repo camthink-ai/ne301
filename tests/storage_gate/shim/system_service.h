@@ -1,0 +1,15 @@
+#ifndef SHIM_SYSTEM_SERVICE_H
+#define SHIM_SYSTEM_SERVICE_H
+typedef enum {
+    SYSTEM_STATE_UNINITIALIZED = 0,
+    SYSTEM_STATE_INITIALIZING,
+    SYSTEM_STATE_RUNNING,
+    SYSTEM_STATE_ERROR,
+    SYSTEM_STATE_MAX
+} system_state_t;
+typedef enum {
+    POWER_MODE_LOW_POWER = 0,
+    POWER_MODE_FULL_SPEED,
+    POWER_MODE_MAX
+} power_mode_t;
+#endif

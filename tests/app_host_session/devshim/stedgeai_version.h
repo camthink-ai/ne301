@@ -1,0 +1,4 @@
+#ifndef TEST_STEDGEAI_VERSION_H
+#define TEST_STEDGEAI_VERSION_H
+
+#endif

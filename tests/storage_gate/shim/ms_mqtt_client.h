@@ -1,0 +1,3 @@
+#ifndef SHIM_MS_MQTT_CLIENT_H
+#define SHIM_MS_MQTT_CLIENT_H
+#endif

@@ -32,9 +32,6 @@ VERSION_PATCH  := 1
 # Leave empty for production releases
 VERSION_SUFFIX := 
 
-# =============================================================================
-# Build number auto-generation
-# =============================================================================
 # Priority: Command line > CI environment > Git commit count
 #
 # Auto-generation based on git commit count from a baseline tag/commit.
