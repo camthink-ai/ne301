@@ -1064,6 +1064,7 @@ aicam_result_t app_report_service_device_uninstall_prepare(
             valid = AICAM_TRUE;
         } else {
             if (context_state == 1 &&
+                dev_record_equal(&context.record, &record) == AICAM_TRUE &&
                 dev_cleanup_status_complete(&context) != AICAM_TRUE) {
                 (void)osMutexRelease(g_report_lock);
                 return AICAM_ERROR;

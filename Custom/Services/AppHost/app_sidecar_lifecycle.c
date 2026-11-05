@@ -10,7 +10,8 @@
 #include "mbedtls/sha256.h"
 
 #define SC_STORE_MAGIC 0x31534341u
-#define SC_STORE_VERSION 1u
+#define SC_STORE_VERSION_LEGACY 1u
+#define SC_STORE_VERSION 2u
 #define SC_STORE_PAIR_FLOOR_MAGIC 0x31465041u
 #define SC_STORE_PAIR_FLOOR_VERSION 1u
 #define SC_STORE_PAIR_FLOOR_SIZE 216u
@@ -30,6 +31,7 @@
 #define SC_STORE_PHASE_VERIFIED 2u
 #define SC_STORE_PHASE_COMMITTING 3u
 #define SC_STORE_REC_STATE_OFF 8u
+#define SC_STORE_REC_PRODUCT_VERSION_OFF 10u
 #define SC_STORE_REC_GEN_OFF 12u
 #define SC_STORE_REC_PUB_OFF 20u
 #define SC_STORE_REC_APP_OFF 36u
@@ -90,6 +92,7 @@
 
 typedef struct {
     uint8_t state;
+    uint8_t product_version_required;
     uint64_t generation;
     char publisher_id[APP_SIDECAR_PUBLISHER_ID_SLOT + 1u];
     char app_id[APP_SIDECAR_APP_ID_SLOT + 1u];
@@ -242,6 +245,7 @@ static aicam_bool_t sc_store_record_encode(const sc_store_record_t *record,
     sc_store_put_u32(out, SC_STORE_MAGIC);
     sc_store_put_u32(out + 4u, SC_STORE_VERSION);
     out[SC_STORE_REC_STATE_OFF] = record->state;
+    out[SC_STORE_REC_PRODUCT_VERSION_OFF] = record->product_version_required;
     sc_store_put_u64(out + SC_STORE_REC_GEN_OFF, record->generation);
     sc_store_copy_padded(out + SC_STORE_REC_PUB_OFF, record->publisher_id,
                          APP_SIDECAR_PUBLISHER_ID_SLOT);
@@ -280,13 +284,23 @@ static aicam_bool_t sc_store_record_encode(const sc_store_record_t *record,
 static aicam_bool_t sc_store_record_decode(const uint8_t *data, size_t len,
                                            sc_store_record_t *out)
 {
-    if (data == NULL || out == NULL || len != APP_SIDECAR_LIFECYCLE_RECORD_SIZE ||
-        sc_store_get_u32(data) != SC_STORE_MAGIC ||
-        sc_store_get_u32(data + 4u) != SC_STORE_VERSION ||
+    uint32_t version;
+
+    if (data == NULL || out == NULL || len != APP_SIDECAR_LIFECYCLE_RECORD_SIZE) {
+        return AICAM_FALSE;
+    }
+    version = sc_store_get_u32(data + 4u);
+    if (sc_store_get_u32(data) != SC_STORE_MAGIC ||
+        (version != SC_STORE_VERSION_LEGACY && version != SC_STORE_VERSION) ||
         sc_store_get_u32(data + SC_STORE_REC_CRC_OFF) !=
             generic_crc32(data, SC_STORE_REC_CRC_OFF) ||
         (data[SC_STORE_REC_STATE_OFF] != SC_STORE_ACTIVE &&
          data[SC_STORE_REC_STATE_OFF] != SC_STORE_REVOKED) ||
+        data[9u] != 0u || data[11u] != 0u ||
+        (version == SC_STORE_VERSION_LEGACY &&
+         data[SC_STORE_REC_PRODUCT_VERSION_OFF] != 0u) ||
+        (version == SC_STORE_VERSION &&
+         data[SC_STORE_REC_PRODUCT_VERSION_OFF] > 1u) ||
         sc_store_text_valid(data + SC_STORE_REC_PUB_OFF,
                             APP_SIDECAR_PUBLISHER_ID_SLOT) != AICAM_TRUE ||
         sc_store_text_valid(data + SC_STORE_REC_APP_OFF,
@@ -295,6 +309,8 @@ static aicam_bool_t sc_store_record_decode(const uint8_t *data, size_t len,
     }
     memset(out, 0, sizeof(*out));
     out->state = data[SC_STORE_REC_STATE_OFF];
+    out->product_version_required = (version == SC_STORE_VERSION) ?
+        data[SC_STORE_REC_PRODUCT_VERSION_OFF] : 0u;
     out->generation = sc_store_get_u64(data + SC_STORE_REC_GEN_OFF);
     memcpy(out->publisher_id, data + SC_STORE_REC_PUB_OFF,
            APP_SIDECAR_PUBLISHER_ID_SLOT);
@@ -693,7 +709,7 @@ static aicam_bool_t sc_store_record_is_retired(const sc_store_record_t *record)
     if (record == NULL || record->state != SC_STORE_REVOKED ||
         record->file_count != 0u || record->bundle_len != 0u ||
         record->manifest_len != 0u || record->asset_payload_len != 0u ||
-        record->host_ui_abi != 0u) {
+        record->host_ui_abi != 0u || record->product_version_required != 0u) {
         return AICAM_FALSE;
     }
     for (i = 0u; i < APP_SIDECAR_SHA256_LEN; i++) {
@@ -897,6 +913,7 @@ static aicam_bool_t sc_store_record_same_content(const sc_store_record_t *a,
                    APP_PAIR_TBS_SHA256_LEN) == 0 &&
             memcmp(a->native_version, b->native_version,
                    sizeof(a->native_version)) == 0 &&
+            a->product_version_required == b->product_version_required &&
             a->release_seq == b->release_seq) ? AICAM_TRUE : AICAM_FALSE;
 }
 
@@ -965,6 +982,12 @@ static sc_store_verify_result_t sc_store_verify_record(
                                           sc_store_file_collect, &files, &verdict);
     if (verify_rc != APP_SIDECAR_OK || files.overflow == AICAM_TRUE ||
         files.count != record->file_count ||
+        (record->product_version_required != 0u &&
+         (verdict.product_version_present != AICAM_TRUE ||
+          verdict.product_version_valid != AICAM_TRUE)) ||
+        (native->required_host_caps_valid == AICAM_TRUE &&
+         (((native->required_host_caps & APP_ADMISSION_V5_CAP_PRODUCT_VERSION) != 0u) !=
+          (record->product_version_required != 0u))) ||
         memcmp(verdict.ui_tbs_sha256, record->ui_tbs_sha256,
                APP_SIDECAR_SHA256_LEN) != 0 ||
         verdict.version_major != record->version_major ||
@@ -990,6 +1013,12 @@ static sc_store_verify_result_t sc_store_verify_record(
     out->version_major = record->version_major;
     out->version_minor = record->version_minor;
     out->version_patch = record->version_patch;
+    out->product_version_trusted =
+        (record->product_version_required != 0u) ? AICAM_TRUE : AICAM_FALSE;
+    if (out->product_version_trusted == AICAM_TRUE) {
+        (void)memcpy(out->product_version, verdict.product_version,
+                     sizeof(out->product_version));
+    }
     out->host_ui_abi = record->host_ui_abi;
     out->service_generation = record->generation;
     out->bundle_len = record->bundle_len;
@@ -1269,6 +1298,10 @@ static void sc_store_record_update_verdict(sc_store_record_t *record,
                                            const app_pair_history_t *pair_history)
 {
     record->state = SC_STORE_ACTIVE;
+    record->product_version_required =
+        (native != NULL && native->required_host_caps_valid == AICAM_TRUE &&
+         (native->required_host_caps & APP_ADMISSION_V5_CAP_PRODUCT_VERSION) != 0u) ?
+            1u : 0u;
     record->file_count = verdict->file_count;
     record->version_major = verdict->version_major;
     record->version_minor = verdict->version_minor;
@@ -2115,6 +2148,7 @@ static app_sidecar_lifecycle_result_t sc_store_uninstall_all_locked(
         tombstone.release_seq = 0u;
     }
     tombstone.host_ui_abi = 0u;
+    tombstone.product_version_required = 0u;
     tombstone.file_count = 0u;
     tombstone.manifest_len = 0u;
     tombstone.asset_payload_len = 0u;
@@ -3082,7 +3116,11 @@ static app_sidecar_lifecycle_result_t sc_sidecar_lifecycle_install_internal(
                                           sc_store_file_collect, &files, &verdict);
     if (verify_rc != APP_SIDECAR_OK || files.overflow == AICAM_TRUE ||
         files.count != verdict.file_count ||
-        sc_store_record_native_equal(&candidate, native_record) != AICAM_TRUE) {
+        sc_store_record_native_equal(&candidate, native_record) != AICAM_TRUE ||
+        (native_record->required_host_caps_valid == AICAM_TRUE &&
+         (native_record->required_host_caps & APP_ADMISSION_V5_CAP_PRODUCT_VERSION) != 0u &&
+         (verdict.product_version_present != AICAM_TRUE ||
+          verdict.product_version_valid != AICAM_TRUE))) {
         sc_store_big_free(io, stored_bundle);
         if (sc_store_candidate_cleanup(io, &candidate, recs, slots, target,
                                        AICAM_FALSE) == AICAM_TRUE &&

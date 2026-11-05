@@ -11,6 +11,7 @@ export interface AppRecord {
   publisherId: string
   appId: string
   version: string
+  productVersionStatus: 'trusted' | 'unknown_legacy' | 'unknown'
   packageLen: number
   packageSha256: string
   tbsSha256: string
@@ -88,14 +89,31 @@ interface AppManagementStore {
   clearError: () => void
 }
 
-const normalizeRecord = (d: AppStateResponse): AppRecord => ({
-  publisherId: d.publisher_id || '',
-  appId: d.app_id || '',
-  version: `v${d.version_major ?? '?'}.${d.version_minor ?? '?'}.${d.version_patch ?? '?'}`,
-  packageLen: d.package_len ?? 0,
-  packageSha256: d.package_sha256 || '',
-  tbsSha256: d.tbs_sha256 || '',
-})
+const PRODUCT_VERSION_RE = /^[1-9][0-9]*\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/
+const PRODUCT_VERSION_MAX_LENGTH = 42
+
+const normalizeRecord = (d: AppStateResponse): AppRecord => {
+  const productVersion = d.product_version
+  const trustedProductVersion = d.product_version_status === 'trusted'
+    && typeof productVersion === 'string'
+    && productVersion.length <= PRODUCT_VERSION_MAX_LENGTH
+    && PRODUCT_VERSION_RE.test(productVersion)
+  const productVersionStatus: AppRecord['productVersionStatus'] = trustedProductVersion
+    ? 'trusted'
+    : d.product_version_status === 'unknown_legacy'
+      ? 'unknown_legacy'
+      : 'unknown'
+
+  return {
+    publisherId: d.publisher_id || '',
+    appId: d.app_id || '',
+    version: trustedProductVersion ? productVersion : '',
+    productVersionStatus,
+    packageLen: d.package_len ?? 0,
+    packageSha256: d.package_sha256 || '',
+    tbsSha256: d.tbs_sha256 || '',
+  }
+}
 
 const extractEnvelopeError = (err: unknown): ApiEnvelope | null => {
   const candidate = err as { data?: unknown; response?: { data?: unknown } }

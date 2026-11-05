@@ -32,7 +32,7 @@ MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 CORE_OBJS := app_installer.o app_state_store.o app_admission.o generic_math.o
 SESSION_OBJS := app_host_session.o app_host_live.o app_host_control.o app_report_service.o app_report_policy.o
 
-.PHONY: test test-unsigned-api clean
+.PHONY: test test-unsigned-api test-product-version clean
 test: test-unsigned-api test_app_installer_storage test_app_installer test_app_installer_faults
 	./test_app_installer_storage
 	./test_app_installer
@@ -42,6 +42,13 @@ test: test-unsigned-api test_app_installer_storage test_app_installer test_app_i
 test-unsigned-api: test_app_install_gate
 	python3 ../app_unsigned/gen_fixture.py
 	./test_app_install_gate unsigned
+
+test-product-version: test_app_product_version
+	python3 make_product_version_fixtures.py --output build/product-version
+	./test_app_product_version
+
+test_app_product_version: test_app_product_version.o $(CORE_OBJS) $(MBOBJS)
+	$(CC) $(STRICT_CFLAGS) -o $@ $^
 
 test_app_installer: test_app_installer.o $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $^
@@ -106,7 +113,10 @@ test_app_installer.o: test_app_installer.c mem_io_backend.h $(REPO_ROOT)/tests/a
 test_app_installer_faults.o: test_app_installer_faults.c mem_io_backend.h $(REPO_ROOT)/tests/app_host_session/session_vectors.h $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
-app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.c $(REPO_ROOT)/Custom/Services/AppHost/app_native_vnext_floor.h
+test_app_product_version.o: test_app_product_version.c mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_pair_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_verify.c $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.c $(REPO_ROOT)/Custom/Services/AppHost/app_pair_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_native_vnext_floor.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_state_store.o: $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.c $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.h
@@ -131,4 +141,4 @@ build/%.o: $(MBEDTLS)/library/%.c | build
 	$(CC) $(STRICT_CFLAGS) -w -c $< -o $@
 
 clean:
-	rm -rf build test_app_installer test_app_installer_faults test_app_install_gate test_app_install_gate_synthetic test_app_installer_storage gen_stubs.c *.o
+	rm -rf build test_app_installer test_app_installer_faults test_app_install_gate test_app_install_gate_synthetic test_app_installer_storage test_app_product_version gen_stubs.c *.o

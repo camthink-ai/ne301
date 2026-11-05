@@ -70,6 +70,8 @@
         "publisher": "Install identity",
         "app_id": "App ID",
         "version": "Version",
+        "version_unknown_legacy": "Unknown (legacy package)",
+        "version_unknown": "Unknown",
         "tbs_sha256": "Native integrity digest SHA-256"
       },
       "dialog": {
@@ -162,6 +164,7 @@
         "GENERIC": "The device refused the request."
       },
       "reasons": {
+        "UNKNOWN": "The device reported an unrecognized failure.",
         "PARAM": "The device refused the request parameters.",
         "BUSY": "The device is busy. The previous operation is still in progress; retry later.",
         "BAD_PACKAGE": "The device cannot parse the package.",
@@ -188,7 +191,9 @@
         "NOT_INSTALLED": "No app is committed on the device.",
         "LOAD_FAILED": "The device failed to load the app for execution.",
         "RUNTIME_UNAVAILABLE": "The device runtime is unavailable.",
-        "UNKNOWN": "The device reported an unrecognized failure."
+        "REPORT_REVOCATION_UNCONFIRMED_OR_STORAGE_UNKNOWN": "The device could not confirm the app reporting channel was revoked before uninstall. Update the firmware and retry; if it persists, collect device logs.",
+        "UNINSTALL_FAILED": "The device failed to complete the uninstall. Retry, and collect device logs if it persists.",
+        "PURGE_UNCONFIRMED_OR_STORAGE_UNKNOWN": "The device could not confirm the app data purge finished. Retry later; the previous cleanup is still settling."
       },
       "sidecar": {
         "tab_label": "Line Crossing (App)",

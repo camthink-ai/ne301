@@ -80,12 +80,77 @@ describe('device state drives the first slot and safe dialogs', () => {
     expect(screen.getByTestId('no-business-notice')).toBeTruthy()
     await openSlotDialog('slot-manage', 'manage-identity')
     expect(screen.getByTestId('manage-app-id').textContent).toBe('hello-app')
-    expect(screen.getByText('v1.2.3')).toBeTruthy()
+    expect(screen.getByText('1.2.3')).toBeTruthy()
     expect(screen.queryByText('pub-alpha')).toBeNull()
     expect(screen.queryByText('bb22')).toBeNull()
     expect((screen.getByTestId('run-button') as HTMLButtonElement).disabled).toBe(false)
     expect((screen.getByTestId('uninstall-row') as HTMLButtonElement).disabled).toBe(false)
     expect(screen.getByTestId('runtime-state').textContent).toBe('Idle')
+  })
+
+  it('shows the trusted product version instead of the native component version', async () => {
+    stubGetInstalled(installedStateFor('hello-app', {
+      version_major: 4,
+      version_minor: 2,
+      version_patch: 14,
+      product_version: '1.0.1',
+      product_version_status: 'trusted',
+    }))
+    renderPage()
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
+    })
+    await openSlotDialog('slot-manage', 'manage-identity')
+    expect(screen.getByText('1.0.1')).toBeTruthy()
+    expect(screen.queryByText('v4.2.14')).toBeNull()
+  })
+
+  it('labels a legacy package as unknown and ignores any untrusted product value', async () => {
+    stubGetInstalled(installedStateFor('hello-app', {
+      product_version: '999.0.0',
+      product_version_status: 'unknown_legacy',
+    }))
+    setLocale('en')
+    renderPage()
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
+    })
+    await openSlotDialog('slot-manage', 'manage-identity')
+    expect(screen.getByText('Unknown (legacy package)')).toBeTruthy()
+    expect(screen.queryByText('999.0.0')).toBeNull()
+  })
+
+  it('treats malformed trusted values as unknown rather than legacy', async () => {
+    stubGetInstalled(installedStateFor('hello-app', {
+      product_version: '01.0.1',
+      product_version_status: 'trusted',
+    }))
+    setLocale('en')
+    renderPage()
+    await waitFor(() => {
+      const view = useAppManagementStore.getState().view
+      expect(view?.kind).toBe('installed')
+      if (view?.kind === 'installed') {
+        expect(view.record.productVersionStatus).toBe('unknown')
+        expect(view.record.version).toBe('')
+      }
+    })
+    await openSlotDialog('slot-manage', 'manage-identity')
+    expect(screen.getByText('Unknown')).toBeTruthy()
+    expect(screen.queryByText('Unknown (legacy package)')).toBeNull()
+  })
+
+  it('renders the legacy version label in Chinese', async () => {
+    stubGetInstalled(installedStateFor('hello-app', {
+      product_version_status: 'unknown_legacy',
+    }))
+    setLocale('zh')
+    renderPage()
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
+    })
+    await openSlotDialog('slot-manage', 'manage-identity')
+    expect(screen.getByText('未知/旧版包')).toBeTruthy()
   })
 
   it('shows the app status panel for an unavailable app with retained identity and a recovery entry', async () => {

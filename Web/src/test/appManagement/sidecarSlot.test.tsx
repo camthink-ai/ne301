@@ -92,6 +92,7 @@ const installed: AppView = {
     publisherId: 'pub-alpha',
     appId: 'hello-app',
     version: 'v1.2.3',
+    productVersionStatus: 'trusted',
     packageLen: 1024,
     packageSha256: 'f9'.repeat(32),
     tbsSha256: 'ee'.repeat(32),

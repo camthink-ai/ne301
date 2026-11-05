@@ -5,6 +5,7 @@
 #include <stddef.h>
 
 #include "api_app_session_module.h"
+#include "api_app_install_module.h"
 
 #include "web_api.h"
 #include "cJSON.h"
@@ -200,6 +201,8 @@ aicam_result_t app_session_start_handler(http_handler_context_t *ctx)
         }
         cJSON_AddStringToObject(root, "status", "started");
         app_session_add_identity(root, &out.record);
+        app_install_response_add_product_version(root, app_installer_device_io(),
+                                                  &out.record);
         cJSON_AddNumberToObject(root, "abi_version", (double)out.abi_version);
         snprintf(caps_text, sizeof(caps_text), "0x%08x", (unsigned int)out.granted_caps);
         cJSON_AddStringToObject(root, "granted_caps", caps_text);
@@ -277,6 +280,7 @@ aicam_result_t app_session_stop_handler(http_handler_context_t *ctx)
     if (out.reason[0] != '\0') {
         cJSON_AddStringToObject(root, "reason", out.reason);
     }
+    app_install_response_add_current_product_version(root, app_installer_device_io());
     log_text = (char *)malloc(APP_SESSION_LOG_CAP + 1u);
     if (log_text != NULL) {
         log_len = app_host_session_take_log(log_text, APP_SESSION_LOG_CAP + 1u);
@@ -322,6 +326,7 @@ aicam_result_t app_session_status_handler(http_handler_context_t *ctx)
     }
 
     cJSON_AddStringToObject(root, "state", app_session_state_str(status.state));
+    app_install_response_add_current_product_version(root, app_installer_device_io());
     if (status.publisher_id[0] != '\0' || status.app_id[0] != '\0') {
         cJSON_AddStringToObject(root, "publisher_id", status.publisher_id);
         cJSON_AddStringToObject(root, "app_id", status.app_id);

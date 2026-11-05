@@ -628,6 +628,60 @@ static void test_active_and_boot_generation(void)
     free(bundle);
 }
 
+static void test_legacy_store_record_version1_compatibility(void)
+{
+    app_install_io_t io;
+    app_install_record_t native;
+    app_sidecar_trust_t trust;
+    app_sidecar_descriptor_t descriptor;
+    app_sidecar_lifecycle_state_t state;
+    app_sidecar_lifecycle_result_t result;
+    mem_kv_t *slot;
+    uint8_t *bundle;
+    size_t bundle_len = 0u;
+    size_t crc_offset = APP_SIDECAR_LIFECYCLE_RECORD_SIZE - sizeof(uint32_t);
+
+    mem_reset();
+    mem_io_init(&io);
+    app_install_boot_resolve_reset();
+    app_sidecar_lifecycle_reset();
+    make_native_record(&io, &native);
+    make_trust(&trust, &native);
+    bundle = load_fixture("positive_small.bin", &bundle_len);
+    CHECK(bundle != NULL);
+    if (bundle == NULL) {
+        return;
+    }
+    CHECK(app_sidecar_lifecycle_install(&io, &trust, &native, bundle, bundle_len,
+                                        &descriptor, &state) ==
+          APP_SIDECAR_LIFECYCLE_OK);
+    slot = mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A);
+    if (slot == NULL) {
+        slot = mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_B);
+    }
+    CHECK(slot != NULL);
+    if (slot != NULL && slot->len == APP_SIDECAR_LIFECYCLE_RECORD_SIZE) {
+        slot->data[4] = 1u;
+        slot->data[5] = 0u;
+        slot->data[6] = 0u;
+        slot->data[7] = 0u;
+        slot->data[10] = 0u;
+        slot->data[crc_offset] = (uint8_t)generic_crc32(slot->data, crc_offset);
+        slot->data[crc_offset + 1u] =
+            (uint8_t)(generic_crc32(slot->data, crc_offset) >> 8);
+        slot->data[crc_offset + 2u] =
+            (uint8_t)(generic_crc32(slot->data, crc_offset) >> 16);
+        slot->data[crc_offset + 3u] =
+            (uint8_t)(generic_crc32(slot->data, crc_offset) >> 24);
+    }
+    app_sidecar_lifecycle_reset();
+    result = app_sidecar_lifecycle_query(&io, &trust, &native,
+                                         &descriptor, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_OK);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
+    free(bundle);
+}
+
 static void test_same_bundle_retry_preserves_active_files(void)
 {
     app_install_io_t io;
@@ -1422,6 +1476,7 @@ int main(void)
     test_pair_history_policy();
     test_nepk_ci_candidate();
     test_active_and_boot_generation();
+    test_legacy_store_record_version1_compatibility();
     test_same_bundle_retry_preserves_active_files();
     test_native_package_damage_blocks_sidecar();
     test_native_identity_mismatch_rejected();

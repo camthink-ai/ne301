@@ -572,6 +572,21 @@ static void gate_reap_session(void)
     CHECK(status.app_running == AICAM_FALSE);
 }
 
+static void gate_stop_session_before_uninstall(void)
+{
+    if (app_install_app_running() == AICAM_TRUE) {
+        app_host_session_stop_out_t out;
+        app_session_result_t result;
+
+        memset(&out, 0, sizeof(out));
+        result = app_host_session_stop(0u, &out);
+        CHECK_MSG(result == APP_SESSION_OK,
+                  "test_session_stopped_before_uninstall");
+        CHECK_MSG(app_install_app_running() == AICAM_FALSE,
+                  "test_stopped_session_releases_install_guard");
+    }
+}
+
 static void test_route_table_registered(void)
 {
     int i;
@@ -831,18 +846,23 @@ static void test_unsigned_admin_install_gate(void)
           AICAM_OK);
     CHECK_MSG(strstr(g_last_response_data, "\"status\":\"installed\"") != NULL,
               "unsigned_api_install_status");
+    CHECK_MSG(g_gate_invoke_count == 1 &&
+              strstr(g_last_response_data, "\"auto_started\":true") != NULL,
+              "unsigned_api_install_auto_started");
     CHECK(strstr(g_last_response_data, "release_seq") == NULL);
     CHECK(get_state(1, 0) == AICAM_OK);
     CHECK_MSG(strstr(g_last_response_data, "\"state\":\"installed\"") != NULL,
               "unsigned_api_state");
-    CHECK(g_gate_invoke_count == 0);
+    gate_stop_session_before_uninstall();
+    g_gate_invoke_count = 0;
 
     CHECK(post_run(1, 0) == AICAM_ERROR);
     CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
-    CHECK(g_gate_invoke_count == 0);
+    CHECK_MSG(g_gate_invoke_count == 0, "unsigned_api_unauthorized_run_not_invoked");
     CHECK_MSG(post_run(1, 1) == AICAM_OK, "unsigned_api_high_privilege_run");
     CHECK_MSG(strstr(g_last_response_data, "\"status\":\"started\"") != NULL,
               "unsigned_api_explicit_run_started");
+    gate_stop_session_before_uninstall();
     gate_reap_session();
 
     CHECK(delete_installed(1, 0) == AICAM_ERROR);
@@ -1069,6 +1089,7 @@ static void test_legacy_migration_full_lifecycle(void)
                       APP_INSTALL_OK && present == AICAM_TRUE &&
                       strcmp(installed.publisher_id, "admin-installed") == 0,
                   "lt_cycle_committed");
+        gate_stop_session_before_uninstall();
         CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_cycle_delete_invoked");
         CHECK_MSG(strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
                   "lt_cycle_delete_uninstalled");
@@ -1136,6 +1157,7 @@ static void test_device_kv_strict_semantics_lifecycle(void)
               AICAM_OK &&
               strstr(g_last_response_data, "\"status\":\"installed\"") != NULL,
               "lt_strict_install_admitted");
+    gate_stop_session_before_uninstall();
     CHECK_MSG(delete_installed(1, 1) == AICAM_OK &&
               strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
               "lt_strict_delete_completes_first_try");
@@ -1148,6 +1170,7 @@ static void test_device_kv_strict_semantics_lifecycle(void)
               AICAM_OK &&
               strstr(g_last_response_data, "\"status\":\"installed\"") != NULL,
               "lt_strict_reinstall_admitted");
+    gate_stop_session_before_uninstall();
     CHECK_MSG(delete_installed(1, 1) == AICAM_OK &&
               strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
               "lt_strict_second_uninstall_completes");
@@ -1243,8 +1266,7 @@ static void test_run_model_gate_reports_refused_not_started(void)
     CHECK_MSG(strstr(g_last_response_data, "\"status\":\"started\"") != NULL &&
               strstr(g_last_response_data, "\"publisher_id\":\"admin-installed\"") != NULL,
               "lt_ghost_run_started_real_identity");
-    (void)app_host_session_stop(0, NULL);
-    app_install_set_app_running(AICAM_FALSE);
+    gate_stop_session_before_uninstall();
 }
 
 static void test_big_alloc_mechanism_and_wedge_recovery(void)
@@ -1262,6 +1284,7 @@ static void test_big_alloc_mechanism_and_wedge_recovery(void)
     calls_before = g_io.big_alloc_calls;
     CHECK_MSG(calls_before > 0u, "lt_alloc_vtable_used");
     g_io.big_alloc_calls = 0;
+    gate_stop_session_before_uninstall();
     CHECK_MSG(delete_installed(1, 1) == AICAM_OK &&
               strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
               "lt_alloc_uninstall_ok");
@@ -1270,13 +1293,14 @@ static void test_big_alloc_mechanism_and_wedge_recovery(void)
     lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 2u, 0);
     lt_seed_floor_matching();
     g_io.big_alloc_calls = 0;
-    g_io.fail_big_alloc_after = calls_before - 1u;
+    /* Product-version preflight adds a stored-package read; fail the
+     * preceding allocation to exercise staged-intent recovery. */
+    g_io.fail_big_alloc_after = calls_before - 2u;
     CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
               AICAM_OK &&
               strstr(g_last_response_data, "\"status\":\"refused\"") != NULL &&
               strstr(g_last_response_data, "STORAGE_STATE_UNKNOWN") != NULL,
               "lt_alloc_wedge_install_refused");
-    g_io.fail_big_alloc_above = 0u;
     g_io.fail_big_alloc_after = 0u;
     g_io.big_alloc_calls = 0;
     CHECK_MSG(mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_STAGING) != NULL,
@@ -1286,7 +1310,7 @@ static void test_big_alloc_mechanism_and_wedge_recovery(void)
               "lt_alloc_recovery_stage_cleared");
     CHECK_MSG(app_install_app_running() == AICAM_TRUE,
               "lt_alloc_recovery_app_running");
-    app_install_set_app_running(AICAM_FALSE);
+    gate_stop_session_before_uninstall();
     CHECK_MSG(delete_installed(1, 1) == AICAM_OK &&
               strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
               "lt_alloc_final_uninstall");
@@ -1323,6 +1347,7 @@ static void test_legacy_floor_persistence_cutpoints(void)
     CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
               AICAM_OK, "lt_cut_a_install");
 
+    gate_stop_session_before_uninstall();
     snprintf(g_io.fail_kv_write_key, sizeof(g_io.fail_kv_write_key), "%s",
              APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A);
     CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_cut_a_delete_invoked");
@@ -1349,6 +1374,7 @@ static void test_legacy_floor_persistence_cutpoints(void)
               AICAM_OK, "lt_cut_b_install");
     snprintf(g_io.fail_kv_delete_key, sizeof(g_io.fail_kv_delete_key), "%s",
              APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR);
+    gate_stop_session_before_uninstall();
     CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_cut_b_delete_invoked");
     CHECK_MSG(strstr(g_last_response_data, "\"status\":\"cleanup_pending\"") != NULL,
               "lt_cut_b_floor_delete_fault_pending");
@@ -1376,6 +1402,7 @@ static void test_legacy_unsigned_transition(void)
     CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
               AICAM_OK, "lt_retired_tombstone_admits_unsigned");
     lt_assert_installed_authentic("lt_tomb_install_authentic");
+    gate_stop_session_before_uninstall();
     CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_tomb_delete_ok");
 
     reset_storage();
@@ -1384,6 +1411,7 @@ static void test_legacy_unsigned_transition(void)
     CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
               AICAM_OK, "lt_retired_lineage_floor_admits_unsigned");
     lt_assert_installed_authentic("lt_lineage_floor_install_authentic");
+    gate_stop_session_before_uninstall();
     CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_lineage_floor_delete_ok");
     CHECK_MSG(mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR) == NULL,
               "lt_retired_lineage_floor_consumed_at_rotation");
@@ -1433,6 +1461,7 @@ static void test_legacy_unsigned_transition(void)
     reset_storage();
     CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
               AICAM_OK, "lt_interrupted_install_source");
+    gate_stop_session_before_uninstall();
     lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 2u, 0);
     lt_seed_intent_from_record();
     CHECK_MSG(mem_find_key(APP_INSTALL_KEY_UNINSTALL) != NULL,
@@ -1455,6 +1484,7 @@ static void test_legacy_unsigned_transition(void)
     CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
               AICAM_OK, "lt_foreign_floor_install_source");
     lt_seed_floor_foreign();
+    gate_stop_session_before_uninstall();
     CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_foreign_floor_delete_ok");
     CHECK_MSG(strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
               "lt_foreign_floor_delete_completes");

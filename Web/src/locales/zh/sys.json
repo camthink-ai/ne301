@@ -70,6 +70,8 @@
         "publisher": "安装身份",
         "app_id": "应用 ID",
         "version": "版本",
+        "version_unknown_legacy": "未知/旧版包",
+        "version_unknown": "未知",
         "tbs_sha256": "Native 完整性摘要 SHA-256"
       },
       "dialog": {
@@ -162,6 +164,7 @@
         "GENERIC": "设备拒绝了该请求。"
       },
       "reasons": {
+        "UNKNOWN": "设备报告了未知失败。",
         "PARAM": "设备拒绝了请求参数。",
         "BUSY": "设备忙：上一个操作仍在进行，请稍后重试。",
         "BAD_PACKAGE": "设备无法解析该安装包。",
@@ -188,7 +191,9 @@
         "NOT_INSTALLED": "设备上没有已提交的应用。",
         "LOAD_FAILED": "设备加载应用执行失败。",
         "RUNTIME_UNAVAILABLE": "设备运行环境不可用。",
-        "UNKNOWN": "设备报告了未知失败。"
+        "REPORT_REVOCATION_UNCONFIRMED_OR_STORAGE_UNKNOWN": "设备无法在卸载前确认应用上报通道已撤销。请更新固件后重试；若持续出现，请导出设备日志。",
+        "UNINSTALL_FAILED": "设备未能完成卸载。请重试；若持续出现，请导出设备日志。",
+        "PURGE_UNCONFIRMED_OR_STORAGE_UNKNOWN": "设备无法确认应用数据清理已完成，请稍后重试；上一次清理仍在收尾。"
       },
       "sidecar": {
         "tab_label": "Line Crossing (App)",

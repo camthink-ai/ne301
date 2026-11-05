@@ -58,7 +58,7 @@ $(BUILD_DIR)/test_app_report_uninstall.o: test_app_report_uninstall.c | $(BUILD_
 $(BUILD_DIR)/%.o: $(APPHOST)/%.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/app_installer.o: $(APPHOST)/app_sidecar_verify.c $(APPHOST)/app_sidecar_lifecycle.c
+$(BUILD_DIR)/app_installer.o: $(APPHOST)/app_sidecar_verify.c $(APPHOST)/app_sidecar_lifecycle.c $(APPHOST)/app_pair_installer.c
 
 $(BUILD_DIR)/generic_math.o: $(REPO_ROOT)/Custom/Common/Utils/generic_math.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@

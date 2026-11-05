@@ -275,6 +275,7 @@ describe('start control inside the manage dialog runtime section', () => {
     expect(screen.queryByText('ff66')).toBeNull()
     expect(screen.queryByText('ee55')).toBeNull()
     expect(screen.getByTestId('manage-identity').textContent).toContain('mystery-app')
-    expect(screen.getByTestId('manage-identity').textContent).toContain('v3.0.0')
+    expect(screen.getByTestId('manage-identity').textContent).toContain('1.2.3')
+    expect(screen.getByTestId('manage-identity').textContent).not.toContain('v3.0.0')
   })
 })

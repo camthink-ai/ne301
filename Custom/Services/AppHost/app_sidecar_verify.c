@@ -17,6 +17,61 @@ static const uint8_t SC_UNSIGNED_MAGIC[APP_SIDECAR_MAGIC_SIZE] = {
     0x4Eu, 0x45u, 0x55u, 0x49u, 0x02u, 0x00u, 0x00u, 0x00u
 };
 
+static const uint8_t SC_PRODUCT_VERSION_PREFIX[] = "{\"product_version\":\"";
+static const uint8_t SC_PRODUCT_VERSION_SUFFIX[] = "\"}";
+
+aicam_bool_t app_sidecar_product_version_parse(
+    const uint8_t *data, size_t len,
+    char out[APP_SIDECAR_PRODUCT_VERSION_MAX + 1u])
+{
+    static const size_t prefix_len = sizeof(SC_PRODUCT_VERSION_PREFIX) - 1u;
+    static const size_t suffix_len = sizeof(SC_PRODUCT_VERSION_SUFFIX) - 1u;
+    size_t version_len;
+    size_t field_start = 0u;
+    size_t i;
+    unsigned int field = 0u;
+    char version[APP_SIDECAR_PRODUCT_VERSION_MAX + 1u];
+
+    if (data == NULL || out == NULL ||
+        len < prefix_len + suffix_len + 5u ||
+        len > APP_SIDECAR_PRODUCT_VERSION_ASSET_MAX ||
+        memcmp(data, SC_PRODUCT_VERSION_PREFIX, prefix_len) != 0 ||
+        memcmp(data + len - suffix_len, SC_PRODUCT_VERSION_SUFFIX, suffix_len) != 0) {
+        return AICAM_FALSE;
+    }
+    version_len = len - prefix_len - suffix_len;
+    if (version_len > APP_SIDECAR_PRODUCT_VERSION_MAX) {
+        return AICAM_FALSE;
+    }
+    memcpy(version, data + prefix_len, version_len);
+    version[version_len] = '\0';
+    for (i = 0u; i <= version_len; i++) {
+        if (i == version_len || version[i] == '.') {
+            size_t digits = i - field_start;
+            if (digits == 0u || field > 2u ||
+                (digits > 1u && version[field_start] == '0') ||
+                (field == 0u && version[field_start] == '0')) {
+                return AICAM_FALSE;
+            }
+            field++;
+            field_start = i + 1u;
+        } else if (version[i] < '0' || version[i] > '9') {
+            return AICAM_FALSE;
+        }
+    }
+    if (field != 3u || field_start != version_len + 1u) {
+        return AICAM_FALSE;
+    }
+    if (memcmp(data + prefix_len, version, version_len) != 0 ||
+        memcmp(data, SC_PRODUCT_VERSION_PREFIX, prefix_len) != 0 ||
+        memcmp(data + prefix_len + version_len, SC_PRODUCT_VERSION_SUFFIX,
+               suffix_len) != 0) {
+        return AICAM_FALSE;
+    }
+    memcpy(out, version, version_len + 1u);
+    return AICAM_TRUE;
+}
+
 static const uint32_t SC_SHA_K[64u] = {
     0x428A2F98u, 0x71374491u, 0xB5C0FBCFu, 0xE9B5DBA5u,
     0x3956C25Bu, 0x59F111F1u, 0x923F82A4u, 0xAB1C5ED5u,
@@ -351,7 +406,10 @@ static app_sidecar_result_t sc_verify_unsigned_bundle(
     uint8_t digest[APP_SIDECAR_SHA256_LEN];
     uint8_t zero[APP_SIDECAR_SHA256_LEN] = {0};
     char app_id[APP_SIDECAR_VERDICT_APP_SLOT];
+    char product_version[APP_SIDECAR_PRODUCT_VERSION_MAX + 1u] = {0};
     size_t app_id_len;
+    aicam_bool_t product_version_present = AICAM_FALSE;
+    aicam_bool_t product_version_valid = AICAM_FALSE;
 
     if (data == NULL || trust == NULL || out == NULL || trust->publisher_id == NULL ||
         trust->app_id == NULL ||
@@ -462,6 +520,12 @@ static app_sidecar_result_t sc_verify_unsigned_bundle(
         if (memcmp(record + 6u, digest, sizeof(digest)) != 0) {
             return APP_SIDECAR_ERR_ASSET_INVALID;
         }
+        if (path_len == sizeof("product-version.json") - 1u &&
+            memcmp(path, "product-version.json", sizeof("product-version.json") - 1u) == 0) {
+            product_version_present = AICAM_TRUE;
+            product_version_valid = app_sidecar_product_version_parse(
+                payload + payload_offset, file_len, product_version);
+        }
         (void)memset(&desc, 0, sizeof(desc));
         desc.file_len = file_len;
         (void)memcpy(desc.sha256, digest, sizeof(desc.sha256));
@@ -498,6 +562,12 @@ static app_sidecar_result_t sc_verify_unsigned_bundle(
     out->asset_payload_len = payload_len;
     out->signature_len = 0u;
     (void)memcpy(out->ui_tbs_sha256, digest, sizeof(digest));
+    out->product_version_present = product_version_present;
+    out->product_version_valid = product_version_valid;
+    if (product_version_valid == AICAM_TRUE) {
+        (void)memcpy(out->product_version, product_version,
+                     sizeof(out->product_version));
+    }
     return APP_SIDECAR_OK;
 }
 

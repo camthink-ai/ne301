@@ -27,6 +27,7 @@ interface OpTargetSnapshot {
   publisherId: string
   appId: string
   version: string
+  productVersionStatus: AppRecord['productVersionStatus']
   tbsSha256: string
   packageSha256: string
 }
@@ -36,6 +37,7 @@ function snapshotMatches(snapshot: OpTargetSnapshot, record: AppRecord): boolean
     snapshot.publisherId === record.publisherId
     && snapshot.appId === record.appId
     && snapshot.version === record.version
+    && snapshot.productVersionStatus === record.productVersionStatus
     && snapshot.tbsSha256 === record.tbsSha256
     && snapshot.packageSha256 === record.packageSha256
   )
@@ -56,6 +58,14 @@ function formatSize(bytes: number): string {
     return `${(bytes / 1024).toFixed(1)} KB`
   }
   return `${bytes} B`
+}
+
+function productVersionLabel(record: AppRecord, i18n: ReturnType<typeof useLingui>['i18n']): string {
+  if (record.productVersionStatus === 'trusted') return record.version
+  if (record.productVersionStatus === 'unknown_legacy') {
+    return i18n._('sys.app_management.labels.version_unknown_legacy')
+  }
+  return i18n._('sys.app_management.labels.version_unknown')
 }
 
 function IdentityRow({ label, value, testId }: { label: string; value: string; testId?: string }) {
@@ -299,6 +309,7 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
         publisherId: record.publisherId,
         appId: record.appId,
         version: record.version,
+        productVersionStatus: record.productVersionStatus,
         tbsSha256: record.tbsSha256,
         packageSha256: record.packageSha256,
       })
@@ -444,7 +455,7 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
           </div>
         </div>
         <div className="mt-2" data-testid="manage-identity">
-          <IdentityRow label={i18n._('sys.app_management.labels.version')} value={record.version} />
+          <IdentityRow label={i18n._('sys.app_management.labels.version')} value={productVersionLabel(record, i18n)} />
           <IdentityRow
             label={i18n._('sys.app_management.labels.app_id')}
             value={record.appId}
@@ -607,7 +618,7 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
       </p>
       {record && (
         <p className="text-xs text-[#8694a3]">
-          {i18n._('sys.app_management.dialog.current_version')}: {record.version}
+          {i18n._('sys.app_management.dialog.current_version')}: {productVersionLabel(record, i18n)}
         </p>
       )}
       <PackagePicker onFile={handleFile} />
@@ -848,7 +859,7 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
             />
             <IdentityRow
               label={i18n._('sys.app_management.labels.version')}
-              value={record.version}
+              value={productVersionLabel(record, i18n)}
             />
             <IdentityRow
               label={i18n._('sys.app_management.labels.tbs_sha256')}

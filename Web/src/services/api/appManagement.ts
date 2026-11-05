@@ -12,6 +12,8 @@ export interface AppIdentity {
   package_len?: number
   package_sha256?: string
   tbs_sha256?: string
+  product_version?: unknown
+  product_version_status?: unknown
 }
 
 export interface AppStateResponse extends AppIdentity {

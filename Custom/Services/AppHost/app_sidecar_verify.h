@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "aicam_types.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -28,6 +30,8 @@ extern "C" {
 #define APP_SIDECAR_SPKI_P256_LEN 91u
 #define APP_SIDECAR_VERDICT_ID_SLOT (APP_SIDECAR_PUBLISHER_ID_SLOT + 1u)
 #define APP_SIDECAR_VERDICT_APP_SLOT (APP_SIDECAR_APP_ID_SLOT + 1u)
+#define APP_SIDECAR_PRODUCT_VERSION_MAX 42u
+#define APP_SIDECAR_PRODUCT_VERSION_ASSET_MAX 64u
 
 typedef enum {
     APP_SIDECAR_OK = 0,
@@ -74,7 +78,13 @@ typedef struct {
     uint8_t signature_len;
     uint16_t native_version[3];
     uint8_t ui_tbs_sha256[APP_SIDECAR_SHA256_LEN];
+    aicam_bool_t product_version_present;
+    aicam_bool_t product_version_valid;
+    char product_version[APP_SIDECAR_PRODUCT_VERSION_MAX + 1u];
 } app_sidecar_verdict_t;
+
+aicam_bool_t app_sidecar_product_version_parse(const uint8_t *data, size_t len,
+                                               char out[APP_SIDECAR_PRODUCT_VERSION_MAX + 1u]);
 
 app_sidecar_result_t app_sidecar_verify_bundle(const uint8_t *data,
                                                size_t len,
