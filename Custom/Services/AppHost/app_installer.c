@@ -751,6 +751,8 @@ app_install_result_t app_install(const app_install_io_t *io,
                         return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
                     }
                     if (match == AICAM_TRUE) {
+                        cur.required_host_caps = verdict.required_host_caps;
+                        cur.required_host_caps_valid = AICAM_TRUE;
                         memcpy(out_record, &cur, sizeof(*out_record));
                         memcpy(&g_enable_guard_cache_record, &cur, sizeof(cur));
                         g_enable_guard_cache_active =
@@ -796,6 +798,8 @@ app_install_result_t app_install(const app_install_io_t *io,
     fresh.version_minor = verdict.version_minor;
     fresh.version_patch = verdict.version_patch;
     fresh.package_len = (uint32_t)len;
+    fresh.required_host_caps = verdict.required_host_caps;
+    fresh.required_host_caps_valid = AICAM_TRUE;
     inst_sha256(package, len, fresh.package_sha256);
     memcpy(fresh.tbs_sha256, verdict.tbs_sha256, APP_INSTALL_SHA256_LEN);
     memcpy(fresh.image_sha256, verdict.image_sha256, APP_INSTALL_SHA256_LEN);
@@ -1081,6 +1085,9 @@ app_install_result_t app_install_query(const app_install_io_t *io,
         io->tx_end(io->ctx);
         return APP_INSTALL_OK;
     }
+
+    out->record.required_host_caps = verdict.required_host_caps;
+    out->record.required_host_caps_valid = AICAM_TRUE;
 
     out->state = APP_INSTALL_STATE_INSTALLED;
     io->tx_end(io->ctx);

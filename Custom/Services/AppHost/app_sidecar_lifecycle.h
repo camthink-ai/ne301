@@ -65,6 +65,8 @@ typedef struct {
     uint16_t version_major;
     uint16_t version_minor;
     uint16_t version_patch;
+    aicam_bool_t product_version_trusted;
+    char product_version[APP_SIDECAR_PRODUCT_VERSION_MAX + 1u];
     uint32_t host_ui_abi;
     uint16_t native_version[3];
     uint64_t release_seq;

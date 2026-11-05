@@ -17,6 +17,13 @@ extern "C" {
 cJSON *app_install_record_json(const app_install_record_t *record,
                                const char *status);
 
+void app_install_response_add_product_version(cJSON *root,
+                                              const app_install_io_t *io,
+                                              const app_install_record_t *record);
+
+void app_install_response_add_current_product_version(cJSON *root,
+                                                      const app_install_io_t *io);
+
 aicam_result_t app_install_package_handler(http_handler_context_t *ctx);
 
 aicam_result_t app_install_state_handler(http_handler_context_t *ctx);

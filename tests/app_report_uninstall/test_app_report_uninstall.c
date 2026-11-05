@@ -681,6 +681,38 @@ static void test_self_declared_old_tbs_cannot_bind_or_trust(void)
     app_report_service_device_uninstall_finish(&io);
 }
 
+static void test_stale_cleanup_context_superseded_when_installed_clean(void)
+{
+    app_install_io_t io;
+    app_install_record_t record_a;
+    app_install_record_t record_b;
+    app_install_record_t removed;
+    app_uninstall_result_t result;
+    app_uninstall_state_t state;
+
+    reset_fixture(&io, &record_a, 0xd1u);
+    CHECK(app_report_service_device_uninstall_prepare(&io) == AICAM_OK);
+    app_report_service_device_uninstall_finish(&io);
+
+    make_record(&record_b, 0xd2u);
+    store_record(&io, &record_b);
+    CHECK(app_install_boot_resolve(&io) == APP_INSTALL_OK);
+    app_report_service_set_committed_io(&io);
+    CHECK(app_install_uninstall_status(&io, &state, &removed) ==
+          APP_INSTALL_OK);
+    CHECK(state == APP_UNINSTALL_STATE_NONE);
+
+    CHECK(app_report_service_device_uninstall_prepare(&io) == AICAM_OK);
+    result = app_install_uninstall_confirmed(
+        &io, AICAM_TRUE, app_report_service_device_cleanup_ops(),
+        &removed, &state);
+    CHECK(result == APP_UNINSTALL_OK);
+    CHECK(state == APP_UNINSTALL_STATE_NONE);
+    app_report_service_device_uninstall_finish(&io);
+    CHECK(memcmp(removed.tbs_sha256, record_b.tbs_sha256,
+                 APP_INSTALL_SHA256_LEN) == 0);
+}
+
 int main(void)
 {
     test_real_report_purge_and_new_generation_on_reinstall();
@@ -691,6 +723,7 @@ int main(void)
     test_rotated_tbs_and_self_declared_old_query_cannot_purge_new_record();
     test_cleanup_intent_write_failure_keeps_committed_record();
     test_self_declared_old_tbs_cannot_bind_or_trust();
+    test_stale_cleanup_context_superseded_when_installed_clean();
     printf("app_report_uninstall: %d checks, %d failures\n", g_total, g_fail);
     return (g_fail == 0) ? 0 : 1;
 }

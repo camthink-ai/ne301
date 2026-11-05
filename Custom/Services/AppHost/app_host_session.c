@@ -1656,6 +1656,7 @@ static aicam_bool_t sess_fill_v5_policy(app_admission_policy_t *policy)
         return AICAM_FALSE;
     }
     policy->max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V5;
+    policy->supported_caps_mask |= APP_ADMISSION_V5_CAP_PRODUCT_VERSION;
     return AICAM_TRUE;
 }
 
@@ -1887,6 +1888,9 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
         snprintf(out->reason, sizeof(out->reason), "%s", "identity_mismatch");
         goto refuse;
     }
+
+    rec.required_host_caps = verdict.required_host_caps;
+    rec.required_host_caps_valid = AICAM_TRUE;
 
     if (container == 5u) {
         if (g_backend->pair_authorize == NULL) {

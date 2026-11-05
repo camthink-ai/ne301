@@ -123,7 +123,8 @@ static aicam_bool_t run_fill_ctx(app_run_admission_ctx_t *actx)
     actx->policy.abi_version = APP_ADMISSION_ABI_VERSION_V4;
     actx->policy.supported_caps_mask = APP_ADMISSION_V3_KNOWN_CAPS_MASK |
                                        APP_ADMISSION_V4_CAP_ENABLE_CONTROL |
-                                       APP_ADMISSION_V4_CAP_LIVE_PUBLISH;
+                                       APP_ADMISSION_V4_CAP_LIVE_PUBLISH |
+                                       APP_ADMISSION_V5_CAP_PRODUCT_VERSION;
     actx->policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V5;
     actx->policy.event_capacity = 16384u;
     actx->policy.report_capacity = 16384u;
@@ -331,6 +332,10 @@ app_run_result_t app_host_run_installed(const app_install_io_t *io,
                APP_INSTALL_SHA256_LEN) != 0) {
         return run_refuse_owned(out, APP_RUN_ERR_UNAVAILABLE, "identity_mismatch");
     }
+
+    rec.required_host_caps = verdict.required_host_caps;
+    rec.required_host_caps_valid = AICAM_TRUE;
+    out->record = rec;
 
     if (verdict.container_major == 5u &&
         run_pair_gate(io, &rec, &pair_descriptor, out) != APP_RUN_OK) {

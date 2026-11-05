@@ -132,7 +132,8 @@ static app_admission_result_t ad_parse_manifest_v4(const uint8_t *manifest,
                                                    uint32_t *control_max,
                                                    uint32_t *snapshot_max,
                                                    uint32_t *live_publish_max,
-                                                   uint32_t *live_track_max)
+                                                   uint32_t *live_track_max,
+                                                   uint32_t known_caps_mask)
 {
     uint32_t caps;
     size_t i;
@@ -151,7 +152,7 @@ static app_admission_result_t ad_parse_manifest_v4(const uint8_t *manifest,
         }
     }
     caps = ad_u32le(manifest + 72u);
-    if ((caps & ~APP_ADMISSION_V4_KNOWN_CAPS_MASK) != 0u ||
+    if ((caps & ~known_caps_mask) != 0u ||
         (caps & APP_ADMISSION_V2_CAP_SESSION_LIFECYCLE) == 0u) {
         return APP_ADMISSION_ERR_BAD_PACKAGE;
     }
@@ -257,7 +258,8 @@ static app_admission_result_t ad_parse_manifest_v5(const uint8_t *manifest,
            strlen(APP_ADMISSION_ADMIN_PUBLISHER_ID));
     rc = ad_parse_manifest_v4(view, m, run_profile, event_max, state_quota,
                               report_max, control_max, snapshot_max,
-                              live_publish_max, live_track_max);
+                              live_publish_max, live_track_max,
+                              APP_ADMISSION_V5_KNOWN_CAPS_MASK);
     if (rc == APP_ADMISSION_OK) {
         m->native_file_sha256 = manifest + 96u;
         m->publisher_key_sha256 = manifest + 128u;

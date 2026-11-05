@@ -23,6 +23,8 @@ typedef struct {
     size_t ui_len;
     size_t pair_tbs_len;
     uint8_t package_sha256[APP_INSTALL_SHA256_LEN];
+    aicam_bool_t product_version_required;
+    char product_version[APP_SIDECAR_PRODUCT_VERSION_MAX + 1u];
 } app_pair_candidate_t;
 
 typedef enum {

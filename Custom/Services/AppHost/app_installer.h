@@ -69,6 +69,8 @@ typedef struct {
     uint8_t image_sha256[APP_INSTALL_SHA256_LEN];
     uint8_t publisher_key_sha256[APP_INSTALL_SHA256_LEN];
     char package_path[APP_INSTALL_PATH_MAX];
+    uint32_t required_host_caps;
+    aicam_bool_t required_host_caps_valid;
 } app_install_record_t;
 
 typedef enum {
