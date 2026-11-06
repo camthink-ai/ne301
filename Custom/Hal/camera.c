@@ -318,6 +318,17 @@ int camera_apply_isp_iq_runtime(ISP_HandleTypeDef *hIsp, ISP_IQParamTypeDef *iq)
             cached->colorConvStatic = iq->colorConvStatic;
         }
         cached->AWBAlgo.enable = 0;
+    } else if (!cached->AWBAlgo.enable) {
+        /* AWB off -> on (IR night / grayscale -> color profile): re-enable
+           the AWB algorithm. The middleware state machine re-initializes on
+           the next frame (isp_algo.c: enableCurrent==false -> INIT) and
+           takes back the ISP gains and color conversion from the color
+           profile, replacing the grayscale blocks the AWB-off profile had
+           written. Without this, the grayscale CCM stayed in the hardware
+           after switching back to a color mode — the image never regained
+           color (one-way gate since f307f6c8). */
+        ISP_SetWBRefMode(hIsp, 1, 0);
+        cached->AWBAlgo.enable = 1;
     }
 
     if (memcmp(&iq->AECAlgo.exposureCompensation, &cached->AECAlgo.exposureCompensation,
