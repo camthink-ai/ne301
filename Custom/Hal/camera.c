@@ -10,9 +10,83 @@
 #include "isp_param_conf.h"
 #include "isp_api.h"
 #include "isp_core.h"
+#include "isp_services.h"
 #include "json_config_mgr.h"    /* IMAGE_ISP_MODE_* for camera_fill_isp_iq_for_mode */
 #include "board_hw.h"           /* board_is_ir() for the IR-CUT filter */
 #include "main.h"               /* IR_CUT_A_* pin defines */
+
+/* AE restart state handed to the ISP middleware (QS fast wake): the AE loop
+ * writes its latest convergent exposure/gain here on every update, and AEC
+ * init resumes from it on camera restart (same session, or after wake when
+ * re-seeded from NVS "ae_state"). */
+static ISP_RestartStateTypeDef s_ae_restart_state = {0};
+
+void camera_ae_get_last(uint32_t *exposure_us, uint32_t *gain_mdb)
+{
+    if (exposure_us) *exposure_us = s_ae_restart_state.sensorExposure;
+    if (gain_mdb)    *gain_mdb    = s_ae_restart_state.sensorGain;
+}
+
+int camera_ae_set_last(uint32_t exposure_us, uint32_t gain_mdb)
+{
+    /* Clamp instead of reject: a rejected record made every following wake
+     * cold-start. Bounds = the SENSOR DRIVER's legal range (os04c10:
+     * exposure 0..33266us, gain up to 72000mdb), NOT the app-layer
+     * anti-flicker capture window: the AE itself operates across the full
+     * driver range, and clamping restored seeds to the narrow app window
+     * forced every out-of-window seed to re-converge on every wake. */
+    if (exposure_us < 100U) exposure_us = 100U;               /* garbage guard */
+    if (exposure_us > 40000U) exposure_us = 40000U;           /* > frame period */
+    if (gain_mdb < GAIN_MIN) gain_mdb = GAIN_MIN;
+    if (gain_mdb > 72000U) gain_mdb = 72000U;                 /* driver ceiling */
+    s_ae_restart_state.sensorExposure = exposure_us;
+    s_ae_restart_state.sensorGain = gain_mdb;
+    s_ae_restart_state.sensorConfigured = 1;
+    return AICAM_OK;
+}
+
+aicam_bool_t camera_ae_last_valid(void)
+{
+    return s_ae_restart_state.sensorConfigured ? AICAM_TRUE : AICAM_FALSE;
+}
+
+int camera_stats_get_luma(uint8_t *luma, uint32_t *frame_id)
+{
+    ISP_HandleTypeDef *hIsp = CMW_CAMERA_GetISPHandle();
+    ISP_SVC_StatStateTypeDef snap_a, snap_b;
+
+    if (!hIsp || !luma) return AICAM_ERROR_NOT_INITIALIZED;
+    if (ISP_SVC_Stats_GetLatest(hIsp, &snap_a) != ISP_OK) return AICAM_ERROR;
+    if (ISP_SVC_Stats_GetLatest(hIsp, &snap_b) != ISP_OK) return AICAM_ERROR;
+    /* Same source discipline as the AE loop (isp_algo.c): external stats only
+     * when the appli registered GetExternalStatistics, otherwise internal
+     * down stats. Boards that register no such helper never update
+     * extFrameId (isp_services.c sets it inside the NULL guard), and
+     * WeightedAverageL would always return 0 — that keeps a QS verify gate
+     * below its fill floor until timeout in every wake. */
+    if (snap_a.extStats.nbAreas > 0 && snap_a.extStats.stats != NULL) {
+        if (snap_a.extFrameId != snap_b.extFrameId) return AICAM_ERROR_BUSY;
+        *luma = ISP_SVC_Stats_WeightedAverageL(&snap_a.extStats);
+        if (frame_id) *frame_id = snap_a.extFrameId;
+    } else {
+        if (snap_a.downFrameIdEnd != snap_b.downFrameIdEnd) return AICAM_ERROR_BUSY;
+        *luma = snap_a.down.averageL;
+        if (frame_id) *frame_id = snap_a.downFrameIdEnd;
+    }
+    return AICAM_OK;
+}
+
+int camera_ae_get_target(uint8_t *target)
+{
+    ISP_HandleTypeDef *hIsp = CMW_CAMERA_GetISPHandle();
+    ISP_IQParamTypeDef *iq;
+
+    if (!hIsp || !target) return AICAM_ERROR_NOT_INITIALIZED;
+    iq = ISP_SVC_IQParam_Get(hIsp);
+    if (!iq) return AICAM_ERROR_NOT_INITIALIZED;
+    *target = (uint8_t)iq->AECAlgo.exposureTarget;
+    return AICAM_OK;
+}
 
 // Constant definitions
 #define CAMERA_TASK_DELAY_MS            0
@@ -228,6 +302,16 @@ void camera_fill_isp_iq_scene(cam_iq_scene_t scene, ISP_IQParamTypeDef *out_iq)
         if (sensor == CMW_OS04C10_Sensor) {
             memcpy(out_iq, &ISP_IQParamCacheInit_OS04C10_NIGHT, sizeof(ISP_IQParamTypeDef));
         }
+    } else {
+        /* outdoor: middle horizontal band tuned in the 10-28 IQTune session
+         * (user-requested region, ~full width x 44% height slightly below
+         * center); runtime override, profile statArea stays untouched. */
+        if (sensor == CMW_OS04C10_Sensor) {
+            out_iq->statAreaStatic.X0 = 58U;
+            out_iq->statAreaStatic.Y0 = 523U;
+            out_iq->statAreaStatic.XSize = 2578U;
+            out_iq->statAreaStatic.YSize = 629U;
+        }
     }
 }
 
@@ -318,6 +402,25 @@ int camera_apply_isp_iq_runtime(ISP_HandleTypeDef *hIsp, ISP_IQParamTypeDef *iq)
             cached->colorConvStatic = iq->colorConvStatic;
         }
         cached->AWBAlgo.enable = 0;
+    } else if (!cached->AWBAlgo.enable) {
+        /* AWB off -> on (IR night / grayscale -> color profile): re-enable
+           the AWB algorithm. The middleware state machine re-initializes on
+           the next frame (isp_algo.c: enableCurrent==false -> INIT) and
+           takes back the ISP gains and color conversion from the color
+           profile, replacing the grayscale blocks the AWB-off profile had
+           written. Without this, the grayscale CCM stayed in the hardware
+           after switching back to a color mode — the image never regained
+           color (one-way gate since f307f6c8).
+           The cached static gain/CCM blocks must ALSO be refreshed to the
+           color profile's values even though the AWB (not the static path)
+           drives the hardware now: the memcmp guards in the AWB-off branch
+           compare against the cache, and stale night values there would
+           make a LATER switch back to night skip the writes and leave the
+           AWB's color CCM in the hardware (stuck-at-color bug, round 2). */
+        ISP_SetWBRefMode(hIsp, 1, 0);
+        cached->AWBAlgo.enable = 1;
+        cached->ispGainStatic = iq->ispGainStatic;
+        cached->colorConvStatic = iq->colorConvStatic;
     }
 
     if (memcmp(&iq->AECAlgo.exposureCompensation, &cached->AECAlgo.exposureCompensation,
@@ -891,6 +994,10 @@ static int camera_start(void *priv)
 
     // Set ISP initialization parameters before starting camera
     CMW_CAMERA_SetISPInitParam(&camera->isp_iq_param);
+    /* QS fast wake: hand the AE restart state to the middleware so AEC init
+     * resumes from the last convergent exposure/gain instead of the black
+     * frame (seeded from NVS "ae_state" by the snapshot thread). */
+    (void)CMW_CAMERA_EnableRestartState(&s_ae_restart_state);
 
     if((camera->device_ctrl_pipe & CAMERA_CTRL_PIPE1_BIT) != 0){
         ret = pipe1_start(camera);

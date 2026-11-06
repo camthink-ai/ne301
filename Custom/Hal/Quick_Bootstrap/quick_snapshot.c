@@ -1,5 +1,40 @@
 #include "quick_snapshot.h"
 #include "quick_storage.h"
+#include "storage.h"
+#include "json_config_internal.h"
+
+/* ---- AE verification-based fast convergence (QS_AE_VERIFY) ----
+ * Compile switch: 0 = stock official QS behavior (fixed skip wait);
+ *                 1 = statistics-judged convergence gate (passive + adaptive). */
+#define QS_AE_VERIFY_ENABLE         1
+#define QS_VERIFY_FILL_FLOOR        6U   /* frames: measured physical floor
+                                            (Sept tests: skip=5 grabs black on
+                                            OS04C10; dummy+sensorDelay >= 6) */
+#define QS_VERIFY_MIN_BUDGET_FRAMES 8U   /* budget never below floor+2: the
+                                            first usable stat judgement must
+                                            fit inside the budget or every
+                                            capture degrades to a timeout grab */
+#define QS_VERIFY_TOL               8U   /* luma tolerance: low-lux fine-band
+                                            variant of isp_ae_algo.c
+                                            AE_FINE_TOLERANCE (5 normal / 8-10 low) */
+#define QS_VERIFY_CLAMP_DL          2U  /* clamped-accept: |dL| between samples */
+#define QS_SENSOR_DELAY             3U   /* must match profile sensorDelay */
+/* ---- seed policy ----
+ * 0 = fixed factory seed, never learned/updated;
+ * 1 = learn on in-band exit (persist attributed E/G).
+ * Adaptive budget (QS_VERIFY_EXT_*) must pair with 1: extending the wait
+ * only pays off when the converged point is then learned, otherwise every
+ * wake in a changed scene pays the extension again. */
+#define QS_AE_SEED_LEARN            1
+#define QS_AE_SEED_FIXED_E          30000U  /* us - the 307-era frozen value */
+#define QS_AE_SEED_FIXED_G          6185U   /* mdb */
+/* ---- adaptive verification budget ----
+ * Downward AE convergence is slower than the base skip budget. Past the
+ * base budget, keep waiting ONLY while |L-target| keeps shrinking; give up
+ * after QS_VERIFY_EXT_STALL consecutive non-improving samples. Hard cap
+ * bounds the worst wake. */
+#define QS_VERIFY_EXT_MAX_MS        3000U
+#define QS_VERIFY_EXT_STALL         3U
 #include "quick_trace.h"
 #include "cmsis_os2.h"
 #include "dev_manager.h"
@@ -233,8 +268,41 @@ static int qs_prepare_camera_and_jpeg(const qs_snapshot_config_t *cfg, const nn_
             sp.mirror_flip = (int)cfg->mirror_flip;
             (void)device_ioctl(s_cam_dev, CAM_CMD_SET_SENSOR_PARAM, (uint8_t *)&sp, sizeof(sp));
         }
+#if QS_AE_VERIFY_ENABLE
+        /* camera-level skip only guards pipeline validity (fill floor:
+         * dummy frames + sensorDelay); convergence waiting moves to
+         * qs_wait_ae_verified() with a budget derived from the user knob. */
+        (void)device_ioctl(s_cam_dev, CAM_CMD_SET_STARTUP_SKIP_FRAMES, NULL, QS_VERIFY_FILL_FLOOR);
+#else
         (void)device_ioctl(s_cam_dev, CAM_CMD_SET_STARTUP_SKIP_FRAMES, NULL, cfg->fast_capture_skip_frames);
+#endif
     }
+
+#if QS_AE_VERIFY_ENABLE
+    /* Resume AE from the last verified point instead of the black frame.
+     * QS_AE_SEED_LEARN=1: persisted last state (NVS "ae_state"), learned
+     * on every in-band capture. QS_AE_SEED_LEARN=0: fixed factory seed —
+     * same deterministic start on every wake, no NVS involved. */
+#if QS_AE_SEED_LEARN
+    {
+        camera_ae_state_record_t ae_rec = {0};
+        if (storage_nvs_read(NVS_USER, NVS_KEY_AE_LAST_STATE,
+                             &ae_rec, sizeof(ae_rec)) == (int)sizeof(ae_rec) &&
+            ae_rec.magic == CAMERA_AE_STATE_MAGIC) {
+            if (camera_ae_set_last(ae_rec.exposure_us, ae_rec.gain_mdb) == AICAM_OK) {
+                QT_TRACE("[QS] ", "ae resume e=%lu g=%lu",
+                         (unsigned long)ae_rec.exposure_us,
+                         (unsigned long)ae_rec.gain_mdb);
+            }
+        }
+    }
+#else
+    (void)camera_ae_set_last(QS_AE_SEED_FIXED_E, QS_AE_SEED_FIXED_G);
+    QT_TRACE("[QS] ", "ae resume (fixed) e=%lu g=%lu",
+             (unsigned long)QS_AE_SEED_FIXED_E,
+             (unsigned long)QS_AE_SEED_FIXED_G);
+#endif
+#endif
 
     /* start camera (device layer handles sensor/pipes bring-up) */
     ret = device_start(s_cam_dev);
@@ -257,6 +325,118 @@ static int qs_prepare_camera_and_jpeg(const qs_snapshot_config_t *cfg, const nn_
 
     return 0;
 }
+
+
+#if QS_AE_VERIFY_ENABLE
+/* Convergence gate judged from ISP statistics (same source the AE loop
+ * reads) instead of a fixed skip-frame wait. Passive: no exposure writes,
+ * the AE loop keeps running; we only decide WHEN the frame is good.
+ * Exit codes: 1 = in-band, 2 = clamped-accept, 3 = timeout/no-stats.
+ *
+ * On exit=1 the *attributed* exposure/gain are returned via seed_e/seed_g:
+ * the values that produced the verified frame (written ~QS_SENSOR_DELAY
+ * frames earlier), NOT the AE's latest write — the AE gain limit-cycle
+ * keeps moving between write and effect, a "latest-write" seed lands at a
+ * random cycle phase and alternates the next wake's starting point. */
+static int qs_wait_ae_verified(uint32_t budget_ms,
+                               uint32_t *seed_e, uint32_t *seed_g)
+{
+    uint32_t t0 = HAL_GetTick();
+    uint8_t tgt = 0, L = 0, L_prev = 0;
+    uint32_t fid = 0, fid_prev = 0;
+    int have_prev = 0;
+    int32_t d_prev = 0x7FFFFFFF;
+    uint32_t stall = 0;
+    uint32_t extended_from = 0;
+    /* ring of last E/G writes indexed by stats frame id, for attribution */
+    struct { uint32_t fid; uint32_t e, g; } ring[8] = {0};
+
+    if (camera_ae_get_target(&tgt) != AICAM_OK) {
+        QT_TRACE("[QS] ", "verify: no target, fall through");
+        return 3;
+    }
+    QT_TRACE("[QS] ", "verify begin tgt=%u budget=%lums",
+             (unsigned)tgt, (unsigned long)budget_ms);
+
+    while ((HAL_GetTick() - t0) < QS_VERIFY_EXT_MAX_MS) {
+        uint32_t elapsed = HAL_GetTick() - t0;
+        uint8_t dl;
+        uint32_t e = 0, g = 0;
+        int32_t d;
+
+        /* past the base budget: keep waiting only while converging */
+        if (elapsed >= budget_ms && stall >= QS_VERIFY_EXT_STALL) {
+            break;
+        }
+
+        if (camera_stats_get_luma(&L, &fid) != AICAM_OK ||
+            fid < QS_VERIFY_FILL_FLOOR || fid == fid_prev) {
+            osDelay(5);
+            continue;
+        }
+        camera_ae_get_last(&e, &g);
+        ring[fid & 7U].fid = fid;
+        ring[fid & 7U].e = e;
+        ring[fid & 7U].g = g;
+
+        /* convergence progress tracker: |L-target| must keep shrinking */
+        d = (int32_t)L - (int32_t)tgt;
+        if (d < 0) d = -d;
+        if (have_prev) {
+            if (d < d_prev) {
+                stall = 0;
+                if (elapsed >= budget_ms && !extended_from) {
+                    extended_from = 1;
+                    QT_TRACE("[QS] ", "verify extend (converging) L=%u",
+                             (unsigned)L);
+                }
+            } else {
+                stall++;
+            }
+        }
+        d_prev = d;
+
+        /* in-band: same criterion family as the AE loop fine band */
+        if (L >= (uint8_t)((tgt > QS_VERIFY_TOL) ? (tgt - QS_VERIFY_TOL) : 0) &&
+            L <= (uint8_t)(tgt + QS_VERIFY_TOL)) {
+            /* attribute: the grabbed frame is ~the next frame after this
+             * verdict, produced by the write QS_SENSOR_DELAY frames back */
+            uint32_t want = (fid + 1U > QS_SENSOR_DELAY) ? (fid + 1U - QS_SENSOR_DELAY) : 0;
+            if (seed_e && seed_g && ring[want & 7U].fid == want) {
+                *seed_e = ring[want & 7U].e;
+                *seed_g = ring[want & 7U].g;
+            } else if (seed_e && seed_g) {
+                *seed_e = e;
+                *seed_g = g;
+            }
+            QT_TRACE("[QS] ", "verify exit=1 inband L=%u e=%lu g=%lu +%lums",
+                     (unsigned)L, (unsigned long)e, (unsigned long)g,
+                     (unsigned long)(HAL_GetTick() - t0));
+            return 1;
+        }
+        /* clamped-accept: BOTH exposure and gain at their ceilings and luma
+         * settled -> this is the best the scene allows. Exposure alone is
+         * NOT sufficient: in dim scenes exposure sits at its ceiling while
+         * gain is still ramping. */
+        dl = (uint8_t)(L_prev > L ? (L_prev - L) : (L - L_prev));
+        if (have_prev &&
+            e >= EXPOSURE_MAX && g >= ((GAIN_MAX / 100U) * 95U) &&
+            dl <= QS_VERIFY_CLAMP_DL) {
+            QT_TRACE("[QS] ", "verify exit=2 clamp L=%u e=%lu g=%lu +%lums",
+                     (unsigned)L, (unsigned long)e, (unsigned long)g,
+                     (unsigned long)(HAL_GetTick() - t0));
+            return 2;
+        }
+        L_prev = L;
+        fid_prev = fid;
+        have_prev = 1;
+        osDelay(5);
+    }
+    QT_TRACE("[QS] ", "verify exit=3 timeout L=%u +%lums",
+             (unsigned)L, (unsigned long)(HAL_GetTick() - t0));
+    return 3;
+}
+#endif
 
 static void qs_snapshot_thread(void *argument)
 {
@@ -375,6 +555,26 @@ static void qs_snapshot_thread(void *argument)
     }
     qt_prof_step(&prof, "[QS] snap:prep ");
 
+#if QS_AE_VERIFY_ENABLE
+    /* convergence gate: judge from stats instead of the fixed skip wait */
+    int verify_exit = 3;
+    uint32_t seed_e = 0, seed_g = 0;
+    {
+        pipe_params_t vp = {0};
+        uint32_t fps = 30;
+        uint32_t budget_frames;
+        if (device_ioctl(s_cam_dev, CAM_CMD_GET_PIPE1_PARAM,
+                         (uint8_t *)&vp, sizeof(vp)) == 0 && vp.fps > 0) {
+            fps = (uint32_t)vp.fps;
+        }
+        budget_frames = (s_cfg.fast_capture_skip_frames > QS_VERIFY_MIN_BUDGET_FRAMES)
+                        ? s_cfg.fast_capture_skip_frames : QS_VERIFY_MIN_BUDGET_FRAMES;
+        verify_exit = qs_wait_ae_verified((budget_frames * 1000U) / fps,
+                                          &seed_e, &seed_g);
+        qt_prof_step(&prof, "[QS] snap:vfy ");
+    }
+#endif
+
     /* capture pipe1 buffer (+ pipe2 buffer if AI) */
     camera_buffer_with_frame_id_t pipe1 = {0};
     int fb_ret = device_ioctl(s_cam_dev, CAM_CMD_GET_PIPE1_BUFFER_WITH_FRAME_ID, (uint8_t *)&pipe1, 0);
@@ -387,6 +587,35 @@ static void qs_snapshot_thread(void *argument)
                  (unsigned long)s_frame_id,
                  (unsigned long)s_main_fb_size);
         qt_prof_step(&prof, "[QS] snap:pipe1 ");
+#if QS_AE_VERIFY_ENABLE
+#if QS_AE_SEED_LEARN
+        /* Persist the AE seed ONLY when the convergence gate actually
+         * passed (exit=1): a timeout/clamp grab is NOT a converged frame,
+         * and persisting its AE state re-seeds the next wake from a
+         * limit-cycle phase — the wake-to-wake bright/dark alternation
+         * seen in low light. On bad exits the previous good seed stays. */
+        if (verify_exit == 1) {
+            camera_ae_state_record_t rec = {0};
+            rec.magic = CAMERA_AE_STATE_MAGIC;
+            rec.exposure_us = seed_e;
+            rec.gain_mdb = seed_g;
+            if (storage_nvs_write(NVS_USER, NVS_KEY_AE_LAST_STATE,
+                                  &rec, sizeof(rec)) != (int)sizeof(rec)) {
+                QT_TRACE("[QS] ", "ae save fail");
+            } else {
+                QT_TRACE("[QS] ", "ae saved e=%lu g=%lu",
+                         (unsigned long)rec.exposure_us,
+                         (unsigned long)rec.gain_mdb);
+            }
+        } else {
+            QT_TRACE("[QS] ", "ae seed kept (verify exit=%d)", verify_exit);
+        }
+#else
+        /* fixed-seed mode: never persist; every wake restarts from the
+         * factory constants for deterministic behavior across scenes */
+        QT_TRACE("[QS] ", "ae seed fixed (verify exit=%d)", verify_exit);
+#endif
+#endif
     } else {
         qs_stop_camera_pipes(need_ai);
         QT_TRACE("[QS] ", "pipe1 get fail %d", fb_ret);

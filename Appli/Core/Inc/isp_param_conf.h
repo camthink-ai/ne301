@@ -368,17 +368,17 @@ static const ISP_IQParamTypeDef ISP_IQParamCacheInit_OS04C10 = {
 };
 
 /* DCMIPP ISP configuration for OS04C10 night IR mode. */
-__attribute__((unused)) static const ISP_IQParamTypeDef ISP_IQParamCacheInit_OS04C10_NIGHT = {
+static const ISP_IQParamTypeDef ISP_IQParamCacheInit_OS04C10_NIGHT = {
     .sensorGainStatic = {
         .gain = 0,
     },
     .sensorExposureStatic = {
-        .exposure = 4207,
+        .exposure = 6331,
     },
     .AECAlgo = {
         .enable = 1,
         .exposureCompensation = EXPOSURE_TARGET_MINUS_0_5_EV,
-        .antiFlickerFreq = ANTIFLICKER_50HZ,
+        .antiFlickerFreq = ANTIFLICKER_NONE,
     },
     .statRemoval = {
         .enable = 0,
@@ -391,7 +391,7 @@ __attribute__((unused)) static const ISP_IQParamTypeDef ISP_IQParamCacheInit_OS0
     },
     .badPixelAlgo = {
         .enable = 0,
-        .threshold = 0,
+        .threshold = 8,
     },
     .blackLevelStatic = {
         .enable = 1,
@@ -415,47 +415,47 @@ __attribute__((unused)) static const ISP_IQParamTypeDef ISP_IQParamCacheInit_OS0
     },
     .colorConvStatic = {
         .enable = 1,
-        .coeff = { { 25000000, 70000000, 5000000, }, { 25000000, 70000000, 5000000, }, { 25000000, 70000000, 5000000, }, }
+        .coeff = { { 29687500, 58593750, 11328125, }, { 29687500, 58593750, 11328125, }, { 29687500, 58593750, 11328125, }, }
     },
     .AWBAlgo = {
         .enable = 0,
-        .label = { "A", "Free Slot", "Free Slot", "Free Slot", "Free Slot", },
-        .referenceColorTemp = { 2500, 0, 0, 0, 0, },
+        .label = { "Profile-tmm", "Free Slot", "Free Slot", "Free Slot", "Free Slot", },
+        .referenceColorTemp = { 2000, 0, 0, 0, 0, },
         .ispGainR = { 100000000, 0, 0, 0, 0, },
         .ispGainG = { 100000000, 0, 0, 0, 0, },
         .ispGainB = { 100000000, 0, 0, 0, 0, },
         .coeff = {
-            { { 25000000, 70000000, 5000000, }, { 25000000, 70000000, 5000000, }, { 25000000, 70000000, 5000000, }, },
+            { { 29900000, 58700000, 11400000, }, { 29900000, 58700000, 11400000, }, { 29900000, 58700000, 11400000, }, },
             { { 0, 0, 0, }, { 0, 0, 0, }, { 0, 0, 0, }, },
             { { 0, 0, 0, }, { 0, 0, 0, }, { 0, 0, 0, }, },
             { { 0, 0, 0, }, { 0, 0, 0, }, { 0, 0, 0, }, },
             { { 0, 0, 0, }, { 0, 0, 0, }, { 0, 0, 0, }, },
         },
         .referenceRGB = {
-            { 60, 60, 60 },
-            { 0, 0, 0 },
-            { 0, 0, 0 },
-            { 0, 0, 0 },
-            { 0, 0, 0 },
+            { 10, 1, 1},
+            { 0, 0, 0},
+            { 0, 0, 0},
+            { 0, 0, 0},
+            { 0, 0, 0},
         },
     },
     .contrast = {
         .enable = 1,
-        .coeff.LUM_0 = 42,
-        .coeff.LUM_32 = 36,
-        .coeff.LUM_64 = 81,
-        .coeff.LUM_96 = 121,
-        .coeff.LUM_128 = 134,
-        .coeff.LUM_160 = 143,
-        .coeff.LUM_192 = 147,
-        .coeff.LUM_224 = 183,
-        .coeff.LUM_256 = 229,
+        .coeff.LUM_0 = 145,
+        .coeff.LUM_32 = 124,
+        .coeff.LUM_64 = 303,
+        .coeff.LUM_96 = 257,
+        .coeff.LUM_128 = 232,
+        .coeff.LUM_160 = 239,
+        .coeff.LUM_192 = 132,
+        .coeff.LUM_224 = 161,
+        .coeff.LUM_256 = 191,
     },
     .statAreaStatic = {
-        .X0 = 478,
-        .Y0 = 181,
-        .XSize = 1918,
-        .YSize = 1334,
+        .X0 = 474,
+        .Y0 = 620,
+        .XSize = 1824,
+        .YSize = 895,
     },
     .gamma = {
         .enable = 1,
@@ -464,17 +464,17 @@ __attribute__((unused)) static const ISP_IQParamTypeDef ISP_IQParamCacheInit_OS0
         .delay = 3,
     },
     .luxRef = {
-        .HL_LuxRef = 1000,
-        .HL_Expo1 = 5000,
-        .HL_Lum1 = 20,
-        .HL_Expo2 = 30000,
-        .HL_Lum2 = 100,
-        .LL_LuxRef = 250,
-        .LL_Expo1 = 10000,
-        .LL_Lum1 = 10,
-        .LL_Expo2 = 30000,
-        .LL_Lum2 = 30,
-        .calibFactor = 1.0f,
+        .HL_LuxRef = 972,
+        .HL_Expo1 = 26866,
+        .HL_Lum1 = 34,
+        .HL_Expo2 = 59156,
+        .HL_Lum2 = 98,
+        .LL_LuxRef = 261,
+        .LL_Expo1 = 78883,
+        .LL_Lum1 = 28,
+        .LL_Expo2 = 180712,
+        .LL_Lum2 = 64,
+        .calibFactor = 0.708f,
     },
 };
 
