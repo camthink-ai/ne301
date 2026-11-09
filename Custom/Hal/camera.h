@@ -228,4 +228,18 @@ void camera_fill_isp_iq_for_mode(uint32_t isp_mode, ISP_IQParamTypeDef *out_iq);
  */
 int camera_apply_isp_iq_runtime(ISP_HandleTypeDef *hIsp, ISP_IQParamTypeDef *iq);
 
+/* ---- AE fast-convergence support (QS quick snapshot) ---- */
+#define CAMERA_AE_STATE_MAGIC   0x41453737U  /* "AE77" */
+typedef struct {
+    uint32_t magic;        /* CAMERA_AE_STATE_MAGIC */
+    uint32_t exposure_us;  /* sensor exposure, microseconds */
+    uint32_t gain_mdb;     /* sensor gain, millidB */
+} camera_ae_state_record_t;
+
+void camera_ae_get_last(uint32_t *exposure_us, uint32_t *gain_mdb);
+int camera_ae_set_last(uint32_t exposure_us, uint32_t gain_mdb);
+aicam_bool_t camera_ae_last_valid(void);
+int camera_stats_get_luma(uint8_t *luma, uint32_t *frame_id);
+int camera_ae_get_target(uint8_t *target);
+
 #endif
