@@ -403,24 +403,25 @@ int camera_apply_isp_iq_runtime(ISP_HandleTypeDef *hIsp, ISP_IQParamTypeDef *iq)
         }
         cached->AWBAlgo.enable = 0;
     } else if (!cached->AWBAlgo.enable) {
-        /* AWB off -> on (IR night / grayscale -> color profile): re-enable
-           the AWB algorithm. The middleware state machine re-initializes on
-           the next frame (isp_algo.c: enableCurrent==false -> INIT) and
-           takes back the ISP gains and color conversion from the color
-           profile, replacing the grayscale blocks the AWB-off profile had
-           written. Without this, the grayscale CCM stayed in the hardware
-           after switching back to a color mode — the image never regained
-           color (one-way gate since f307f6c8).
-           The cached static gain/CCM blocks must ALSO be refreshed to the
-           color profile's values even though the AWB (not the static path)
-           drives the hardware now: the memcmp guards in the AWB-off branch
-           compare against the cache, and stale night values there would
-           make a LATER switch back to night skip the writes and leave the
-           AWB's color CCM in the hardware (stuck-at-color bug, round 2). */
-        ISP_SetWBRefMode(hIsp, 1, 0);
-        cached->AWBAlgo.enable = 1;
+        /* AWB off -> on (IR night / grayscale -> color profile): copy the
+           FULL AWB configuration from the incoming color profile before
+           re-enabling the algorithm. Three things must be synced:
+           1. cached->AWBAlgo = iq->AWBAlgo — the AWB curve data (reference
+              color temps, per-point gains and CCM coefficients). The NIGHT
+              profile stores grayscale coefficients in the AWB curve; if the
+              cache keeps them, the re-enabled AWB reads NIGHT's curve and
+              writes grayscale CCM even in color mode — the image stays
+              black-and-white after a NIGHT-mode reboot (field-verified:
+              only "set NIGHT + power cycle + switch to DAY" triggered it).
+           2. cached->ispGainStatic / colorConvStatic — so a later switch
+              back to an AWB-off profile sees the correct diff baseline.
+           3. ISP_SetWBRefMode — re-enables the algorithm; the middleware
+              state machine re-initializes on the next frame and now reads
+              the COLOR curve from the synced cache. */
+        cached->AWBAlgo = iq->AWBAlgo;   /* full curve sync, sets enable=1 */
         cached->ispGainStatic = iq->ispGainStatic;
         cached->colorConvStatic = iq->colorConvStatic;
+        ISP_SetWBRefMode(hIsp, 1, 0);    /* trigger AWB re-init */
     }
 
     if (memcmp(&iq->AECAlgo.exposureCompensation, &cached->AECAlgo.exposureCompensation,
