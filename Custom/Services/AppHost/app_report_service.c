@@ -2,25 +2,7 @@
 #include <string.h>
 
 #include "app_report_service.h"
-
-typedef enum {
-    JR_OBJECT,
-    JR_ARRAY,
-    JR_STRING,
-    JR_NUMBER,
-    JR_TRUE,
-    JR_FALSE,
-    JR_NULL
-} jr_type_t;
-
-typedef struct {
-    size_t raw_off;
-    const char *name;
-    size_t name_len;
-    size_t value_off;
-    size_t value_end;
-    jr_type_t type;
-} jr_member_t;
+#include "app_report_schema.h"
 
 #define JR_MAX_MEMBERS 256u
 #define JR_MAX_DEPTH 64u
@@ -808,8 +790,8 @@ static int jr_name_is(const jr_member_t *m, const char *name)
     return (m->name_len == n && memcmp(m->name, name, n) == 0);
 }
 
-static int jr_find(const jr_member_t *members, size_t count, const char *name,
-                   const jr_member_t **out)
+int jr_find(const jr_member_t *members, size_t count, const char *name,
+            const jr_member_t **out)
 {
     for (size_t i = 0u; i < count; i++) {
         if (jr_name_is(&members[i], name)) {
@@ -858,8 +840,8 @@ static int jr_u32_value(const jr_member_t *m, const char *buf, uint32_t *out)
     return 0;
 }
 
-static int jr_object_member(const jr_member_t *members, size_t count,
-                            const char *name)
+int jr_object_member(const jr_member_t *members, size_t count,
+                     const char *name)
 {
     const jr_member_t *m;
 
@@ -869,7 +851,7 @@ static int jr_object_member(const jr_member_t *members, size_t count,
     return (m->type == JR_OBJECT) ? 0 : -1;
 }
 
-static int jr_string_equals(const jr_member_t *m, const char *buf, const char *s)
+int jr_string_equals(const jr_member_t *m, const char *buf, const char *s)
 {
     size_t n = strlen(s);
 
@@ -1070,8 +1052,12 @@ static int32_t report_validate_and_normalize(const char *json, uint32_t len,
     if (m_type->type != JR_STRING) {
         return APP_REPORT_ABI_INVALID_ARGUMENT;
     }
-    if (jr_string_equals(m_type, json, APP_REPORT_TYPE_LINE_COUNTING) == 0) {
-        return APP_REPORT_ABI_INCOMPATIBLE;
+    {
+        int32_t schema_rc = app_report_schema_lc_type_allowed(m_type, json);
+
+        if (schema_rc != APP_REPORT_ABI_OK) {
+            return schema_rc;
+        }
     }
     if (jr_u32_value(m_seq, json, &value32) != 0 || value32 != app_report_seq) {
         return APP_REPORT_ABI_INVALID_ARGUMENT;
@@ -1084,12 +1070,12 @@ static int32_t report_validate_and_normalize(const char *json, uint32_t len,
         jr_u32_value(m_boot, json, &value32) != 0) {
         return APP_REPORT_ABI_INVALID_ARGUMENT;
     }
-    if (jr_object_member(members, count, "window") != 0 ||
-        jr_object_member(members, count, "total") != 0 ||
-        jr_object_member(members, count, "counter") != 0 ||
-        jr_object_member(members, count, "target") != 0 ||
-        jr_object_member(members, count, "model") != 0) {
-        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    {
+        int32_t schema_rc = app_report_schema_lc_fields_valid(members, count);
+
+        if (schema_rc != APP_REPORT_ABI_OK) {
+            return schema_rc;
+        }
     }
 
     if (identity_device_id(device_id, (uint32_t)sizeof(device_id)) != 0) {

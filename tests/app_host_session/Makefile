@@ -46,7 +46,7 @@ DEV_STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-unused-parameter
 LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 
-CORE_OBJS := app_host_session.o app_host_live.o app_host_control.o app_state_store.o app_installer.o app_admission.o app_host_validate.o app_report_service.o app_report_policy.o generic_math.o
+CORE_OBJS := app_host_session.o app_host_live.o app_host_control.o app_state_store.o app_installer.o app_sidecar_verify.o app_sidecar_lifecycle.o app_pair_installer.o app_admission.o app_host_validate.o app_report_service.o app_report_schema_lc.o app_report_policy.o generic_math.o
 
 APP27_R3_APP_SRCS := lc_app_entry_v4.c lc_bus.c lc_bus_config.c lc_stateblob.c lc_ctrl.c lc_cfgcodec.c lc_json.c lc_arena.c lc_lvn4.c
 APP27_R3_OBJS := $(addprefix build/app27_r3_,$(notdir $(APP27_R3_APP_SRCS:.c=.o)))
@@ -95,7 +95,16 @@ app_host_control.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_control.c $(RE
 app_state_store.o: $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.c $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
-app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_verify.c $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.c $(REPO_ROOT)/Custom/Services/AppHost/app_pair_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_native_vnext_floor.h
+app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_installer_internal.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_sidecar_verify.o: $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_verify.c $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_verify.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_sidecar_lifecycle.o: $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.c $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.h $(REPO_ROOT)/Custom/Services/AppHost/app_installer_internal.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_pair_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_pair_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_pair_installer.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_admission.o: $(REPO_ROOT)/Custom/Services/AppHost/app_admission.c $(REPO_ROOT)/Custom/Services/AppHost/app_admission.h
@@ -104,7 +113,10 @@ app_admission.o: $(REPO_ROOT)/Custom/Services/AppHost/app_admission.c $(REPO_ROO
 app_host_validate.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_validate.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_validate.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
-app_report_service.o: $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.c $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h
+app_report_service.o: $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.c $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_schema.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_report_schema_lc.o: $(REPO_ROOT)/Custom/Services/AppHost/app_report_schema_lc.c $(REPO_ROOT)/Custom/Services/AppHost/app_report_schema.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_report_policy.o: $(REPO_ROOT)/Custom/Services/AppHost/app_report_policy.c $(REPO_ROOT)/Custom/Services/AppHost/app_report_policy.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h

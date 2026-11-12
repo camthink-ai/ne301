@@ -151,6 +151,31 @@ def main() -> None:
     remove_product(product, out / "missing-carrier.neapp")
     copy_package(product, out / "tampered-carrier.neapp", tamper_product=True)
     rebind(product, out / "same-version-different-content.neapp", change_index=True)
+    rebind(
+        product,
+        out / "new-ui-version-same-native.neapp",
+        ui_version=(2, 1, 1),
+    )
+    rebind(
+        product,
+        out / "same-native-product-upgrade.neapp",
+        product=b'{"product_version":"1.0.2"}',
+        ui_version=(2, 1, 1),
+    )
+    rebind(
+        product,
+        out / "same-native-product-upgrade-alt.neapp",
+        product=b'{"product_version":"1.0.2"}',
+        ui_version=(2, 1, 1),
+        change_index=True,
+    )
+    rebind(
+        product,
+        out / "product-upgrade-interrupted.neapp",
+        product=b'{"product_version":"1.0.2"}',
+        native_version=(4, 2, 15),
+        ui_version=(2, 1, 1),
+    )
     rebind(product, out / "lower-product.neapp", product=b'{"product_version":"1.0.0"}')
     rebind(
         product,

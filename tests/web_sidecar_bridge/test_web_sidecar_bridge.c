@@ -18,6 +18,8 @@
 #include "web_server.h"
 #include "websocket_stream_server.h"
 #include "api_app_session_module.h"
+#include "api_app_report_module.h"
+#include "api_app_sidecar_bridge_module.h"
 #include "cJSON.h"
 #include "sidecar_vectors.h"
 #include "mbedtls/sha256.h"
@@ -4053,6 +4055,8 @@ int main(void)
     backend.epoch_ms = bridge_epoch;
     app_bridge_backend_set(&backend);
     CHECK(web_api_register_app_session_module() == AICAM_OK);
+    CHECK(web_api_register_app_report_module() == AICAM_OK);
+    CHECK(web_api_register_app_sidecar_bridge_module() == AICAM_OK);
     CHECK(g_captured_route_count == 9);
     CHECK(find_route("GET", API_PATH_PREFIX "/app/sidecar/ui") != NULL);
     CHECK(find_route("POST", API_PATH_PREFIX "/app/sidecar/bridge/grant") != NULL);

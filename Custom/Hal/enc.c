@@ -915,6 +915,19 @@ static int enc_ioctl(void *priv, unsigned int cmd, unsigned char *ubuf, unsigned
             break;
         }
 
+        case ENC_CMD_FORCE_INTRA:
+            /* #193 late-joiner join acceleration: make the next encoded
+             * frame an IDR so a gated (sps_synced=false) WebSocket client
+             * gets its SPS/PPS+keyframe join within one frame period
+             * instead of waiting out the full GOP. Same mechanism as the
+             * existing failure-recovery set of is_intra_force; the flag is
+             * consumed by the next successful encode and cleared again. */
+            osMutexAcquire(enc->state_mtx, osWaitForever);
+            enc->is_intra_force = 1;
+            osMutexRelease(enc->state_mtx);
+            ret = AICAM_OK;
+            break;
+
         default:
             ret = AICAM_ERROR_NOT_SUPPORTED;
             break;

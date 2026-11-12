@@ -5,7 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const fixtureRoot = path.dirname(fileURLToPath(import.meta.url))
-export const repoRoot = path.resolve(fixtureRoot, '../..')
+export const repoRoot = path.resolve(fixtureRoot, '../../..')
 export const tempName = createHash('sha256').update(realpathSync(fixtureRoot)).digest('hex').slice(0, 12)
 export const tempRoot = path.join(os.tmpdir(), `ne301-counting-sidecar-${tempName}`)
 export const sourceRoot = path.join(tempRoot, 'source')

@@ -196,6 +196,10 @@ app-native-vnext-test:
 app-host-enable-test:
 	$(MAKE) -C tests/app_host_enable CC=cc test
 
+.PHONY: null-out-param-guard-test
+null-out-param-guard-test:
+	$(MAKE) -C tests/null_out_param_guard CC=cc test
+
 ######################################
 # Generic Build Template
 ######################################

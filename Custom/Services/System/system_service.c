@@ -182,11 +182,11 @@ static const system_capture_request_t g_capture_defaults = {
  {
      if (!config) return AICAM_ERROR_INVALID_PARAM;
      
-     // Try to load from NVS
-     power_mode_config_t* power_config = NULL;
-     aicam_result_t result = json_config_get_power_mode_config(power_config);
-     if (result == AICAM_OK) {
-         memcpy(config, power_config, sizeof(power_mode_config_t));
+    // Try to load from NVS
+    power_mode_config_t nvs_power_config = {0};
+    aicam_result_t result = json_config_get_power_mode_config(&nvs_power_config);
+    if (result == AICAM_OK) {
+        memcpy(config, &nvs_power_config, sizeof(power_mode_config_t));
          LOG_SVC_INFO("Power mode configuration loaded from NVS: current=%u, default=%u", 
                       config->current_mode, config->default_mode);
          return AICAM_OK;

@@ -62,7 +62,7 @@ typedef struct {
     bool mounted;
     uint32_t total_KBytes;
     uint32_t free_KBytes;
-    char fs_type[8]; // "littlefs"
+    char fs_type[16]; // "littlefs" = 8 chars + NUL
 } storage_disk_info_t;
 
 typedef struct {

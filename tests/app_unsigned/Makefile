@@ -25,6 +25,9 @@ GC_SECTIONS_FLAG := -Wl,--gc-sections
 endif
 CORE_SRCS := $(REPO_ROOT)/Custom/Services/AppHost/app_admission.c \
              $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c \
+             $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_verify.c \
+             $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.c \
+             $(REPO_ROOT)/Custom/Services/AppHost/app_pair_installer.c \
              $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.c \
              $(REPO_ROOT)/Custom/Common/Utils/generic_math.c
 

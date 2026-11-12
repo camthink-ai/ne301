@@ -323,17 +323,16 @@ static app_install_io_result_t mem_free_bytes(void *ctx, uint64_t *out)
 static aicam_bool_t mem_tx_begin(void *ctx)
 {
     mem_io_t *io = (mem_io_t *)ctx;
-    if (io->tx_held != 0) {
+    if (__sync_lock_test_and_set(&io->tx_held, 1) != 0) {
         return AICAM_FALSE;
     }
-    io->tx_held = 1;
     return AICAM_TRUE;
 }
 
 static void mem_tx_end(void *ctx)
 {
     mem_io_t *io = (mem_io_t *)ctx;
-    io->tx_held = 0;
+    __sync_lock_release(&io->tx_held);
 }
 
 static void *mem_big_alloc(void *ctx, size_t len)

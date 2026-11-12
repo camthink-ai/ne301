@@ -6,6 +6,8 @@ let shouldReconnect = false;
 
 let retryCount = 0;
 const baseDelay = 1000; // ms
+const maxDelay = 10000; // ms
+const maxReconnectAttempts = 5;
 let retryTimer: number | null = null;
  
 function clearRetryTimer(): void {
@@ -57,8 +59,15 @@ function scheduleReconnect(): void {
         return;
     }
 
+    if (retryCount >= maxReconnectAttempts) {
+        // Bounded give-up: surface the failure once and stop retrying.
+        // Session state stays alive; a new 'connect' command re-arms the budget.
+        ctx.postMessage({ type: 'reconnect-exhausted', attempts: retryCount, url: currentUrl });
+        return;
+    }
+
     retryCount += 1;
-    const expo = Math.min(baseDelay * (2 ** (retryCount - 1)), 10000);
+    const expo = Math.min(baseDelay * (2 ** (retryCount - 1)), maxDelay);
     const jitter = Math.floor(Math.random() * 300);
     const delay = expo + jitter;
     clearRetryTimer();

@@ -257,7 +257,7 @@ static void web_server_event_handler(struct mg_connection *c, int ev, void *ev_d
  /* ==================== FreeRTOS Task Attributes ==================== */
  static osThreadAttr_t web_server_task_attributes = {
     .name = "web_server",
-    .priority = (osPriority_t) osPriorityRealtime,
+    .priority = (osPriority_t) osPriorityNormal,
     .stack_size = WEB_SERVER_STACK_SIZE,
     .stack_mem = web_server_stack,
  };
@@ -446,14 +446,13 @@ static void web_conn_forget(struct mg_connection *c)
      }
 
     /* Initialize AP sleep timer from configuration */
-    network_service_config_t *config = NULL;
-    
-    // Dynamically allocate configuration structure
-    aicam_result_t result = json_config_get_network_service_config(config);
+    network_service_config_t net_cfg = {0};
+
+    aicam_result_t result = json_config_get_network_service_config(&net_cfg);
     if (result == AICAM_OK) {
-        web_server_ap_sleep_timer_init(config->ap_sleep_time);
-        LOG_SVC_INFO("[WEB_SERVER] AP sleep timer initialized with %u seconds timeout", 
-                     config->ap_sleep_time);
+        web_server_ap_sleep_timer_init(net_cfg.ap_sleep_time);
+        LOG_SVC_INFO("[WEB_SERVER] AP sleep timer initialized with %u seconds timeout",
+                     net_cfg.ap_sleep_time);
     } else {
         /* Use default timeout if config is not available */
         web_server_ap_sleep_timer_init(600); // 10 minutes default

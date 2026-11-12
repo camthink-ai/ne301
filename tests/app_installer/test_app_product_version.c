@@ -6,6 +6,7 @@
 #include "app_installer.h"
 #include "app_pair_installer.h"
 #include "app_sidecar_lifecycle.h"
+#include "generic_math.h"
 #include "mem_io_backend.h"
 
 static int g_checks;
@@ -248,6 +249,350 @@ static void test_canonical_parser(void)
           "reject_extra_json_key");
 }
 
+static void wipe_sidecar_state(void)
+{
+    static const char *const keys[] = {
+        APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A,
+        APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_B,
+        APP_SIDECAR_LIFECYCLE_KEY_STAGING,
+        APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR
+    };
+    size_t i;
+
+    for (i = 0u; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        mem_kv_t *kv = mem_find_key(keys[i]);
+        if (kv != NULL) {
+            kv->present = AICAM_FALSE;
+        }
+    }
+    for (i = 0u; i < MEM_MAX_FILES; i++) {
+        mem_file_t *file = &g_io.files[i];
+        if (file->present == AICAM_TRUE &&
+            strncmp(file->path, "/apps/ui-", 9) == 0) {
+            free(file->data);
+            file->data = NULL;
+            file->len = 0u;
+            file->present = AICAM_FALSE;
+        }
+    }
+}
+
+static app_sidecar_trust_t record_trust(const app_install_record_t *record)
+{
+    app_sidecar_trust_t trust;
+
+    memset(&trust, 0, sizeof(trust));
+    trust.publisher_id = APP_ADMISSION_ADMIN_PUBLISHER_ID;
+    trust.publisher_id_len = strlen(APP_ADMISSION_ADMIN_PUBLISHER_ID);
+    trust.app_id = record->app_id;
+    trust.app_id_len = strlen(record->app_id);
+    trust.native_tbs_sha256 = record->tbs_sha256;
+    return trust;
+}
+
+static app_sidecar_lifecycle_state_t query_sidecar_state(
+    const app_install_record_t *record, app_sidecar_descriptor_t *out_ui)
+{
+    app_sidecar_lifecycle_state_t state = APP_SIDECAR_LIFECYCLE_NONE;
+    app_sidecar_trust_t trust = record_trust(record);
+
+    memset(out_ui, 0, sizeof(*out_ui));
+    if (app_sidecar_lifecycle_query(&g_io_iface, &trust, record, out_ui,
+                                    &state) != APP_SIDECAR_LIFECYCLE_OK) {
+        return APP_SIDECAR_LIFECYCLE_UNKNOWN;
+    }
+    return state;
+}
+
+static aicam_bool_t query_committed_native(app_install_query_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    return app_install_query(&g_io_iface, verify_native, &g_policy, out) ==
+               APP_INSTALL_OK &&
+           out->state == APP_INSTALL_STATE_INSTALLED;
+}
+
+static void corrupt_kv_record(const char *key)
+{
+    mem_kv_t *kv = mem_find_key(key);
+
+    check(kv != NULL, "corrupt_target_kv_present");
+    if (kv != NULL) {
+        kv->data[16] ^= 0xFFu;
+    }
+}
+
+static void corrupt_native_package_file(const app_install_record_t *record)
+{
+    mem_file_t *file = mem_find_file(record->package_path);
+
+    check(file != NULL, "corrupt_target_package_present");
+    if (file != NULL) {
+        file->data[0] ^= 0xFFu;
+    }
+}
+
+static void put_u32_le(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+    p[2] = (uint8_t)((v >> 16) & 0xFFu);
+    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static void seed_uninstall_intent(const app_install_record_t *record)
+{
+    uint8_t blob[APP_INSTALL_UNINSTALL_BIN_SIZE];
+    uint8_t encoded[APP_INSTALL_RECORD_BIN_SIZE];
+
+    check(app_install_record_encode(record, encoded, sizeof(encoded)) ==
+              AICAM_TRUE,
+          "seed_intent_encode_record");
+    memset(blob, 0, sizeof(blob));
+    blob[0] = 0x41u;
+    blob[1] = 0x49u;
+    blob[2] = 0x55u;
+    blob[3] = 0x31u;
+    blob[4] = 1u;
+    blob[8] = 1u;
+    memcpy(blob + 12u, encoded, sizeof(encoded));
+    put_u32_le(blob + 308u, generic_crc32(blob, 308u));
+    check(g_io_iface.kv_write(&g_io, APP_INSTALL_KEY_UNINSTALL, blob,
+                              sizeof(blob)) == APP_INSTALL_IO_OK,
+          "seed_intent_written");
+    check(g_io_iface.kv_delete(&g_io, APP_INSTALL_KEY_RECORD) ==
+              APP_INSTALL_IO_OK,
+          "seed_intent_record_removed");
+}
+
+static void fail_slot_commit(const char *slot_key)
+{
+    snprintf(g_io.fail_kv_write_key, sizeof(g_io.fail_kv_write_key), "%s",
+             slot_key);
+}
+
+static void clear_slot_fault(void)
+{
+    g_io.fail_kv_write_key[0] = '\0';
+}
+
+static aicam_bool_t staging_record_present(void)
+{
+    return mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_STAGING) != NULL;
+}
+
+static void test_interrupted_retry_line(void)
+{
+    fixture_t product;
+    fixture_t same_content;
+    fixture_t new_ui_version;
+    fixture_t product_upgrade;
+    fixture_t upgrade;
+    fixture_t legacy;
+    fixture_t missing_carrier;
+    fixture_t unsupported;
+    app_install_record_t native;
+    app_sidecar_descriptor_t ui;
+    app_sidecar_lifecycle_state_t state;
+    app_install_query_t query;
+
+    check(fixture_load("valid-product.neapp", &product),
+          "load_product_for_retry_tests");
+    check(fixture_load("same-version-different-content.neapp", &same_content),
+          "load_same_content_for_retry_tests");
+    check(fixture_load("new-ui-version-same-native.neapp", &new_ui_version),
+          "load_new_ui_version_for_retry_tests");
+    check(fixture_load("product-upgrade-interrupted.neapp", &product_upgrade),
+          "load_product_upgrade_for_retry_tests");
+    check(fixture_load("lower-product-new-components.neapp", &upgrade),
+          "load_upgrade_for_retry_tests");
+    check(fixture_load("legacy.neapp", &legacy), "load_legacy_for_retry_tests");
+    check(fixture_load("missing-carrier.neapp", &missing_carrier),
+          "load_missing_carrier_for_retry_tests");
+    check(fixture_load("unsupported-capability.neapp", &unsupported),
+          "load_unsupported_for_retry_tests");
+
+    storage_reset();
+    fail_slot_commit(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A);
+    check(install_fixture(&product, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN,
+          "staged_sim_first_install_interrupted");
+    clear_slot_fault();
+    check(staging_record_present(), "staged_identity_persisted");
+    runtime_reset();
+    check(query_committed_native(&query), "staged_native_committed");
+    check(install_fixture(&product, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_OK,
+          "retry_same_package_with_staged_identity_completes");
+    check(state == APP_SIDECAR_LIFECYCLE_ACTIVE, "retry_staged_state_active");
+    runtime_reset();
+    check(query_committed_native(&query), "retry_native_survives_reboot");
+    check(query_sidecar_state(&query.record, &ui) == APP_SIDECAR_LIFECYCLE_ACTIVE,
+          "retry_active_survives_reboot");
+    check(ui.product_version_trusted == AICAM_TRUE &&
+              strcmp(ui.product_version, "1.0.1") == 0,
+          "retry_trusted_product_version");
+    check(app_pair_is_authorized(&g_io_iface, &query.record, &ui) == AICAM_TRUE,
+          "retry_pair_authorized");
+    check(install_fixture(&product, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ALREADY,
+          "retry_again_is_idempotent");
+    check(install_fixture(&same_content, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_CONTENT_CONFLICT,
+          "retry_active_line_still_rejects_same_version_new_bytes");
+
+    storage_reset();
+    fail_slot_commit(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A);
+    check(install_fixture(&product, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN,
+          "mismatch_sim_install_interrupted");
+    clear_slot_fault();
+    runtime_reset();
+    check(install_fixture(&same_content, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_CONTENT_CONFLICT,
+          "reject_staged_ui_mismatch_same_versions");
+    check(staging_record_present(),
+          "staged_identity_preserved_after_mismatch_rejection");
+    check(install_fixture(&product, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_OK,
+          "original_package_still_recovers_after_mismatch_rejection");
+    check(state == APP_SIDECAR_LIFECYCLE_ACTIVE,
+          "post_mismatch_recovery_active");
+
+    storage_reset();
+    fail_slot_commit(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A);
+    check(install_fixture(&product, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN,
+          "verinc_sim_install_interrupted");
+    clear_slot_fault();
+    runtime_reset();
+    check(install_fixture(&new_ui_version, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_CONTENT_CONFLICT,
+          "reject_staged_ui_mismatch_version_increase");
+    check(staging_record_present(),
+          "staged_identity_preserved_after_version_increase_rejection");
+
+    storage_reset();
+    check(install_fixture(&product, &native, &ui, &state) == APP_PAIR_INSTALL_OK,
+          "retry_unavail_install_product_baseline");
+    fail_slot_commit(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A);
+    check(install_fixture(&product_upgrade, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN,
+          "staged_unavail_install_interrupted");
+    clear_slot_fault();
+    check(staging_record_present(), "staged_unavail_identity_persisted");
+    runtime_reset();
+    check(query_committed_native(&query), "retry_unavail_native_committed");
+    check(install_fixture(&product_upgrade, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_OK,
+          "retry_same_package_after_unavailable_completes");
+    check(state == APP_SIDECAR_LIFECYCLE_ACTIVE,
+          "retry_unavailable_state_active");
+    runtime_reset();
+    check(query_committed_native(&query), "retry_unavail_native_survives_reboot");
+    check(query_sidecar_state(&query.record, &ui) == APP_SIDECAR_LIFECYCLE_ACTIVE,
+          "retry_unavailable_active_survives_reboot");
+    check(ui.product_version_trusted == AICAM_TRUE &&
+              strcmp(ui.product_version, "1.0.2") == 0,
+          "retry_unavailable_trusted_product_version");
+    check(app_pair_is_authorized(&g_io_iface, &query.record, &ui) == AICAM_TRUE,
+          "retry_unavailable_pair_authorized");
+
+    storage_reset();
+    check(install_fixture(&product, &native, &ui, &state) == APP_PAIR_INSTALL_OK,
+          "nostaged_install_product_baseline");
+    wipe_sidecar_state();
+    runtime_reset();
+    check(query_committed_native(&query), "nostaged_native_committed");
+    check(query_sidecar_state(&query.record, &ui) == APP_SIDECAR_LIFECYCLE_NONE,
+          "nostaged_state_is_none");
+    check(install_fixture(&product, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN,
+          "reject_retry_without_staged_ui_identity_fail_closed");
+    check(install_fixture(&same_content, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN,
+          "reject_changed_ui_without_staged_ui_identity_fail_closed");
+    check(install_fixture(&upgrade, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN,
+          "reject_different_native_bytes_in_interrupted_state");
+    check(install_fixture(&legacy, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN,
+          "reject_older_legacy_native_in_interrupted_state");
+
+    storage_reset();
+    fail_slot_commit(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A);
+    check(install_fixture(&product, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN,
+          "corruptstage_sim_install_interrupted");
+    clear_slot_fault();
+    corrupt_kv_record(APP_SIDECAR_LIFECYCLE_KEY_STAGING);
+    runtime_reset();
+    check(install_fixture(&product, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN,
+          "reject_corrupted_staging_record");
+
+    storage_reset();
+    check(install_fixture(&product, &native, &ui, &state) == APP_PAIR_INSTALL_OK,
+          "corrupt_install_product_baseline");
+    corrupt_kv_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A);
+    runtime_reset();
+    check(install_fixture(&product, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN,
+          "reject_corrupted_sidecar_record");
+
+    storage_reset();
+    check(install_fixture(&product, &native, &ui, &state) == APP_PAIR_INSTALL_OK,
+          "corrupt_pkg_install_product_baseline");
+    wipe_sidecar_state();
+    corrupt_native_package_file(&native);
+    runtime_reset();
+    check(install_fixture(&product, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN,
+          "reject_corrupted_native_package_in_interrupted_state");
+
+    storage_reset();
+    check(install_fixture(&product, &native, &ui, &state) == APP_PAIR_INSTALL_OK,
+          "intent_install_product_baseline");
+    wipe_sidecar_state();
+    {
+        mem_kv_t *kv = mem_find_key(APP_INSTALL_KEY_RECORD);
+        app_install_record_t stored;
+        check(kv != NULL, "intent_source_record_present");
+        check(kv == NULL ||
+                  app_install_record_decode(kv->data, kv->len, &stored) ==
+                      AICAM_TRUE,
+              "intent_source_record_decoded");
+        if (kv != NULL) {
+            seed_uninstall_intent(&stored);
+        }
+    }
+    runtime_reset();
+    check(install_fixture(&product, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN,
+          "reject_retry_while_uninstall_pending");
+
+    storage_reset();
+    check(install_fixture(&product, &native, &ui, &state) == APP_PAIR_INSTALL_OK,
+          "capgate_install_product_baseline");
+    wipe_sidecar_state();
+    runtime_reset();
+    check(install_fixture(&missing_carrier, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_UI_VERIFY,
+          "reject_missing_product_carrier_retry");
+    check(install_fixture(&unsupported, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_NATIVE_VERIFY,
+          "reject_unknown_capability_retry");
+
+    fixture_free(&product);
+    fixture_free(&same_content);
+    fixture_free(&new_ui_version);
+    fixture_free(&product_upgrade);
+    fixture_free(&upgrade);
+    fixture_free(&legacy);
+    fixture_free(&missing_carrier);
+    fixture_free(&unsupported);
+}
+
 static void test_product_line(void)
 {
     fixture_t product;
@@ -339,12 +684,177 @@ static void test_product_line(void)
     fixture_free(&lower_after_uninstall);
 }
 
+static void test_same_native_upgrade_blockers(void)
+{
+    fixture_t product;
+    fixture_t higher_ui;
+    fixture_t product_bump;
+    app_install_record_t native;
+    app_sidecar_descriptor_t ui;
+    app_sidecar_lifecycle_state_t state;
+    app_install_query_t query;
+
+    check(fixture_load("valid-product.neapp", &product),
+          "blocker_load_product_fixture");
+    check(fixture_load("new-ui-version-same-native.neapp", &higher_ui),
+          "blocker_load_higher_ui_fixture");
+    check(fixture_load("same-native-product-upgrade.neapp", &product_bump),
+          "blocker_load_product_bump_fixture");
+
+    storage_reset();
+    check(install_fixture(&product, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_OK,
+          "blocker_active_pair_installed");
+    check(state == APP_SIDECAR_LIFECYCLE_ACTIVE, "blocker_active_state");
+    runtime_reset();
+    check(query_committed_native(&query), "blocker_native_committed");
+    check(query_sidecar_state(&query.record, &ui) ==
+              APP_SIDECAR_LIFECYCLE_ACTIVE,
+          "blocker_pair_active_before_attempts");
+
+    check(install_fixture(&higher_ui, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_CONTENT_CONFLICT,
+          "route1_same_product_new_ui_blocked_at_preflight");
+    check(staging_record_present() == AICAM_FALSE,
+          "route1_no_stage_persisted");
+    check(query_committed_native(&query), "route1_native_unchanged");
+    check(query_sidecar_state(&query.record, &ui) ==
+              APP_SIDECAR_LIFECYCLE_ACTIVE,
+          "route1_active_pair_unchanged");
+
+    fail_slot_commit(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A);
+    check(install_fixture(&product_bump, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN,
+          "route2_legal_inplace_upgrade_interrupted_at_slot_write");
+    clear_slot_fault();
+    runtime_reset();
+    check(staging_record_present() == AICAM_TRUE,
+          "route2_abandoned_stage_persisted");
+
+    check(install_fixture(&product, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ALREADY,
+          "route2_active_reupload_not_vetoed_by_stage");
+    check(state == APP_SIDECAR_LIFECYCLE_ACTIVE, "route2_reupload_state_stable");
+    runtime_reset();
+    check(query_committed_native(&query), "route2_native_committed_after_reupload");
+    check(query_sidecar_state(&query.record, &ui) ==
+              APP_SIDECAR_LIFECYCLE_ACTIVE,
+          "route2_active_pair_kept_original_version");
+    check(staging_record_present() == AICAM_FALSE,
+          "route2_stage_governed_by_recovery_decision");
+
+    fixture_free(&product);
+    fixture_free(&higher_ui);
+    fixture_free(&product_bump);
+}
+
+static void test_peek_failclosed_on_divergence(void)
+{
+    fixture_t product = {0};
+    fixture_t foreign_ui = {0};
+    fixture_t product_bump = {0};
+    app_install_record_t native;
+    app_sidecar_descriptor_t ui;
+    app_sidecar_lifecycle_state_t state;
+    mem_kv_t *stage_key;
+    mem_kv_t *slot_key;
+    uint8_t stage_bytes[MEM_MAX_VALUE];
+    size_t stage_len = 0u;
+    uint8_t higher_slot_bytes[MEM_MAX_VALUE];
+    size_t higher_slot_len = 0u;
+    static const uint8_t junk[] = {0xA5u, 0x5Au};
+
+    check(fixture_load("valid-product.neapp", &product) &&
+              fixture_load("same-version-different-content.neapp", &foreign_ui) &&
+              fixture_load("same-native-product-upgrade.neapp", &product_bump),
+          "peek_divergence_load_fixtures");
+    if (product.data == NULL || foreign_ui.data == NULL || product_bump.data == NULL) {
+        goto cleanup;
+    }
+
+    storage_reset();
+    fail_slot_commit(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A);
+    check(install_fixture(&foreign_ui, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN,
+          "peek_stage_capture_interrupted_first_install");
+    clear_slot_fault();
+    stage_key = mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_STAGING);
+    check(stage_key != NULL && stage_key->len <= sizeof(stage_bytes),
+          "peek_stage_capture_present");
+    if (stage_key == NULL || stage_key->len > sizeof(stage_bytes)) {
+        goto cleanup;
+    }
+    stage_len = stage_key->len;
+    memcpy(stage_bytes, stage_key->data, stage_len);
+
+    storage_reset();
+    check(install_fixture(&product, &native, &ui, &state) == APP_PAIR_INSTALL_OK &&
+              state == APP_SIDECAR_LIFECYCLE_ACTIVE,
+          "peek_higher_generation_source_baseline_active");
+    check(install_fixture(&product_bump, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_OK && state == APP_SIDECAR_LIFECYCLE_ACTIVE,
+          "peek_higher_generation_source_upgrade_active");
+    slot_key = mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_B);
+    check(slot_key != NULL && slot_key->len <= sizeof(higher_slot_bytes),
+          "peek_higher_generation_source_slot_b_present");
+    if (slot_key == NULL || slot_key->len > sizeof(higher_slot_bytes)) {
+        goto cleanup;
+    }
+    higher_slot_len = slot_key->len;
+    memcpy(higher_slot_bytes, slot_key->data, higher_slot_len);
+
+    storage_reset();
+    check(install_fixture(&product, &native, &ui, &state) == APP_PAIR_INSTALL_OK &&
+              state == APP_SIDECAR_LIFECYCLE_ACTIVE,
+          "peek_corrupt_case_baseline_active");
+    check(g_io_iface.kv_write(g_io_iface.ctx,
+                              APP_SIDECAR_LIFECYCLE_KEY_STAGING,
+                              stage_bytes, stage_len) == APP_INSTALL_IO_OK,
+          "peek_corrupt_case_stage_reinjected");
+    check(g_io_iface.kv_write(g_io_iface.ctx,
+                              APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_B,
+                              junk, sizeof(junk)) == APP_INSTALL_IO_OK,
+          "peek_corrupt_case_slot_b_overwritten");
+    check(install_fixture(&product, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN,
+          "peek_corrupt_case_failclosed_unknown");
+    check(staging_record_present() == AICAM_TRUE,
+          "peek_corrupt_case_stage_preserved");
+
+    storage_reset();
+    check(install_fixture(&product, &native, &ui, &state) == APP_PAIR_INSTALL_OK &&
+              state == APP_SIDECAR_LIFECYCLE_ACTIVE,
+          "peek_higher_generation_case_baseline_active");
+    check(g_io_iface.kv_write(g_io_iface.ctx,
+                              APP_SIDECAR_LIFECYCLE_KEY_STAGING,
+                              stage_bytes, stage_len) == APP_INSTALL_IO_OK,
+          "peek_higher_generation_case_stage_reinjected");
+    check(g_io_iface.kv_write(g_io_iface.ctx,
+                              APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_B,
+                              higher_slot_bytes, higher_slot_len) ==
+              APP_INSTALL_IO_OK,
+          "peek_higher_generation_case_slot_b_injected");
+    check(install_fixture(&product, &native, &ui, &state) ==
+              APP_PAIR_INSTALL_ERR_CONTENT_CONFLICT,
+          "peek_higher_generation_case_conflict_not_already");
+    check(staging_record_present() == AICAM_TRUE,
+          "peek_higher_generation_case_stage_preserved");
+
+cleanup:
+    fixture_free(&product);
+    fixture_free(&foreign_ui);
+    fixture_free(&product_bump);
+}
+
 int main(void)
 {
     policy_init();
     test_canonical_parser();
     test_admission_fixtures();
     test_product_line();
+    test_interrupted_retry_line();
+    test_same_native_upgrade_blockers();
+    test_peek_failclosed_on_divergence();
     printf("app_product_version: %d checks, %d failures\n", g_checks, g_failures);
     return (g_failures == 0) ? 0 : 1;
 }
