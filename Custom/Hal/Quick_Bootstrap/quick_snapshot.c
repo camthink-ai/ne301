@@ -560,6 +560,13 @@ static void qs_snapshot_thread(void *argument)
         eff_mode = device_service_day_night_capture_prepare(&dn_cfg, s_cfg.isp_mode, &ir_on, &ir_bri);
         if (ir_on) {
             qs_light_set(AICAM_TRUE, ir_bri);
+            /* Give the IR-CUT filter time to complete its mechanical travel
+             * and the IR light to illuminate the scene before the camera
+             * opens. Field data (11-12): RTC-triggered captures had L=0
+             * (sensor saw nothing) while button-triggered captures from the
+             * same scene and firmware were normal. 200ms verified the fix;
+             * 100ms is the current test value. */
+            osDelay(100);
         }
     }
     else if (s_cfg.light_mode != QS_LIGHT_MODE_OFF) {
