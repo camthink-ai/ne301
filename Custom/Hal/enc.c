@@ -345,6 +345,7 @@ static int VENC_H264_Encode(enc_t *enc)
     struct VENC_Context *p_ctx = &VENC_Instance;
     size_t start_len = 0;
     size_t frame_len;
+    int force_intra;
     int ret;
 
     uint8_t *p_out = enc->out_frame.frame_buffer + enc->out_frame.header_size;
@@ -357,7 +358,8 @@ static int VENC_H264_Encode(enc_t *enc)
     }
 
     p_out += start_len;
-    ret = VENC_H264_EncodeFrame(p_ctx, enc->in_buffer, p_out, VENC_OUT_BUFFER_SIZE - start_len, &frame_len, enc->is_intra_force, &enc->out_frame.frame_info);
+    force_intra = __atomic_exchange_n(&enc->is_intra_force, 0, __ATOMIC_ACQ_REL);
+    ret = VENC_H264_EncodeFrame(p_ctx, enc->in_buffer, p_out, VENC_OUT_BUFFER_SIZE - start_len, &frame_len, force_intra, &enc->out_frame.frame_info);
     if (ret)
         return ret;
 
@@ -643,11 +645,10 @@ static void encProcess(void *argument)
         /* update state and notify through event flags */
         osMutexAcquire(enc->state_mtx, osWaitForever);
         if (encode_ret != 0) {
-            enc->is_intra_force = 1;
+            __atomic_store_n(&enc->is_intra_force, 1, __ATOMIC_RELEASE);
             enc->out_frame.data_size = 0;
             enc->state = ENC_COMPLETE; /* even if failed, mark as complete */
         } else {
-            enc->is_intra_force = 0;
             enc->state = ENC_COMPLETE;
         }
         osMutexRelease(enc->state_mtx);
@@ -676,7 +677,7 @@ static int enc_start(void *priv)
         return AICAM_OK;
     }
     enc->state = ENC_IDLE;
-    enc->is_intra_force = 1;
+    __atomic_store_n(&enc->is_intra_force, 1, __ATOMIC_RELEASE);
     enc->startup_failures = 0;
     enc->qp_floor = 0;
     osMutexRelease(enc->state_mtx);
@@ -923,7 +924,7 @@ static int enc_ioctl(void *priv, unsigned int cmd, unsigned char *ubuf, unsigned
              * existing failure-recovery set of is_intra_force; the flag is
              * consumed by the next successful encode and cleared again. */
             osMutexAcquire(enc->state_mtx, osWaitForever);
-            enc->is_intra_force = 1;
+            __atomic_store_n(&enc->is_intra_force, 1, __ATOMIC_RELEASE);
             osMutexRelease(enc->state_mtx);
             ret = AICAM_OK;
             break;

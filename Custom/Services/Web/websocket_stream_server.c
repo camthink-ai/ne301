@@ -804,7 +804,6 @@ static void ws_frame_fifo_drain(void)
         size = s_ws_fifo_meta[s_ws_fifo_tail].size;
         heap = s_ws_fifo_meta[s_ws_fifo_tail].is_heap;
         s_ws_fifo_tail = (s_ws_fifo_tail + 1) % WS_FIFO_SLOTS;
-        s_ws_fifo_count--;
         osMutexRelease(s_ws_fifo_mutex);
 
         osMutexAcquire(g_websocket_server.mutex, osWaitForever);
@@ -893,6 +892,9 @@ static void ws_frame_fifo_drain(void)
         if (join_built && join_buf != data) {
             hal_mem_free(join_buf);
         }
+        osMutexAcquire(s_ws_fifo_mutex, osWaitForever);
+        s_ws_fifo_count--;
+        osMutexRelease(s_ws_fifo_mutex);
     }
 }
 

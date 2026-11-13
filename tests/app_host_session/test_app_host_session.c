@@ -135,6 +135,14 @@ static uint32_t g_v4_read_len;
 static uint32_t g_v4_read_rev;
 static uint8_t g_v4_probe_read_bytes[16];
 static const uint8_t g_committed_probe_bytes[16] = { 1u, 2u, 3u };
+static aicam_bool_t (*g_state_script_original_tx_begin)(void *);
+static int g_state_script_pattern[16];
+static uint32_t g_state_script_pattern_len;
+static uint32_t g_state_script_pattern_pos;
+static uint32_t g_state_script_calls;
+static uint32_t g_state_script_fail_file_read_call;
+static int g_state_stop_during_backoff_triggered;
+static app_session_result_t g_state_stop_during_backoff_rc;
 static const app_host_session_api_table_v4_t *g_v4_api;
 static uint32_t g_v4_table_size;
 static uint32_t g_v4_table_abi;
@@ -644,7 +652,7 @@ static app_session_result_t tb_pair_authorize(void *ctx,
     return APP_SESSION_OK;
 }
 
-static const app_host_session_backend_t g_test_backend = {
+static app_host_session_backend_t g_test_backend = {
     NULL,
     tb_stage_base,
     tb_stage_commit,
@@ -3692,6 +3700,188 @@ static void test_busy_stop_during_retry(void)
     CHECK(g_v4_read_rev == APP_STATE_REVISION_NONE);
 }
 
+static aicam_bool_t state_script_tx_begin(void *ctx)
+{
+    uint32_t call = ++g_state_script_calls;
+    int allow = 1;
+
+    if (g_state_script_pattern_pos < g_state_script_pattern_len) {
+        allow = g_state_script_pattern[g_state_script_pattern_pos++];
+    }
+    if (allow == 0) {
+        return AICAM_FALSE;
+    }
+    if (call == g_state_script_fail_file_read_call) {
+        g_io.fail_next_file_reads++;
+    }
+    return g_state_script_original_tx_begin(ctx);
+}
+
+static void state_script_set(const int *pattern, uint32_t pattern_len,
+                             uint32_t fail_file_read_call)
+{
+    g_state_script_original_tx_begin = g_session_io.tx_begin;
+    memcpy(g_state_script_pattern, pattern,
+           pattern_len * sizeof(g_state_script_pattern[0]));
+    g_state_script_pattern_len = pattern_len;
+    g_state_script_pattern_pos = 0u;
+    g_state_script_calls = 0u;
+    g_state_script_fail_file_read_call = fail_file_read_call;
+    g_session_io.tx_begin_read = g_state_script_original_tx_begin;
+    g_session_io.tx_begin = state_script_tx_begin;
+}
+
+static void state_script_reset(void)
+{
+    g_session_io.tx_begin = g_state_script_original_tx_begin;
+    g_session_io.tx_begin_read = NULL;
+    g_state_script_pattern_len = 0u;
+    g_state_script_pattern_pos = 0u;
+    g_state_script_calls = 0u;
+    g_state_script_fail_file_read_call = 0u;
+}
+
+static void state_script_stop_during_backoff(void *ctx, uint32_t ms)
+{
+    if (g_state_stop_during_backoff_triggered != 0) {
+        tb_sleep_ms(ctx, ms);
+        return;
+    }
+    g_state_stop_during_backoff_triggered = 1;
+    tb.park_release = 1;
+    {
+        app_host_session_stop_out_t stop_out;
+        memset(&stop_out, 0, sizeof(stop_out));
+        g_state_stop_during_backoff_rc = app_host_session_stop(30000u,
+                                                               &stop_out);
+    }
+}
+
+static void state_retry_session_start(void)
+{
+    app_host_session_start_out_t out;
+    app_install_record_t record;
+    uint32_t spins;
+
+    fill_policies();
+    mem_reset();
+    mem_io_init(&g_session_io);
+    app_install_boot_resolve_reset();
+    app_install_set_app_running(AICAM_FALSE);
+    CHECK(install_expected(SESS_PKG_ENABLE, SESS_PKG_ENABLE_LEN,
+                           &record) == APP_INSTALL_OK);
+    tb.v4_body = tb_body_v4_probe;
+    tb.park_release = 0;
+    g_v4_body_called = 0;
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+    for (spins = 0u; spins < 1000u && g_v4_body_called == 0u; spins++) {
+        sleep_ms(1u);
+    }
+    CHECK(g_v4_body_called != 0);
+    {
+        uint8_t blob[16] = { 1u, 2u, 3u };
+        uint32_t revision = 0u;
+        CHECK(g_v4_api->state_commit(blob, sizeof(blob), 0u, &revision) ==
+              APP_STATE_OK);
+        CHECK(revision == 1u);
+    }
+}
+
+static void state_retry_session_stop(void)
+{
+    app_host_session_stop_out_t stop_out;
+
+    state_script_reset();
+    tb.park_release = 1;
+    memset(&stop_out, 0, sizeof(stop_out));
+    CHECK(app_host_session_stop(30000u, &stop_out) == APP_SESSION_OK);
+    CHECK(stop_out.entry_returned == AICAM_TRUE);
+}
+
+static void test_busy_ok_busy_preserves_success(void)
+{
+    static const int pattern[] = { 0, 1, 0, 0, 0, 0, 0 };
+    uint8_t out[16];
+    uint32_t len = 91u;
+    uint32_t revision = 91u;
+    int32_t rc;
+
+    state_retry_session_start();
+    memset(out, 0xCC, sizeof(out));
+    state_script_set(pattern, sizeof(pattern) / sizeof(pattern[0]), 0u);
+    rc = g_v4_api->state_read(out, sizeof(out), &len, &revision);
+    CHECK(rc == APP_STATE_OK);
+    CHECK(len == sizeof(out));
+    CHECK(revision == 1u);
+    CHECK(memcmp(out, g_committed_probe_bytes, sizeof(out)) == 0);
+    CHECK(g_state_script_calls == 2u);
+    state_retry_session_stop();
+}
+
+static void test_busy_terminal_returns_immediately(void)
+{
+    static const int pattern[] = { 0, 1, 0, 0, 0 };
+    uint8_t out[16];
+    uint32_t len = 0u;
+    uint32_t revision = 0u;
+    int32_t rc;
+
+    state_retry_session_start();
+    state_script_set(pattern, sizeof(pattern) / sizeof(pattern[0]), 2u);
+    rc = g_v4_api->state_read(out, sizeof(out), &len, &revision);
+    CHECK(rc == APP_STATE_STORAGE_UNKNOWN);
+    CHECK(g_state_script_calls == 2u);
+    state_retry_session_stop();
+}
+
+static void test_sustained_busy_expires_budget(void)
+{
+    static const int pattern[] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    uint8_t out[16];
+    uint32_t len = 0u;
+    uint32_t revision = 0u;
+    uint32_t start;
+    uint32_t elapsed;
+    int32_t rc;
+
+    state_retry_session_start();
+    state_script_set(pattern, sizeof(pattern) / sizeof(pattern[0]), 0u);
+    start = mono_ms();
+    rc = g_v4_api->state_read(out, sizeof(out), &len, &revision);
+    elapsed = mono_ms() - start;
+    CHECK(rc == APP_STATE_BUSY);
+    CHECK(g_state_script_calls == 5u);
+    CHECK(elapsed >= 140u && elapsed < 1000u);
+    state_retry_session_stop();
+}
+
+static void test_authorization_change_during_backoff(void)
+{
+    static const int pattern[] = { 0 };
+    uint8_t out[16];
+    uint32_t len = 99u;
+    uint32_t revision = 99u;
+    uint32_t calls;
+    int32_t rc;
+
+    state_retry_session_start();
+    memset(out, 0xCC, sizeof(out));
+    state_script_set(pattern, sizeof(pattern) / sizeof(pattern[0]), 0u);
+    g_state_stop_during_backoff_triggered = 0;
+    g_state_stop_during_backoff_rc = APP_SESSION_ERR_BUSY;
+    g_test_backend.sleep_ms = state_script_stop_during_backoff;
+    rc = g_v4_api->state_read(out, sizeof(out), &len, &revision);
+    g_test_backend.sleep_ms = tb_sleep_ms;
+    calls = g_state_script_calls;
+    state_script_reset();
+    CHECK(g_state_stop_during_backoff_triggered != 0);
+    CHECK(g_state_stop_during_backoff_rc == APP_SESSION_OK);
+    CHECK(rc == -3);
+    CHECK(len == 0u && revision == 0u);
+    CHECK(calls == 1u);
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -3707,6 +3897,14 @@ int main(void)
     test_busy_first_read_real_query_race();
     reset_all();
     test_busy_stop_during_retry();
+    reset_all();
+    test_busy_ok_busy_preserves_success();
+    reset_all();
+    test_busy_terminal_returns_immediately();
+    reset_all();
+    test_sustained_busy_expires_budget();
+    reset_all();
+    test_authorization_change_during_backoff();
     reset_all();
 
     setvbuf(stdout, NULL, _IOLBF, 0);

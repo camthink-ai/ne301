@@ -794,6 +794,9 @@ static int32_t sess_api_state_read(void *out, uint32_t cap,
             rc = app_state_read(&g_state_session, out, cap, actual_len,
                                 out_revision);
             attempt++;
+            if (rc != APP_STATE_BUSY) {
+                break;
+            }
         }
     }
     if (rc == APP_STATE_OK && out != NULL && actual_len != NULL &&
@@ -813,6 +816,7 @@ static int32_t sess_api_state_read(void *out, uint32_t cap,
     }
     sess_lock();
     allowed = (aicam_bool_t)(g_is_v3 == AICAM_TRUE &&
+                             g_session_generation == gen0 &&
                              (g_state == APP_SESSION_STATE_RUNNING ||
                               g_state == APP_SESSION_STATE_STOPPING));
     sess_unlock();
