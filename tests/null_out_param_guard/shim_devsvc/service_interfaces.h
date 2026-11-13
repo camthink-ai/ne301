@@ -1,0 +1,20 @@
+/* Host shim: minimal service_interfaces.h for device_service.h (state enum only). */
+#ifndef SERVICE_INTERFACES_H
+#define SERVICE_INTERFACES_H
+
+#include "aicam_types.h"
+
+typedef enum {
+    SERVICE_STATE_UNINITIALIZED = 0,
+    SERVICE_STATE_INITIALIZING,
+    SERVICE_STATE_INITIALIZED,
+    SERVICE_STATE_CONNECTED,
+    SERVICE_STATE_DISCONNECTED,
+    SERVICE_STATE_WAIT_RECONNECT,
+    SERVICE_STATE_RUNNING,
+    SERVICE_STATE_SUSPENDED,
+    SERVICE_STATE_ERROR,
+    SERVICE_STATE_SHUTDOWN
+} service_state_t;
+
+#endif /* SERVICE_INTERFACES_H */

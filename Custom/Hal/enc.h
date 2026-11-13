@@ -39,6 +39,7 @@ typedef enum {
     ENC_CMD_INPUT_BUFFER,
     ENC_CMD_OUTPUT_BUFFER,
     ENC_CMD_OUTPUT_FRAME,
+    ENC_CMD_FORCE_INTRA,
 } ENC_CMD_E;
 
 typedef enum {

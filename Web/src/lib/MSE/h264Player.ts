@@ -6,6 +6,11 @@ import {
 } from './constant'
 import browser from './utils/myBrowser.js';
 import MsMediaSource from './media'
+import {
+    evaluateNoValidFrameWatchdog,
+    isSocketLive,
+    type WatchdogSnapshot,
+} from './watchdog';
 import { sleep } from '@/utils/index.js';
 import { logStreamError } from '@/services/request';
 
@@ -73,11 +78,12 @@ interface ReturnResult {
 }
 
 interface WsWorkerMessage {
-    type: 'connecting' | 'open' | 'close' | 'error' | 'reconnect' | 'video-data';
+    type: 'connecting' | 'open' | 'close' | 'error' | 'reconnect' | 'reconnect-exhausted' | 'video-data';
     error?: string;
     payload?: ArrayBuffer;
     code?: number;
     reason?: string;
+    attempts?: number;
 }
 
 interface DecWorkerMessage {
@@ -131,7 +137,11 @@ export default class H264Player {
 
     private videoElement: HTMLVideoElement | null = null;
 
-    private wsRetryCount: number = 3;
+    private wsOpenAt: number | null = null;
+
+    private wsReconnectPending: boolean = false;
+
+    private wsGiveUp: boolean = false;
 
     private wsUrl: string = '';
 
@@ -238,7 +248,9 @@ export default class H264Player {
         this.creatVideoPlayer();
         this.webSocketWorker = null;
         this.decodeWorker = null;
-        this.wsRetryCount = 3;
+        this.wsOpenAt = null;
+        this.wsReconnectPending = false;
+        this.wsGiveUp = false;
         this.wsUrl = '';
         this.isStarted = false;
         this.isConnected = false;
@@ -276,6 +288,10 @@ export default class H264Player {
                     break;
                 case 'open':
                     // Connected: hide loading
+                    this.wsOpenAt = Date.now();
+                    this.wsReconnectPending = false;
+                    this.wsGiveUp = false;
+                    this.lastValidFrameAt = 0;
                     logStreamError('WS', 'open', '', 'connected');
                     window.dispatchEvent(new CustomEvent('wv_work', { detail: true }));
                     window.dispatchEvent(new CustomEvent('wv_open'));
@@ -284,6 +300,9 @@ export default class H264Player {
                     window.dispatchEvent(new CustomEvent('wv_close', {
                         detail: { code: msg.code, reason: msg.reason }
                     }));
+                    this.wsOpenAt = null;
+                    this.wsReconnectPending = false;
+                    this.wsGiveUp = true;
                     if (msg.reason === 'Connection replaced') {
                         logStreamError('WS', 'replaced', String(msg.code ?? ''), msg.reason || '');
                     }
@@ -291,17 +310,25 @@ export default class H264Player {
                 case 'reconnect':
                     // Unexpected socket close while streaming (network drop /
                     // radio hole); the worker is reconnecting on its own.
+                    this.wsOpenAt = null;
+                    this.wsReconnectPending = true;
                     logStreamError('WS', 'reconnect', String(msg.code ?? ''), msg.reason || 'unexpected close');
                     break;
                 case 'error':
                     window.dispatchEvent(new CustomEvent('wv_error', { detail: msg.error }));
                     logStreamError('WS', 'socket-error', '', msg.error || 'ws error');
-                    // Keep loading visible while retrying
+                    // Keep loading visible while the worker's bounded backoff retries
                     window.dispatchEvent(new CustomEvent('wv_work', { detail: false }));
-                    this.wsRetryCount -= 1;
-                    if (this.wsRetryCount > 0) {
-                        this.resetStartState().start(this.wsUrl);
-                    }
+                    break;
+                case 'reconnect-exhausted':
+                    // Bounded reconnect attempts exhausted after a network drop;
+                    // session state is preserved for manual retry (no teardown loop).
+                    this.wsOpenAt = null;
+                    this.wsReconnectPending = false;
+                    this.wsGiveUp = true;
+                    logStreamError('WS', 'reconnect-exhausted', String(msg.attempts ?? ''), 'bounded backoff exhausted; session preserved');
+                    window.dispatchEvent(new CustomEvent('wv_error', { detail: 'reconnect-exhausted' }));
+                    window.dispatchEvent(new CustomEvent('wv_work', { detail: false }));
                     break;
                 case 'video-data': {
                     // Count packets per second
@@ -421,6 +448,9 @@ export default class H264Player {
         this.connectionStartedAt = Date.now();
         this.lastValidFrameAt = 0;
         this.playbackStallStartedAt = 0;
+        this.wsOpenAt = null;
+        this.wsReconnectPending = false;
+        this.wsGiveUp = false;
         this.initWorkers();
         this.wsConnect(url);
         this.decodeWorker?.postMessage({ type: 'init' });
@@ -491,13 +521,30 @@ export default class H264Player {
                 this.connectionStartedAt = now;
                 this.lastValidFrameAt = this.lastValidFrameAt > 0 ? now : 0;
                 this.playbackStallStartedAt = 0;
+                this.wsOpenAt = this.wsOpenAt !== null ? now : null;
                 return;
             }
 
-            const referenceTime = this.lastValidFrameAt || this.connectionStartedAt;
-            const timeoutMs = this.lastValidFrameAt > 0 ? 5000 : 8000;
-            if (referenceTime > 0 && now - referenceTime >= timeoutMs) {
-                this.triggerRecovery('no-valid-frame');
+            const snapshot: WatchdogSnapshot = {
+                nowMs: now,
+                connectionStartedAtMs: this.connectionStartedAt,
+                wsOpenAtMs: this.wsOpenAt,
+                wsReconnectPending: this.wsReconnectPending,
+                wsGiveUp: this.wsGiveUp,
+                lastValidFrameAtMs: this.lastValidFrameAt,
+            };
+            const decision = evaluateNoValidFrameWatchdog(snapshot);
+            if (decision.action === 'recover') {
+                this.triggerRecovery(decision.reason);
+                return;
+            }
+
+            // While the worker's bounded backoff owns reconnection the player
+            // must not tear the pipeline down (a rebuild kills the backoff and
+            // re-arms the device-side join gate, amplifying the outage).
+            if (!isSocketLive(snapshot)) {
+                this.playbackStallStartedAt = 0;
+                this.decodedStallStartedAt = 0;
                 return;
             }
 
@@ -575,7 +622,6 @@ export default class H264Player {
         this.packetCount = 0;
         this.packetsPerSecond = 0;
         this.lastPacketSec = 0;
-        this.wsRetryCount = 3;
 
         if (this.webSocketWorker) {
             this.wsDisconnect();

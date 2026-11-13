@@ -29,8 +29,12 @@ LIB_OBJS := $(addprefix $(BUILD_DIR)/mbedtls_,$(notdir $(LIB_SRCS:.c=.o)))
 SRCS := test_app_report_uninstall.c \
         $(APPHOST)/app_report_service.c \
         $(APPHOST)/app_report_service_device.c \
+        $(APPHOST)/app_report_schema_lc.c \
         $(APPHOST)/app_report_policy.c \
         $(APPHOST)/app_installer.c \
+        $(APPHOST)/app_sidecar_verify.c \
+        $(APPHOST)/app_sidecar_lifecycle.c \
+        $(APPHOST)/app_pair_installer.c \
         $(APPHOST)/app_state_store.c \
         $(APPHOST)/app_admission.c \
         $(REPO_ROOT)/Custom/Common/Utils/generic_math.c
@@ -57,8 +61,6 @@ $(BUILD_DIR)/test_app_report_uninstall.o: test_app_report_uninstall.c | $(BUILD_
 
 $(BUILD_DIR)/%.o: $(APPHOST)/%.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/app_installer.o: $(APPHOST)/app_sidecar_verify.c $(APPHOST)/app_sidecar_lifecycle.c $(APPHOST)/app_pair_installer.c
 
 $(BUILD_DIR)/generic_math.o: $(REPO_ROOT)/Custom/Common/Utils/generic_math.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@

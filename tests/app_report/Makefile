@@ -24,9 +24,10 @@ LIFECYCLE_CFLAGS := -DAPP_REPORT_DEV_PUMP_PERIOD_MS=20 \
 
 STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -pthread $(INC) $(DEFS)
 
-CORE_OBJS := app_report_service.o app_report_service_device.o app_report_policy.o
+CORE_OBJS := app_report_service.o app_report_service_device.o app_report_policy.o \
+             app_report_schema_lc.o
 
-INSTALL_OBJS := app_installer.o app_state_store.o app_admission.o generic_math.o
+INSTALL_OBJS := app_installer.o app_sidecar_verify.o app_sidecar_lifecycle.o app_pair_installer.o app_state_store.o app_admission.o generic_math.o
 
 LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
@@ -42,14 +43,18 @@ DEV_STUB_HDRS := $(GEN_DIR)/cmsis_os2.h \
                  $(GEN_DIR)/storage.h
 
 .PHONY: test clean
-test: test_app_report test_app_report_policy
+test: test_app_report test_app_report_policy test_app_report_schema
 	./test_app_report
 	./test_app_report_policy
+	./test_app_report_schema
 
 test_app_report: test_app_report.o $(CORE_OBJS) $(INSTALL_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) $(LIFECYCLE_CFLAGS) -o $@ $^
 
-test_app_report_policy: test_app_report_policy.o app_report_service.o app_report_policy.o $(INSTALL_OBJS) $(MBOBJS)
+test_app_report_policy: test_app_report_policy.o app_report_service.o app_report_schema_lc.o app_report_policy.o $(INSTALL_OBJS) $(MBOBJS)
+	$(CC) $(STRICT_CFLAGS) -o $@ $^
+
+test_app_report_schema: test_app_report_schema.o app_report_schema_lc.o app_report_service.o app_report_policy.o $(INSTALL_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $^
 
 test_app_report.o: test_app_report.c $(APPHOST)/app_report_service.h $(APPHOST)/app_report_service_device.h $(DEV_STUB_HDRS)
@@ -58,7 +63,13 @@ test_app_report.o: test_app_report.c $(APPHOST)/app_report_service.h $(APPHOST)/
 test_app_report_policy.o: test_app_report_policy.c $(APPHOST)/app_report_service.h $(APPHOST)/app_report_policy.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
-app_report_service.o: $(APPHOST)/app_report_service.c $(APPHOST)/app_report_service.h
+test_app_report_schema.o: test_app_report_schema.c $(APPHOST)/app_report_schema.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_report_service.o: $(APPHOST)/app_report_service.c $(APPHOST)/app_report_service.h $(APPHOST)/app_report_schema.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_report_schema_lc.o: $(APPHOST)/app_report_schema_lc.c $(APPHOST)/app_report_schema.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_report_service_device.o: $(APPHOST)/app_report_service_device.c $(APPHOST)/app_report_service_device.h $(APPHOST)/app_report_service.h $(DEV_STUB_HDRS)
@@ -67,7 +78,16 @@ app_report_service_device.o: $(APPHOST)/app_report_service_device.c $(APPHOST)/a
 app_report_policy.o: $(APPHOST)/app_report_policy.c $(APPHOST)/app_report_policy.h $(APPHOST)/app_report_service.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
-app_installer.o: $(APPHOST)/app_installer.c $(APPHOST)/app_installer.h
+app_installer.o: $(APPHOST)/app_installer.c $(APPHOST)/app_installer.h $(APPHOST)/app_installer_internal.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_sidecar_verify.o: $(APPHOST)/app_sidecar_verify.c $(APPHOST)/app_sidecar_verify.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_sidecar_lifecycle.o: $(APPHOST)/app_sidecar_lifecycle.c $(APPHOST)/app_sidecar_lifecycle.h $(APPHOST)/app_installer_internal.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_pair_installer.o: $(APPHOST)/app_pair_installer.c $(APPHOST)/app_pair_installer.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_admission.o: $(APPHOST)/app_admission.c $(APPHOST)/app_admission.h
@@ -187,4 +207,4 @@ gen-stamp: Makefile
 	@touch $@
 
 clean:
-	rm -rf build test_app_report test_app_report_policy *.o $(GEN_DIR) gen-stamp
+	rm -rf build test_app_report test_app_report_policy test_app_report_schema *.o $(GEN_DIR) gen-stamp

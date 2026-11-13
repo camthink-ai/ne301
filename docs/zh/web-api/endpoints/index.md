@@ -28,4 +28,6 @@ title: API 端点总览
 | [模型校验](./model_validation.md) | AI 模型包的校验与验证 | 2 |
 | [app_control](./app_control.md) |  | 4 |
 | [app_install](./app_install.md) |  | 4 |
-| [app_session](./app_session.md) |  | 9 |
+| [app_report](./app_report.md) |  | 1 |
+| [app_session](./app_session.md) |  | 3 |
+| [app_sidecar_bridge](./app_sidecar_bridge.md) |  | 5 |

@@ -6,7 +6,7 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 APP_SHA = "9a5db17cfba6f8ab52d17b031784e71c66a5ab32"
 STUDY = Path(__file__).resolve().parent
 

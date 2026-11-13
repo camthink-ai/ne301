@@ -63,39 +63,6 @@ static const api_route_t g_app_control_routes[] = {
     }
 };
 
-static aicam_result_t app_control_respond_json(http_handler_context_t *ctx, cJSON *root,
-                                               const char *message)
-{
-    char *response_text;
-    aicam_result_t rc;
-
-    response_text = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (response_text == NULL) {
-        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-    }
-    rc = api_response_success(ctx, response_text, message);
-    if (rc != AICAM_OK) {
-        free(response_text);
-    }
-    return rc;
-}
-
-static aicam_bool_t app_control_get_u32(cJSON *item, uint32_t *out)
-{
-    double v;
-
-    if (item == NULL || !cJSON_IsNumber(item) || item->valuedouble < 0.0) {
-        return AICAM_FALSE;
-    }
-    v = item->valuedouble;
-    if (v > 4294967295.0 || v != (double)((uint32_t)v)) {
-        return AICAM_FALSE;
-    }
-    *out = (uint32_t)v;
-    return AICAM_TRUE;
-}
-
 static void app_control_add_command(cJSON *root)
 {
     app_control_status_t st;
@@ -162,11 +129,11 @@ static aicam_bool_t app_control_parse_common(cJSON *body, app_control_submit_t *
     sub->msg_type = msg_type;
     id_item = cJSON_GetObjectItem(body, "request_id");
     gen_item = cJSON_GetObjectItem(body, "expected_config_generation");
-    if (app_control_get_u32(id_item, &sub->request_id) != AICAM_TRUE ||
+    if (api_json_get_u32(id_item, &sub->request_id) != AICAM_TRUE ||
         sub->request_id == 0u) {
         return AICAM_FALSE;
     }
-    if (app_control_get_u32(gen_item, &sub->expected_config_generation) != AICAM_TRUE ||
+    if (api_json_get_u32(gen_item, &sub->expected_config_generation) != AICAM_TRUE ||
         sub->expected_config_generation == 0u) {
         return AICAM_FALSE;
     }
@@ -340,7 +307,7 @@ static aicam_result_t app_control_submit_handler(http_handler_context_t *ctx,
                                 app_host_control_register_result_str(sub.reg_result));
     }
     app_control_add_command(response_json);
-    return app_control_respond_json(ctx, response_json,
+    return api_response_json(ctx, response_json,
                                     "App control submit completed with result");
 }
 
@@ -373,7 +340,7 @@ static aicam_result_t app_control_status_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
     }
     app_control_add_command(root);
-    return app_control_respond_json(ctx, root, "App control status");
+    return api_response_json(ctx, root, "App control status");
 }
 
 static aicam_result_t app_control_snapshot_handler(http_handler_context_t *ctx)
@@ -411,7 +378,7 @@ static aicam_result_t app_control_snapshot_handler(http_handler_context_t *ctx)
     if (rc == APP_CONTROL_NOT_FOUND) {
         free(payload_buf);
         cJSON_AddStringToObject(root, "availability", "unavailable");
-        return app_control_respond_json(ctx, root, "App business snapshot");
+        return api_response_json(ctx, root, "App business snapshot");
     }
     if (rc != APP_CONTROL_OK || payload_len != view.payload_len) {
         free(payload_buf);
@@ -438,7 +405,7 @@ static aicam_result_t app_control_snapshot_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
     }
     free(payload_buf);
-    return app_control_respond_json(ctx, root, "App business snapshot");
+    return api_response_json(ctx, root, "App business snapshot");
 }
 
 aicam_result_t web_api_register_app_control_module(void)

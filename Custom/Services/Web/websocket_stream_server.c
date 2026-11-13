@@ -20,6 +20,8 @@
 #include "cmsis_os2.h"
 #include "drtc.h"
 #include "Services/Video/video_stream_hub.h"
+#include "dev_manager.h"
+#include "enc.h"
 
 #define MAX_CLIENTS 2
 #define MAX_FRAME_SIZE (1024 * 512)
@@ -72,6 +74,11 @@ static struct {
     uint32_t frame_sequence;
     uint64_t stream_start_time_ms;
     uint32_t stream_frame_counter;
+    /* Bumped under the mutex on every start_stream. The drain write-back
+     * completes a join only against the session it snapshotted: the mutex is
+     * released across mg_ws_send, so a start_stream that re-arms every
+     * client (fresh SPS/PPS session) may land inside that window. */
+    uint32_t stream_generation;
     
     // Statistics
     websocket_stream_stats_t stats;
@@ -89,6 +96,13 @@ static struct {
 } g_websocket_server = {0};
 
 #define WS_BROADCAST_ID  ((unsigned long)-1)
+
+/* Dedicated lock for the frame FIFO below: the producer (encoder pipeline
+ * thread, ws_stream_on_hub_frame) and the consumer (web task drain) must
+ * never serialize on g_websocket_server.mutex, whose critical sections also
+ * cover client-array state and can be taken by API tasks. Lock order when
+ * nested: g_websocket_server.mutex -> s_ws_fifo_mutex (never the reverse). */
+static osMutexId_t s_ws_fifo_mutex;
 
 struct MessageData {
        void *buf;
@@ -176,7 +190,7 @@ void websocket_stream_get_default_config(websocket_stream_config_t *config) {
     strncpy(config->stream_path, "/stream", sizeof(config->stream_path) - 1);
     config->stream_path[sizeof(config->stream_path) - 1] = '\0';
     
-    config->task_priority = (uint32_t)osPriorityRealtime;
+    config->task_priority = (uint32_t)osPriorityNormal;
     config->task_stack_size = 4096;
     config->ping_interval_ms = 30000;     // 30 seconds ping interval (less aggressive)
     config->pong_timeout_ms = 10000;      // 10 seconds pong timeout (more tolerant)
@@ -206,6 +220,12 @@ aicam_result_t websocket_stream_server_init(const websocket_stream_config_t *con
     // 1. Create mutex
     g_websocket_server.mutex = osMutexNew(NULL);
     if (!g_websocket_server.mutex) {
+        return AICAM_ERROR;
+    }
+
+    s_ws_fifo_mutex = osMutexNew(NULL);
+    if (!s_ws_fifo_mutex) {
+        osMutexDelete(g_websocket_server.mutex);
         return AICAM_ERROR;
     }
     
@@ -245,6 +265,11 @@ aicam_result_t websocket_stream_server_deinit(void) {
     if (g_websocket_server.mutex) {
         osMutexDelete(g_websocket_server.mutex);
         g_websocket_server.mutex = NULL;
+    }
+
+    if (s_ws_fifo_mutex) {
+        osMutexDelete(s_ws_fifo_mutex);
+        s_ws_fifo_mutex = NULL;
     }
     
     mg_mgr_free(&g_websocket_server.mgr);
@@ -344,6 +369,7 @@ aicam_result_t websocket_stream_server_start_stream(uint32_t stream_id) {
     for (uint32_t i = 0; i < g_websocket_server.config.max_clients; i++) {
         g_websocket_server.clients[i].sps_synced = AICAM_FALSE;
     }
+    g_websocket_server.stream_generation++;
     
     osMutexRelease(g_websocket_server.mutex);
     
@@ -553,7 +579,8 @@ static void ws_stream_server_task(void *argument) {
  * frame while mg_ws_send was reading it -> torn frame at every client
  * (WebKit: MEDIA_ERR_DECODE; Chromium conceals).
  * Frames are now COPIED into private PSRAM ring slots in the producer task
- * (encoder context, mutex held) and drained by the web task on MG_EV_POLL -
+ * (encoder context, under s_ws_fifo_mutex) and drained by the web task on
+ * MG_EV_POLL -
  * the copy can no longer be overwritten by the encoder.
  * Overflow policy: drop new frames and resume at the next keyframe so P
  * chains stay decodable (drops counted). */
@@ -573,16 +600,21 @@ static uint32_t s_ws_fifo_head = 0, s_ws_fifo_tail = 0, s_ws_fifo_count = 0;
 static aicam_bool_t s_ws_fifo_skip_until_key = AICAM_FALSE;
 static uint32_t s_ws_fifo_drops = 0;
 
-/* Producer (encoder task, g_websocket_server.mutex already held). */
+/* Producer side: runs in the encoder pipeline thread. Takes s_ws_fifo_mutex
+ * internally (never g_websocket_server.mutex), so web-task socket work cannot
+ * delay the producer. */
 static void ws_frame_fifo_push(const void *packet, size_t size)
 {
     const websocket_frame_header_t *hdr = (const websocket_frame_header_t *) packet;
+
+    osMutexAcquire(s_ws_fifo_mutex, osWaitForever);
 
     /* Drop decisions FIRST - anything allocated below must be guaranteed a
      * slot in the fifo or we leak it. */
     if (s_ws_fifo_skip_until_key) {
         if (hdr->frame_type != WS_FRAME_TYPE_H264_KEY) {
             s_ws_fifo_drops++;
+            osMutexRelease(s_ws_fifo_mutex);
             return; /* wait for a clean restart point */
         }
         s_ws_fifo_skip_until_key = AICAM_FALSE;
@@ -591,6 +623,7 @@ static void ws_frame_fifo_push(const void *packet, size_t size)
     if (s_ws_fifo_count == WS_FIFO_SLOTS) {
         s_ws_fifo_drops++;
         s_ws_fifo_skip_until_key = AICAM_TRUE;
+        osMutexRelease(s_ws_fifo_mutex);
         LOG_SVC_WARN("WS fifo full, dropping until next keyframe (total drops %lu)",
                      (unsigned long) s_ws_fifo_drops);
         return;
@@ -606,6 +639,7 @@ static void ws_frame_fifo_push(const void *packet, size_t size)
         if (copy_dst == NULL) {
             s_ws_fifo_drops++;
             s_ws_fifo_skip_until_key = AICAM_TRUE;
+            osMutexRelease(s_ws_fifo_mutex);
             LOG_SVC_WARN("WS fifo: frame %lu > slot %lu and alloc failed, dropped (total %lu)",
                          (unsigned long) size, (unsigned long) WS_FIFO_SLOT_SIZE,
                          (unsigned long) s_ws_fifo_drops);
@@ -620,6 +654,8 @@ static void ws_frame_fifo_push(const void *packet, size_t size)
     s_ws_fifo_meta[s_ws_fifo_head].is_heap = is_heap;
     s_ws_fifo_head = (s_ws_fifo_head + 1) % WS_FIFO_SLOTS;
     s_ws_fifo_count++;
+
+    osMutexRelease(s_ws_fifo_mutex);
 }
 
 
@@ -651,9 +687,10 @@ static uint8_t *ws_build_join_frame(const uint8_t *fifo_frame, uint32_t size,
     uint32_t key_size = size - (uint32_t) hdr_size;
     uint32_t params_size = 4 + hub_sp.sps_size + 4 + hub_sp.pps_size;
 
-    /* Called with the ws mutex held; lock order ws->hub is safe because the
-     * hub never holds its mutex while calling back into this server
-     * (notify_frame/notify_sps_pps snapshot-and-release). */
+    /* Called with no ws-side mutex held; it only takes the hub mutex via
+     * video_hub_get_sps_pps, and the hub never holds its mutex while calling
+     * back into this server (notify_frame/notify_sps_pps
+     * snapshot-and-release), so no lock-order cycle is possible. */
     uint8_t *buf = hal_mem_alloc_large(hdr_size + params_size + key_size);
     if (buf == NULL) {
         LOG_SVC_WARN("WS join-sync: alloc failed, sending bare keyframe");
@@ -675,9 +712,79 @@ static uint8_t *ws_build_join_frame(const uint8_t *fifo_frame, uint32_t size,
     return buf;
 }
 
-/* Consumer (web task, MG_EV_POLL): send queued frames to all live clients. */
+/* Consumer (web task, MG_EV_POLL): send queued frames to all live clients.
+ * The frame is popped under s_ws_fifo_mutex and mg_ws_send runs WITHOUT
+ * g_websocket_server.mutex so the producer never waits on a lock that is
+ * held across socket iobuf work. Connection and client-array state is only
+ * mutated inside this task (single mongoose event loop), so sending against
+ * a snapshot taken under the mutex is safe; only sps_synced (reset by
+ * start_stream on an API task) is written back under the mutex. */
+#define WS_DRAIN_TARGETS_MAX 8
+typedef struct {
+    struct mg_connection *conn;
+    uint32_t slot;
+    uint32_t client_id;
+    aicam_bool_t sps_synced;
+    uint32_t stream_gen;
+} ws_drain_target_t;
+
+/* ==================== Late-joiner IDR acceleration (#193 P0) =============
+ * A client with sps_synced=false receives NOTHING until the next keyframe
+ * reaches the FIFO, so the join wait is up to one full GOP (gop_len = fps-1,
+ * enc.c:382 => every 30th encoded frame). The browser frontend tears the
+ * connection down after 8s without a valid frame (h264Player.ts no-valid-
+ * frame watchdog) and reconnects - which re-arms the gate from scratch.
+ * Under browser-induced pipeline load the effective hub->FIFO push rate
+ * drops from ~25/s to ~0.5-12/s (e2b_604 campaign samples), stretching the
+ * IDR inter-arrival past that watchdog: every attempt dies before the join
+ * frame arrives (bimodal fast/never join; reconnect loops). Asking the
+ * encoder to code the NEXT frame as IDR collapses the wait to one frame
+ * period regardless of rate. Rate-limited so a flapping client cannot
+ * trigger an IDR storm; a missing/stopped encoder device just falls back
+ * to the original wait-for-GOP behavior. */
+#define WS_JOIN_IDR_REQUEST_MIN_MS 2000
+
+/* Runs in the web task (drain path). Takes only the encoder state mutex
+ * via the ioctl - never a ws-side lock - so it cannot deadlock against
+ * this server's lock order (g_websocket_server.mutex -> s_ws_fifo_mutex). */
+static void ws_request_join_idr(void)
+{
+    static uint64_t last_req_ms = 0;
+    uint64_t now_ms = get_relative_timestamp();
+    if (last_req_ms != 0 && now_ms - last_req_ms < WS_JOIN_IDR_REQUEST_MIN_MS) {
+        return;
+    }
+    last_req_ms = now_ms;
+
+    device_t *enc_dev = device_find_pattern(ENC_DEVICE_NAME, DEV_TYPE_VIDEO);
+    if (enc_dev == NULL) {
+        return;
+    }
+    (void)device_ioctl(enc_dev, ENC_CMD_FORCE_INTRA, NULL, 0);
+}
+
 static void ws_frame_fifo_drain(void)
 {
+    /* Join acceleration: while a connected client still waits for its join
+     * frame, keep the next encoded frame an IDR. Checked on every poll tick
+     * even when the FIFO is momentarily empty - the degraded-rate case
+     * (frames seconds apart) is exactly when the GOP-long wait hurts. */
+    {
+        aicam_bool_t unsynced_waiter = AICAM_FALSE;
+        osMutexAcquire(g_websocket_server.mutex, osWaitForever);
+        for (uint32_t i = 0; i < g_websocket_server.config.max_clients; i++) {
+            if (g_websocket_server.clients[i].is_active &&
+                !g_websocket_server.clients[i].sps_synced) {
+                unsynced_waiter = AICAM_TRUE;
+                break;
+            }
+        }
+        osMutexRelease(g_websocket_server.mutex);
+        if (unsynced_waiter && g_websocket_server.stream_active) {
+            ws_request_join_idr();
+        }
+    }
+
     for (;;) {
         uint8_t *data;
         uint32_t size;
@@ -685,27 +792,44 @@ static void ws_frame_fifo_drain(void)
         uint8_t *join_buf = NULL;
         size_t join_size = 0;
         aicam_bool_t join_built = AICAM_FALSE;
+        ws_drain_target_t targets[WS_DRAIN_TARGETS_MAX];
+        uint32_t target_count = 0;
 
-        osMutexAcquire(g_websocket_server.mutex, osWaitForever);
+        osMutexAcquire(s_ws_fifo_mutex, osWaitForever);
         if (s_ws_fifo_count == 0) {
-            osMutexRelease(g_websocket_server.mutex);
+            osMutexRelease(s_ws_fifo_mutex);
             return;
         }
         data = s_ws_fifo_meta[s_ws_fifo_tail].data;
         size = s_ws_fifo_meta[s_ws_fifo_tail].size;
         heap = s_ws_fifo_meta[s_ws_fifo_tail].is_heap;
         s_ws_fifo_tail = (s_ws_fifo_tail + 1) % WS_FIFO_SLOTS;
-        s_ws_fifo_count--;
+        osMutexRelease(s_ws_fifo_mutex);
 
-        for (uint32_t i = 0; i < g_websocket_server.config.max_clients; i++) {
+        osMutexAcquire(g_websocket_server.mutex, osWaitForever);
+        uint32_t scan_count = g_websocket_server.config.max_clients;
+        if (scan_count > WS_DRAIN_TARGETS_MAX) {
+            scan_count = WS_DRAIN_TARGETS_MAX;
+        }
+        for (uint32_t i = 0; i < scan_count; i++) {
             websocket_client_t *client = &g_websocket_server.clients[i];
             struct mg_connection *conn = client->conn;
-            if (!(client->is_active &&
-                  conn &&
-                  !conn->is_closing &&
-                  ws_stream_is_client_alive(client))) {
-                continue;
+            if (client->is_active &&
+                conn &&
+                !conn->is_closing &&
+                ws_stream_is_client_alive(client)) {
+                targets[target_count].conn = conn;
+                targets[target_count].slot = i;
+                targets[target_count].client_id = client->client_id;
+                targets[target_count].sps_synced = client->sps_synced;
+                targets[target_count].stream_gen = g_websocket_server.stream_generation;
+                target_count++;
             }
+        }
+        osMutexRelease(g_websocket_server.mutex);
+
+        for (uint32_t t = 0; t < target_count; t++) {
+            struct mg_connection *conn = targets[t].conn;
             /* Backpressure cap: a client that stops reading (abrupt
              * disconnect before ping/pong detects it) would otherwise
              * accumulate mg_ws_send data in conn->send unboundedly - the
@@ -715,11 +839,11 @@ static void ws_frame_fifo_drain(void)
             if (conn->send.len >= WS_SEND_BUF_CAP) {
                 LOG_SVC_WARN("WS send-buffer cap hit (%lu bytes), dropping frame for client %u",
                              (unsigned long) conn->send.len,
-                             client->client_id);
+                             targets[t].client_id);
                 continue;
             }
 
-            if (!client->sps_synced) {
+            if (!targets[t].sps_synced) {
                 /* Late joiner: hold P-frames until a keyframe, then send
                  * SPS/PPS + that keyframe as one frame. Without this the
                  * client never gets parameter sets (encoder emits them
@@ -741,22 +865,36 @@ static void ws_frame_fifo_drain(void)
                     join_built = AICAM_TRUE;
                 }
                 mg_ws_send(conn, join_buf, join_size, WEBSOCKET_OP_BINARY);
-                client->sps_synced = AICAM_TRUE;
+                osMutexAcquire(g_websocket_server.mutex, osWaitForever);
+                /* The mutex was released across mg_ws_send, so start_stream
+                 * may have re-armed this client (new session) or the slot may
+                 * have been reassigned to a new connection in between: only
+                 * the session and connection that were snapshotted may
+                 * complete the join, otherwise the fresh re-sync request is
+                 * lost and the client never sees the new SPS/PPS. */
+                if (g_websocket_server.stream_generation == targets[t].stream_gen &&
+                    g_websocket_server.clients[targets[t].slot].client_id ==
+                        targets[t].client_id) {
+                    g_websocket_server.clients[targets[t].slot].sps_synced = AICAM_TRUE;
+                }
+                osMutexRelease(g_websocket_server.mutex);
                 WS_LOG("[WS] join-sync id=%lu client=%u frame=%luB (sps+pps+key)",
-                       (unsigned long) conn->id, client->client_id,
+                       (unsigned long) conn->id, targets[t].client_id,
                        (unsigned long) join_size);
                 continue;
             }
 
             mg_ws_send(conn, data, size, WEBSOCKET_OP_BINARY);
         }
-        osMutexRelease(g_websocket_server.mutex);
         if (heap) {
             hal_mem_free(data);
         }
         if (join_built && join_buf != data) {
             hal_mem_free(join_buf);
         }
+        osMutexAcquire(s_ws_fifo_mutex, osWaitForever);
+        s_ws_fifo_count--;
+        osMutexRelease(s_ws_fifo_mutex);
     }
 }
 

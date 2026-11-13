@@ -28,6 +28,8 @@
 #if NE301_APP_HOST_POC
 #include "api_app_install_module.h"
 #include "api_app_session_module.h"
+#include "api_app_report_module.h"
+#include "api_app_sidecar_bridge_module.h"
 #include "api_app_control_module.h"
 #endif
 #include "web_recovery.h"
@@ -103,6 +105,8 @@ aicam_result_t web_service_init(void *config)
 #if NE301_APP_HOST_POC
     web_api_register_app_install_module();
     web_api_register_app_session_module();
+    web_api_register_app_report_module();
+    web_api_register_app_sidecar_bridge_module();
     web_api_register_app_control_module();
 #endif
 

@@ -3,6 +3,7 @@
 
 #include "mbedtls/sha256.h"
 
+#include "app_installer_internal.h"
 #include "app_pair_installer.h"
 
 static int app_pair_version_cmp(const uint16_t left[3], const uint16_t right[3])
@@ -298,6 +299,7 @@ static app_pair_install_result_t app_pair_product_version_preflight(
     const app_install_io_t *io,
     app_install_verify_fn native_verify,
     void *native_verify_ctx,
+    const uint8_t *package,
     const app_pair_candidate_t *candidate,
     aicam_bool_t current_present)
 {
@@ -307,6 +309,13 @@ static app_pair_install_result_t app_pair_product_version_preflight(
     app_sidecar_lifecycle_state_t current_state = APP_SIDECAR_LIFECYCLE_NONE;
     app_install_result_t query_rc;
     app_sidecar_lifecycle_result_t sidecar_rc;
+    app_sidecar_lifecycle_result_t staged_rc;
+    app_sidecar_lifecycle_result_t peek_rc;
+    uint8_t staged_native_tbs[APP_INSTALL_SHA256_LEN];
+    uint8_t staged_bundle_sha[APP_INSTALL_SHA256_LEN];
+    uint8_t candidate_ui_sha[APP_INSTALL_SHA256_LEN];
+    aicam_bool_t staged_present = AICAM_FALSE;
+    aicam_bool_t active_pair = AICAM_FALSE;
     aicam_bool_t current_has_product;
     int version_cmp;
 
@@ -328,6 +337,41 @@ static app_pair_install_result_t app_pair_product_version_preflight(
     current_has_product =
         ((current.record.required_host_caps &
           APP_ADMISSION_V5_CAP_PRODUCT_VERSION) != 0u) ? AICAM_TRUE : AICAM_FALSE;
+    staged_rc = app_sidecar_staged_identity(io, &staged_present,
+                                            staged_native_tbs,
+                                            staged_bundle_sha);
+    if (staged_rc != APP_SIDECAR_LIFECYCLE_OK) {
+        return APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN;
+    }
+    memset(&current_trust, 0, sizeof(current_trust));
+    current_trust.publisher_id = APP_ADMISSION_ADMIN_PUBLISHER_ID;
+    current_trust.publisher_id_len = strlen(APP_ADMISSION_ADMIN_PUBLISHER_ID);
+    current_trust.app_id = current.record.app_id;
+    current_trust.app_id_len = strlen(current.record.app_id);
+    current_trust.native_tbs_sha256 = current.record.tbs_sha256;
+    if (staged_present == AICAM_TRUE) {
+        peek_rc = app_sidecar_active_pair_peek(io, &current_trust,
+                                               &current.record, &active_pair);
+        if (peek_rc != APP_SIDECAR_LIFECYCLE_OK) {
+            return APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN;
+        }
+        if (active_pair == AICAM_TRUE) {
+            staged_present = AICAM_FALSE;
+        }
+    }
+    if (staged_present == AICAM_TRUE &&
+        memcmp(staged_native_tbs, current.record.tbs_sha256,
+               APP_INSTALL_SHA256_LEN) != 0) {
+        return APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN;
+    }
+    if (staged_present == AICAM_TRUE) {
+        mbedtls_sha256(package + candidate->ui_offset, candidate->ui_len,
+                       candidate_ui_sha, 0);
+        if (memcmp(staged_bundle_sha, candidate_ui_sha,
+                   APP_INSTALL_SHA256_LEN) != 0) {
+            return APP_PAIR_INSTALL_ERR_CONTENT_CONFLICT;
+        }
+    }
     memset(&current_trust, 0, sizeof(current_trust));
     current_trust.publisher_id = APP_ADMISSION_ADMIN_PUBLISHER_ID;
     current_trust.publisher_id_len = strlen(APP_ADMISSION_ADMIN_PUBLISHER_ID);
@@ -338,7 +382,30 @@ static app_pair_install_result_t app_pair_product_version_preflight(
                                               &current_ui, &current_state);
     if (sidecar_rc != APP_SIDECAR_LIFECYCLE_OK ||
         current_state != APP_SIDECAR_LIFECYCLE_ACTIVE) {
-        return APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN;
+        if (sidecar_rc != APP_SIDECAR_LIFECYCLE_OK ||
+            (current_state != APP_SIDECAR_LIFECYCLE_NONE &&
+             current_state != APP_SIDECAR_LIFECYCLE_UNAVAILABLE) ||
+            staged_present != AICAM_TRUE ||
+            strcmp(candidate->history.publisher_id,
+                   current.record.publisher_id) != 0 ||
+            strcmp(candidate->history.app_id,
+                   current.record.app_id) != 0 ||
+            memcmp(candidate->history.publisher_key_sha256,
+                   current.record.publisher_key_sha256,
+                   APP_INSTALL_SHA256_LEN) != 0 ||
+            memcmp(candidate->history.native_tbs_sha256,
+                   current.record.tbs_sha256,
+                   APP_INSTALL_SHA256_LEN) != 0 ||
+            candidate->history.native_version[0] !=
+                current.record.version_major ||
+            candidate->history.native_version[1] !=
+                current.record.version_minor ||
+            candidate->history.native_version[2] !=
+                current.record.version_patch ||
+            candidate->product_version_required != current_has_product) {
+            return APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN;
+        }
+        return APP_PAIR_INSTALL_OK;
     }
     if (current_has_product == AICAM_TRUE &&
         current_ui.product_version_trusted != AICAM_TRUE) {
@@ -413,7 +480,7 @@ app_pair_install_result_t app_pair_install(
             return APP_PAIR_INSTALL_ERR_LEGACY_STATE_PRESERVED;
         }
         pair_result = app_pair_product_version_preflight(
-            io, native_verify, native_verify_ctx, &candidate, present);
+            io, native_verify, native_verify_ctx, package, &candidate, present);
         if (pair_result != APP_PAIR_INSTALL_OK) {
             return pair_result;
         }

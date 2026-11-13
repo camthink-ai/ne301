@@ -691,10 +691,11 @@ ifneq ($(filter -DBOARD_PSRAM_SIZE=64,$(COMMON_DEFS)),)
  C_SOURCES += ../Custom/Services/AppHost/app_host_validate.c
  C_SOURCES += ../Custom/Services/AppHost/app_admission.c
  C_SOURCES += ../Custom/Services/AppHost/app_installer.c
+ C_SOURCES += ../Custom/Services/AppHost/app_sidecar_verify.c
+ C_SOURCES += ../Custom/Services/AppHost/app_sidecar_lifecycle.c
+ C_SOURCES += ../Custom/Services/AppHost/app_pair_installer.c
  C_SOURCES += ../Custom/Services/AppHost/app_installer_storage.c
  C_SOURCES += ../Custom/Services/AppHost/app_state_store.c
- C_SOURCES += ../Custom/Services/AppHost/app_host_run.c
- C_SOURCES += ../Custom/Services/AppHost/app_host_run_device.c
  C_SOURCES += ../Custom/Services/AppHost/app_host_session.c
  C_SOURCES += ../Custom/Services/AppHost/app_host_live.c
  C_SOURCES += ../Custom/Services/AppHost/app_host_session_device.c
@@ -702,8 +703,12 @@ ifneq ($(filter -DBOARD_PSRAM_SIZE=64,$(COMMON_DEFS)),)
  C_SOURCES += ../Custom/Services/AppHost/app_report_service.c
  C_SOURCES += ../Custom/Services/AppHost/app_report_service_device.c
 C_SOURCES += ../Custom/Services/AppHost/app_report_policy.c
+C_SOURCES += ../Custom/Services/AppHost/app_report_schema_lc.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_install_module.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_session_module.c
+ C_SOURCES += ../Custom/Services/Web/api/api_app_report_module.c
+ C_SOURCES += ../Custom/Services/Web/api/api_app_sidecar_bridge_module.c
+C_SOURCES += ../Custom/Services/Web/api/app_bridge_business_config.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_control_module.c
 else
 $(error APP_HOST_POC=1 requires BOARD_PSRAM_SIZE=64)

@@ -11,7 +11,7 @@
 #include "app_state_store.h"
 #include "app_report_service.h"
 #include "app_report_service_device.h"
-#include "app_native_vnext_floor.h"
+#include "app_native_floor.h"
 #include "app_host_live.h"
 
 #include "mbedtls/sha256.h"
@@ -739,22 +739,66 @@ static int32_t sess_api_report_status(uint32_t host_boot_id, uint32_t report_seq
                              out_webhook_state);
 }
 
-static int32_t sess_api_state_read(void *out, uint32_t cap,
-                                   uint32_t *actual_len, uint32_t *out_revision)
+static aicam_bool_t sess_state_gate(uint32_t *generation)
 {
     aicam_bool_t allowed;
-    int32_t rc;
 
     sess_lock();
     allowed = (aicam_bool_t)(g_is_v3 == AICAM_TRUE && g_state_bit == AICAM_TRUE &&
                              g_state_bound == AICAM_TRUE &&
                              (g_state == APP_SESSION_STATE_RUNNING ||
                               g_state == APP_SESSION_STATE_STOPPING));
+    *generation = g_session_generation;
     sess_unlock();
+    return allowed;
+}
+
+static int32_t sess_api_state_read(void *out, uint32_t cap,
+                                   uint32_t *actual_len, uint32_t *out_revision)
+{
+    aicam_bool_t allowed;
+    uint32_t generation;
+    uint32_t gen0;
+    int32_t rc;
+
+    allowed = sess_state_gate(&generation);
+    gen0 = generation;
     if (allowed != AICAM_TRUE) {
         return -3;
     }
     rc = app_state_read(&g_state_session, out, cap, actual_len, out_revision);
+    if (rc == APP_STATE_BUSY && g_backend != NULL &&
+        g_backend->sleep_ms != NULL && g_backend->tick_ms != NULL) {
+        static const uint32_t busy_backoff_ms[] = { 10u, 20u, 40u, 80u };
+        uint32_t start = g_backend->tick_ms(g_backend->ctx);
+        uint32_t attempt = 0u;
+        for (;;) {
+            uint32_t now;
+            uint32_t spent;
+            uint32_t wait;
+            allowed = sess_state_gate(&generation);
+            if (allowed != AICAM_TRUE || generation != gen0) {
+                rc = APP_STATE_UNAUTHORIZED;
+                break;
+            }
+            now = g_backend->tick_ms(g_backend->ctx);
+            spent = now - start;
+            if (spent >= 150u) {
+                break;
+            }
+            wait = busy_backoff_ms[(attempt < 3u) ? attempt : 3u];
+            if (wait > (150u - spent)) {
+                wait = 150u - spent;
+            }
+            g_backend->sleep_ms(g_backend->ctx, wait);
+            rc = app_state_read(&g_state_session, out, cap, actual_len,
+                                out_revision);
+            attempt++;
+            if (rc != APP_STATE_BUSY) {
+                break;
+            }
+        }
+    }
     if (rc == APP_STATE_OK && out != NULL && actual_len != NULL &&
         out_revision != NULL) {
         uint8_t sha[APP_INSTALL_SHA256_LEN];
@@ -772,6 +816,7 @@ static int32_t sess_api_state_read(void *out, uint32_t cap,
     }
     sess_lock();
     allowed = (aicam_bool_t)(g_is_v3 == AICAM_TRUE &&
+                             g_session_generation == gen0 &&
                              (g_state == APP_SESSION_STATE_RUNNING ||
                               g_state == APP_SESSION_STATE_STOPPING));
     sess_unlock();

@@ -99,6 +99,42 @@ cJSON* web_api_parse_body(http_handler_context_t* ctx) {
 }
 
 /**
+ * @brief Print an unformatted cJSON object and send it as a success response
+ */
+aicam_result_t api_response_json(http_handler_context_t* ctx, cJSON* root, const char* message) {
+    char* response_text;
+    aicam_result_t rc;
+
+    response_text = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (response_text == NULL) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+    rc = api_response_success(ctx, response_text, message);
+    if (rc != AICAM_OK) {
+        cJSON_free(response_text);
+    }
+    return rc;
+}
+
+/**
+ * @brief Get a uint32 value from a JSON number item with range check
+ */
+aicam_bool_t api_json_get_u32(const cJSON* item, uint32_t* out) {
+    double v;
+
+    if (item == NULL || !cJSON_IsNumber(item) || item->valuedouble < 0.0) {
+        return AICAM_FALSE;
+    }
+    v = item->valuedouble;
+    if (v > 4294967295.0 || v != (double)((uint32_t)v)) {
+        return AICAM_FALSE;
+    }
+    *out = (uint32_t)v;
+    return AICAM_TRUE;
+}
+
+/**
  * @brief Get string value from JSON
  */
 const char* web_api_get_string(cJSON* json, const char* key) {

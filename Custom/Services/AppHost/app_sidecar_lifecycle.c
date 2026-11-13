@@ -4,8 +4,9 @@
 #include <string.h>
 
 #include "app_sidecar_lifecycle.h"
+#include "app_installer_internal.h"
 #include "app_state_store.h"
-#include "app_native_vnext_floor.h"
+#include "app_native_floor.h"
 #include "generic_math.h"
 #include "mbedtls/sha256.h"
 
@@ -2036,7 +2037,7 @@ static int sc_uninstall_intent_load(const app_install_io_t *io,
     return SC_STORE_SLOT_VALID;
 }
 
-static app_install_result_t inst_uninstall_intent_blocks_boot(
+app_install_result_t inst_uninstall_intent_blocks_boot(
     const app_install_io_t *io)
 {
     sc_uninstall_intent_t intent;
@@ -2806,7 +2807,7 @@ app_uninstall_result_t app_install_uninstall_confirmed(
         return APP_UNINSTALL_CLEANUP_PENDING;
     }
     if (intent_state == SC_STORE_SLOT_MISSING) {
-        if (g_boot_resolved != AICAM_TRUE) {
+        if (app_install_boot_state_resolved() != AICAM_TRUE) {
             load_rc = app_install_boot_resolve(io);
             if (load_rc != APP_INSTALL_OK) {
                 io->tx_end(io->ctx);
@@ -2876,14 +2877,13 @@ app_uninstall_result_t app_install_uninstall_confirmed(
         return APP_UNINSTALL_CLEANUP_PENDING;
     }
     io->tx_end(io->ctx);
-    g_state_unknown = AICAM_FALSE;
-    g_boot_resolved = AICAM_FALSE;
+    app_install_boot_state_clear();
     app_sidecar_lifecycle_reset();
     *out_state = APP_UNINSTALL_STATE_NONE;
     return APP_UNINSTALL_OK;
 }
 
-static app_install_result_t inst_sidecar_revoke_for_native(
+app_install_result_t inst_sidecar_revoke_for_native(
     const app_install_io_t *io,
     const app_install_record_t *native)
 {
@@ -3675,5 +3675,88 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_unsigned_preflight(
         }
     }
     io->tx_end(io->ctx);
+    return APP_SIDECAR_LIFECYCLE_OK;
+}
+
+app_sidecar_lifecycle_result_t app_sidecar_staged_identity(
+    const app_install_io_t *io,
+    aicam_bool_t *out_staged,
+    uint8_t out_native_tbs_sha256[APP_SIDECAR_SHA256_LEN],
+    uint8_t out_bundle_sha256[APP_SIDECAR_SHA256_LEN])
+{
+    sc_store_stage_t stage;
+    int state;
+
+    if (out_staged == NULL || out_native_tbs_sha256 == NULL ||
+        out_bundle_sha256 == NULL || sc_store_io_valid(io) != AICAM_TRUE) {
+        return APP_SIDECAR_LIFECYCLE_ERR_PARAM;
+    }
+    *out_staged = AICAM_FALSE;
+    memset(out_native_tbs_sha256, 0, APP_SIDECAR_SHA256_LEN);
+    memset(out_bundle_sha256, 0, APP_SIDECAR_SHA256_LEN);
+    state = sc_store_stage_load(io, &stage);
+    if (state == SC_STORE_SLOT_MISSING) {
+        return APP_SIDECAR_LIFECYCLE_OK;
+    }
+    if (state != SC_STORE_SLOT_VALID) {
+        return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
+    }
+    memcpy(out_native_tbs_sha256, stage.candidate.native_tbs_sha256,
+           APP_SIDECAR_SHA256_LEN);
+    memcpy(out_bundle_sha256, stage.candidate.bundle_sha256,
+           APP_SIDECAR_SHA256_LEN);
+    *out_staged = AICAM_TRUE;
+    return APP_SIDECAR_LIFECYCLE_OK;
+}
+
+app_sidecar_lifecycle_result_t app_sidecar_active_pair_peek(
+    const app_install_io_t *io,
+    const app_sidecar_trust_t *trust,
+    const app_install_record_t *native,
+    aicam_bool_t *out_active)
+{
+    sc_store_record_t recs[2];
+    int slots[2];
+    int highest;
+    app_sidecar_lifecycle_result_t identity_rc;
+    sc_store_verify_result_t verify_rc;
+    app_sidecar_descriptor_t verified;
+    sc_uninstall_intent_t intent;
+
+    if (out_active == NULL || sc_store_io_valid(io) != AICAM_TRUE) {
+        return APP_SIDECAR_LIFECYCLE_ERR_PARAM;
+    }
+    *out_active = AICAM_FALSE;
+    if (sc_store_load_slots(io, recs, slots) != AICAM_TRUE ||
+        slots[0] == SC_STORE_SLOT_CORRUPT || slots[1] == SC_STORE_SLOT_CORRUPT) {
+        return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
+    }
+    if (sc_uninstall_intent_load(io, &intent) != SC_STORE_SLOT_MISSING) {
+        return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
+    }
+    identity_rc = sc_store_identity_check_locked(io, trust, native);
+    if (identity_rc != APP_SIDECAR_LIFECYCLE_OK) {
+        return (identity_rc == APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED) ?
+               APP_SIDECAR_LIFECYCLE_OK :
+               APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
+    }
+    highest = sc_store_highest(recs, slots);
+    if (highest < 0) {
+        return APP_SIDECAR_LIFECYCLE_OK;
+    }
+    if (recs[highest].state == SC_STORE_REVOKED ||
+        sc_store_record_native_equal(&recs[highest], native) != AICAM_TRUE) {
+        return APP_SIDECAR_LIFECYCLE_OK;
+    }
+    if (sc_verify_cache_hit(&recs[highest], native) == AICAM_TRUE) {
+        *out_active = AICAM_TRUE;
+        return APP_SIDECAR_LIFECYCLE_OK;
+    }
+    verify_rc = sc_store_verify_record(io, trust, native, &recs[highest],
+                                       &verified);
+    if (verify_rc == SC_STORE_VERIFY_IO) {
+        return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
+    }
+    *out_active = (verify_rc == SC_STORE_VERIFY_OK) ? AICAM_TRUE : AICAM_FALSE;
     return APP_SIDECAR_LIFECYCLE_OK;
 }

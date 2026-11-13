@@ -22,8 +22,8 @@ test: test_queue_capacity_layout
 model:
 	python3 capacity_model.py
 
-test_queue_capacity_layout: test_queue_capacity_layout.c $(APPHOST)/app_report_service.c $(APPHOST)/app_report_service.h $(APPHOST)/app_report_policy.c $(APPHOST)/app_report_policy.h $(APPHOST)/app_installer.c $(APPHOST)/app_admission.c $(APPHOST)/app_state_store.c $(REPO_ROOT)/Custom/Common/Utils/generic_math.c $(MBOBJS)
-	$(CC) $(CFLAGS) -o $@ test_queue_capacity_layout.c $(APPHOST)/app_report_policy.c $(APPHOST)/app_installer.c $(APPHOST)/app_admission.c $(APPHOST)/app_state_store.c $(REPO_ROOT)/Custom/Common/Utils/generic_math.c $(MBOBJS)
+test_queue_capacity_layout: test_queue_capacity_layout.c $(APPHOST)/app_report_service.c $(APPHOST)/app_report_service.h $(APPHOST)/app_report_schema.h $(APPHOST)/app_report_schema_lc.c $(APPHOST)/app_report_policy.c $(APPHOST)/app_report_policy.h $(APPHOST)/app_installer.c $(APPHOST)/app_installer_internal.h $(APPHOST)/app_sidecar_verify.c $(APPHOST)/app_sidecar_lifecycle.c $(APPHOST)/app_pair_installer.c $(APPHOST)/app_admission.c $(APPHOST)/app_state_store.c $(REPO_ROOT)/Custom/Common/Utils/generic_math.c $(MBOBJS)
+	$(CC) $(CFLAGS) -o $@ test_queue_capacity_layout.c $(APPHOST)/app_report_schema_lc.c $(APPHOST)/app_report_policy.c $(APPHOST)/app_installer.c $(APPHOST)/app_sidecar_verify.c $(APPHOST)/app_sidecar_lifecycle.c $(APPHOST)/app_pair_installer.c $(APPHOST)/app_admission.c $(APPHOST)/app_state_store.c $(REPO_ROOT)/Custom/Common/Utils/generic_math.c $(MBOBJS)
 
 build:
 	mkdir -p build

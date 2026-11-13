@@ -85,6 +85,27 @@ cJSON* web_api_get_object(cJSON* json, const char* key);
  */
 aicam_bool_t web_api_verify_method(http_handler_context_t* ctx, const char* method);
 
+/* ==================== Response Builder Functions ==================== */
+
+/**
+ * @brief Print an unformatted cJSON object and send it as a success response
+ * @param ctx HTTP handler context
+ * @param root JSON object to send (deleted inside, also on failure)
+ * @param message Response message
+ * @return Operation result
+ */
+aicam_result_t api_response_json(http_handler_context_t* ctx, cJSON* root, const char* message);
+
+/* ==================== JSON Field Accessor Functions ==================== */
+
+/**
+ * @brief Get a uint32 value from a JSON number item with range check
+ * @param item JSON item (may be NULL)
+ * @param out Output value
+ * @return AICAM_TRUE if item is an integral number in [0, UINT32_MAX]
+ */
+aicam_bool_t api_json_get_u32(const cJSON* item, uint32_t* out);
+
 /**
  * @brief Verify Content-Type
  * @param ctx HTTP handler context

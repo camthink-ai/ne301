@@ -25,7 +25,7 @@ extern "C" {
 #define VIDEO_PIPELINE_MAX_OUTPUTS      4       // Maximum outputs per node
 #define VIDEO_FRAME_QUEUE_SIZE          8       // Maximum frames per node queue
 #define VIDEO_THREAD_STACK_SIZE         8192    // Thread stack size
-#define VIDEO_THREAD_PRIORITY           5       // Default thread priority
+#define VIDEO_THREAD_PRIORITY           32      // osPriorityAboveNormal (TX prio 56-32=24); must outrank web/stream tasks
 
 /* ==================== Video Frame Definitions ==================== */
 

@@ -3,8 +3,9 @@
 #include <stdlib.h>
 
 #include "app_installer.h"
+#include "app_installer_internal.h"
 #include "app_sidecar_lifecycle.h"
-#include "app_native_vnext_floor.h"
+#include "app_native_floor.h"
 
 #include "generic_math.h"
 #include "mbedtls/sha256.h"
@@ -12,30 +13,8 @@
 #define APP_INSTALL_RECORD_MAGIC 0x31524941u
 #define APP_INSTALL_RECORD_VERSION 1u
 #define APP_INSTALL_PENDING_MAGIC 0x31504941u
-#define APP_INSTALL_REC_HDR_SIZE 8u
-#define APP_INSTALL_REC_PUB_OFF 8u
-#define APP_INSTALL_REC_APP_OFF 25u
-#define APP_INSTALL_REC_VER_OFF 58u
-#define APP_INSTALL_REC_LEN_OFF 64u
-#define APP_INSTALL_REC_SHAS_OFF 68u
-#define APP_INSTALL_REC_PATH_OFF 196u
-#define APP_INSTALL_REC_PATH_SLOT APP_INSTALL_PATH_SLOT
-#define APP_INSTALL_REC_CRC_OFF (APP_INSTALL_REC_PATH_OFF + APP_INSTALL_REC_PATH_SLOT)
-#define APP_INSTALL_RECORD_BLOB_SIZE (APP_INSTALL_REC_CRC_OFF + 4u)
-#define APP_INSTALL_PEND_ACT_OFF 4u
-#define APP_INSTALL_PEND_HAS_PREV_OFF 8u
-#define APP_INSTALL_PEND_PREV_OFF 12u
-#define APP_INSTALL_PEND_CRC_OFF (APP_INSTALL_PEND_PREV_OFF + APP_INSTALL_RECORD_BLOB_SIZE)
-#define APP_INSTALL_PENDING_BLOB_SIZE (APP_INSTALL_PEND_CRC_OFF + 4u)
 #define APP_INSTALL_ACTION_INSTALL 0x49u
 #define APP_INSTALL_ACTION_UNINSTALL 0x55u
-
-#if APP_INSTALL_RECORD_BIN_SIZE != APP_INSTALL_RECORD_BLOB_SIZE
-#error "record blob size mismatch"
-#endif
-#if APP_INSTALL_PENDING_BIN_SIZE != APP_INSTALL_PENDING_BLOB_SIZE
-#error "pending blob size mismatch"
-#endif
 
 static aicam_bool_t g_boot_resolved;
 static aicam_bool_t g_state_unknown;
@@ -44,11 +23,16 @@ static aicam_bool_t g_enable_guard_cache_valid;
 static aicam_bool_t g_enable_guard_cache_active;
 static app_install_record_t g_enable_guard_cache_record;
 
-static app_install_result_t inst_sidecar_revoke_for_native(
-    const app_install_io_t *io,
-    const app_install_record_t *native);
-static app_install_result_t inst_uninstall_intent_blocks_boot(
-    const app_install_io_t *io);
+aicam_bool_t app_install_boot_state_resolved(void)
+{
+    return g_boot_resolved;
+}
+
+void app_install_boot_state_clear(void)
+{
+    g_state_unknown = AICAM_FALSE;
+    g_boot_resolved = AICAM_FALSE;
+}
 
 static void inst_put_u32(uint8_t *p, uint32_t v)
 {
@@ -84,7 +68,7 @@ static void inst_copy_padded(uint8_t *dst, const char *src, size_t slot)
     memcpy(dst, src, len);
 }
 
-static void inst_sha256(const uint8_t *data, size_t len, uint8_t out[APP_INSTALL_SHA256_LEN])
+void inst_sha256(const uint8_t *data, size_t len, uint8_t out[APP_INSTALL_SHA256_LEN])
 {
     mbedtls_sha256(data, len, out, 0);
 }
@@ -311,8 +295,8 @@ static aicam_bool_t inst_kv_absent_proven(const app_install_io_t *io, const char
             APP_INSTALL_IO_NOT_FOUND) ? AICAM_TRUE : AICAM_FALSE;
 }
 
-static aicam_bool_t inst_kv_delete_proven(const app_install_io_t *io, const char *key,
-                                          size_t blob_size)
+aicam_bool_t inst_kv_delete_proven(const app_install_io_t *io, const char *key,
+                                   size_t blob_size)
 {
     uint8_t probe[APP_INSTALL_PENDING_BLOB_SIZE];
     size_t len = 0;
@@ -341,7 +325,7 @@ static aicam_bool_t inst_record_write_proven(const app_install_io_t *io,
     return inst_kv_write_proven(io, APP_INSTALL_KEY_RECORD, blob, sizeof(blob));
 }
 
-static aicam_bool_t inst_record_delete_proven(const app_install_io_t *io)
+aicam_bool_t inst_record_delete_proven(const app_install_io_t *io)
 {
     return inst_kv_delete_proven(io, APP_INSTALL_KEY_RECORD, APP_INSTALL_RECORD_BLOB_SIZE);
 }
@@ -354,9 +338,9 @@ static aicam_bool_t inst_tx_begin_read(const app_install_io_t *io)
     return io->tx_begin(io->ctx);
 }
 
-static aicam_result_t inst_record_load(const app_install_io_t *io,
-                                       app_install_record_t *record,
-                                       aicam_bool_t *present)
+aicam_result_t inst_record_load(const app_install_io_t *io,
+                                app_install_record_t *record,
+                                aicam_bool_t *present)
 {
     uint8_t blob[APP_INSTALL_RECORD_BIN_SIZE];
     app_install_io_result_t rc;
@@ -1301,7 +1285,3 @@ const char *app_install_state_str(app_install_state_t state)
         return "unknown";
     }
 }
-
-#include "app_sidecar_verify.c"
-#include "app_sidecar_lifecycle.c"
-#include "app_pair_installer.c"

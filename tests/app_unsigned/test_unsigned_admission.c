@@ -4,7 +4,7 @@
 
 #include "app_admission.h"
 #include "app_installer.h"
-#include "app_native_vnext_floor.h"
+#include "app_native_floor.h"
 #include "app_pair_installer.h"
 #include "app_sidecar_lifecycle.h"
 #include "app_sidecar_verify.h"

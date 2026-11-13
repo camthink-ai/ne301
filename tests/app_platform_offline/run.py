@@ -11,12 +11,12 @@ root = Path(__file__).resolve().parents[2]
 suites = [
     "tests/app_unsigned",
     "tests/app_installer",
-    "tests/app_host_run",
     "tests/app_host_session",
     "tests/app_host_control",
     "tests/app_sidecar_lifecycle",
     "tests/app_state",
     "tests/app_report",
+    "tests/app_bridge_business_config",
     "tests/storage_gate",
 ]
 
@@ -57,7 +57,7 @@ def run(command, label, environment=None, verbose=False):
             print(result.stderr, end="", file=sys.stderr, flush=True)
     else:
         summary = re.compile(
-            r"^(test_unsigned_admission:|app_install_gate:|test_app_installer_storage:|app_host_run:|app_host_control:|app_control_gate:|app_state_store:|app_state_faults:|app_report:|PASS NEAPP05|fixtures=|checks=)"
+            r"^(test_unsigned_admission:|app_install_gate:|test_app_installer_storage:|app_host_control:|app_control_gate:|app_state_store:|app_state_faults:|app_report:|PASS NEAPP05|fixtures=|checks=)"
         )
         for line in (result.stdout + result.stderr).splitlines():
             if summary.match(line):

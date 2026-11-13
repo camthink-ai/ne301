@@ -41,7 +41,7 @@ typedef struct {
     uint64_t flash_available_capacity_mb;    // Flash available capacity (MB)
     uint64_t flash_used_capacity_mb;         // Flash used capacity (MB)
     float flash_usage_percent;               // Flash usage percentage
-    char flash_fs_type[8];                   // Filesystem type ("littlefs")
+    char flash_fs_type[16];                  // Filesystem type ("littlefs" = 8 chars + NUL)
 } storage_info_t;
 
 /**

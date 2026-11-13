@@ -9,7 +9,6 @@
 #include "aicam_types.h"
 #include "app_installer.h"
 #include "app_report_service_device.h"
-#include "app_host_run.h"
 #include "app_host_session.h"
 #include "app_admission.h"
 #include "app_pair_installer.h"
@@ -187,7 +186,6 @@ static size_t g_gate_stage_cap = sizeof(g_gate_stage_buf);
 static int g_gate_stage_commit_fail;
 static int g_gate_invoke_refuse;
 static int g_gate_run_raw;
-static const char *g_gate_run_log;
 static int g_gate_stage_commit_count;
 static int g_gate_invoke_count;
 static int g_gate_scrub_count;
@@ -195,66 +193,11 @@ static int g_gate_session_mutexes[3];
 static int g_gate_session_mutex_count;
 static int g_gate_session_event;
 
-static uint8_t *gate_stage_base(void *ctx, size_t *cap)
-{
-    (void)ctx;
-    *cap = g_gate_stage_cap;
-    return g_gate_stage_buf;
-}
-
-static int gate_stage_commit(void *ctx, size_t stage_cap, const app_host_image_info_t *info)
-{
-    (void)ctx;
-    (void)stage_cap;
-    (void)info;
-    g_gate_stage_commit_count++;
-    return (g_gate_stage_commit_fail != 0) ? -1 : 0;
-}
-
-static int gate_invoke_entry(void *ctx, const app_host_api_table_t *api,
-                             const app_host_image_info_t *info, int *raw)
-{
-    (void)ctx;
-    (void)info;
-    g_gate_invoke_count++;
-    if (g_gate_invoke_refuse != 0) {
-        return -1;
-    }
-    if (g_gate_run_log != NULL && api != NULL && api->log != NULL) {
-        (void)api->log(g_gate_run_log);
-    }
-    *raw = g_gate_run_raw;
-    return 0;
-}
-
-static void gate_scrub(void *ctx)
-{
-    (void)ctx;
-    g_gate_scrub_count++;
-    memset(g_gate_stage_buf, 0, sizeof(g_gate_stage_buf));
-}
-
 static void gate_log_sink(void *ctx, const char *text)
 {
     (void)ctx;
     (void)text;
 }
-
-static int gate_tick_ms(void *ctx)
-{
-    (void)ctx;
-    return 5;
-}
-
-static const app_host_run_backend_t g_gate_run_backend = {
-    NULL,
-    gate_stage_base,
-    gate_stage_commit,
-    gate_invoke_entry,
-    gate_scrub,
-    gate_log_sink,
-    gate_tick_ms
-};
 
 static uint8_t *gate_session_stage_base(void *ctx, size_t *cap)
 {
@@ -428,11 +371,6 @@ static const app_host_session_backend_t g_gate_session_backend = {
     gate_session_pair_authorize
 };
 
-const app_host_run_backend_t *app_host_run_device_backend(void)
-{
-    return &g_gate_run_backend;
-}
-
 static http_handler_context_t make_ctx(const char *method, const char *body)
 {
     static char body_buf[12000];
@@ -467,7 +405,6 @@ static void reset_storage(void)
     g_gate_stage_commit_fail = 0;
     g_gate_invoke_refuse = 0;
     g_gate_run_raw = 0;
-    g_gate_run_log = NULL;
     g_gate_stage_commit_count = 0;
     g_gate_invoke_count = 0;
     g_gate_scrub_count = 0;
