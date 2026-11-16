@@ -35,6 +35,8 @@
 #define QS_AE_SEED_LEARN            1
 #define QS_AE_SEED_FIXED_E          30000U  /* us - the 307-era frozen value */
 #define QS_AE_SEED_FIXED_G          6185U   /* mdb */
+#define QS_AE_SEED_NIGHT_E          33000U  /* us - NIGHT converges with E at the ceiling */
+#define QS_AE_SEED_NIGHT_G          30000U  /* mdb - 30dB, biased into the dark cluster (field truths 30000~34000); still learned-free fixed start */
 /* ---- adaptive verification budget ----
  * Downward AE convergence is slower than the base skip budget. Past the
  * base budget, keep waiting ONLY while |L-target| keeps shrinking; give up
@@ -287,11 +289,22 @@ static int qs_prepare_camera_and_jpeg(const qs_snapshot_config_t *cfg, const nn_
 
 #if QS_AE_VERIFY_ENABLE
     /* Resume AE from the last verified point instead of the black frame.
+     * Mode-aware seed: the NVS record holds DAY-converged values (visible
+     * light, IR-CUT in). NIGHT captures run the IR profile and converge
+     * near the ceiling (E maxed, G ~30dB, 11-12 field log) — restoring a
+     * DAY seed there costs a 10+ frame climb that outruns the verify
+     * budget (timeout-dark captures). So NIGHT always starts from the
+     * fixed IR seed; only DAY learns/saves to NVS.
      * QS_AE_SEED_LEARN=1: persisted last state (NVS "ae_state"), learned
-     * on every in-band capture. QS_AE_SEED_LEARN=0: fixed factory seed —
+     * on every in-band DAY capture. QS_AE_SEED_LEARN=0: fixed factory seed —
      * same deterministic start on every wake, no NVS involved. */
+    if (effective_mode == QS_IMAGE_ISP_MODE_NIGHT) {
+        (void)camera_ae_set_last(QS_AE_SEED_NIGHT_E, QS_AE_SEED_NIGHT_G);
+        QT_TRACE("[QS] ", "ae seed (night) e=%lu g=%lu",
+                 (unsigned long)QS_AE_SEED_NIGHT_E,
+                 (unsigned long)QS_AE_SEED_NIGHT_G);
+    } else {
 #if QS_AE_SEED_LEARN
-    {
         camera_ae_state_record_t ae_rec = {0};
         if (storage_nvs_read(NVS_USER, NVS_KEY_AE_LAST_STATE,
                              &ae_rec, sizeof(ae_rec)) == (int)sizeof(ae_rec) &&
@@ -302,13 +315,13 @@ static int qs_prepare_camera_and_jpeg(const qs_snapshot_config_t *cfg, const nn_
                          (unsigned long)ae_rec.gain_mdb);
             }
         }
-    }
 #else
-    (void)camera_ae_set_last(QS_AE_SEED_FIXED_E, QS_AE_SEED_FIXED_G);
-    QT_TRACE("[QS] ", "ae resume (fixed) e=%lu g=%lu",
-             (unsigned long)QS_AE_SEED_FIXED_E,
-             (unsigned long)QS_AE_SEED_FIXED_G);
+        (void)camera_ae_set_last(QS_AE_SEED_FIXED_E, QS_AE_SEED_FIXED_G);
+        QT_TRACE("[QS] ", "ae resume (fixed) e=%lu g=%lu",
+                 (unsigned long)QS_AE_SEED_FIXED_E,
+                 (unsigned long)QS_AE_SEED_FIXED_G);
 #endif
+    }
 #endif
 
     /* start camera (device layer handles sensor/pipes bring-up) */
@@ -627,12 +640,16 @@ static void qs_snapshot_thread(void *argument)
 #if QS_AE_SEED_LEARN
         /* Persist the AE seed when the convergence gate passed (exit=1,
          * in-band) OR when the scene hit its physical ceiling (exit=2,
-         * clamped-accept). In permanently dark scenes the gate always
-         * exits=2 (sensor at ceiling, gain stable) — without seed saving
-         * there, every wake cold-started from the profile's static
-         * minimum in a dead loop. exit=3 (timeout) still does NOT save:
-         * the AE was still moving, the state is not representative. */
-        if (verify_exit == 1 || verify_exit == 2) {
+         * clamped-accept) — DAY only: NIGHT converged values sit at the IR
+         * ceiling and would poison the next DAY wake with a 10+ frame
+         * dark→bright climb (cross-mode seed pollution).
+         * In permanently dark scenes the gate always exits=2 (sensor at
+         * ceiling, gain stable) — without seed saving there, every wake
+         * cold-started from the profile's static minimum in a dead loop.
+         * exit=3 (timeout) still does NOT save: the AE was still moving,
+         * the state is not representative. */
+        if ((verify_exit == 1 || verify_exit == 2) &&
+            eff_mode != QS_IMAGE_ISP_MODE_NIGHT) {
             camera_ae_state_record_t rec = {0};
             rec.magic = CAMERA_AE_STATE_MAGIC;
             rec.exposure_us = seed_e;
