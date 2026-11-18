@@ -18,6 +18,13 @@
                                             variant of isp_ae_algo.c
                                             AE_FINE_TOLERANCE (5 normal / 8-10 low) */
 #define QS_VERIFY_CLAMP_DL          2U  /* clamped-accept: |dL| between samples */
+#define QS_VERIFY_CLAMP_DG          200U /* clamped-accept: |dG| between frames (mdb).
+                                            Must be BELOW the AE fine-adjust steps
+                                            (isp_ae_algo.c: +500/-300 mdb) so that
+                                            active convergence is NOT counted as
+                                            stable; field data shows a converged
+                                            AE has dG=0. */
+#define QS_VERIFY_CLAMP_G_STABLE    3U  /* clamped-accept: G stable for this many frames */
 #define QS_SENSOR_DELAY             3U   /* must match profile sensorDelay */
 /* ---- seed policy ----
  * 0 = fixed factory seed, never learned/updated;
@@ -28,6 +35,8 @@
 #define QS_AE_SEED_LEARN            1
 #define QS_AE_SEED_FIXED_E          30000U  /* us - the 307-era frozen value */
 #define QS_AE_SEED_FIXED_G          6185U   /* mdb */
+#define QS_AE_SEED_NIGHT_E          33000U  /* us - NIGHT converges with E at the ceiling */
+#define QS_AE_SEED_NIGHT_G          30000U  /* mdb - 30dB, biased into the dark cluster (field truths 30000~34000); still learned-free fixed start */
 /* ---- adaptive verification budget ----
  * Downward AE convergence is slower than the base skip budget. Past the
  * base budget, keep waiting ONLY while |L-target| keeps shrinking; give up
@@ -280,11 +289,22 @@ static int qs_prepare_camera_and_jpeg(const qs_snapshot_config_t *cfg, const nn_
 
 #if QS_AE_VERIFY_ENABLE
     /* Resume AE from the last verified point instead of the black frame.
+     * Mode-aware seed: the NVS record holds DAY-converged values (visible
+     * light, IR-CUT in). NIGHT captures run the IR profile and converge
+     * near the ceiling (E maxed, G ~30dB, 11-12 field log) — restoring a
+     * DAY seed there costs a 10+ frame climb that outruns the verify
+     * budget (timeout-dark captures). So NIGHT always starts from the
+     * fixed IR seed; only DAY learns/saves to NVS.
      * QS_AE_SEED_LEARN=1: persisted last state (NVS "ae_state"), learned
-     * on every in-band capture. QS_AE_SEED_LEARN=0: fixed factory seed —
+     * on every in-band DAY capture. QS_AE_SEED_LEARN=0: fixed factory seed —
      * same deterministic start on every wake, no NVS involved. */
+    if (effective_mode == QS_IMAGE_ISP_MODE_NIGHT) {
+        (void)camera_ae_set_last(QS_AE_SEED_NIGHT_E, QS_AE_SEED_NIGHT_G);
+        QT_TRACE("[QS] ", "ae seed (night) e=%lu g=%lu",
+                 (unsigned long)QS_AE_SEED_NIGHT_E,
+                 (unsigned long)QS_AE_SEED_NIGHT_G);
+    } else {
 #if QS_AE_SEED_LEARN
-    {
         camera_ae_state_record_t ae_rec = {0};
         if (storage_nvs_read(NVS_USER, NVS_KEY_AE_LAST_STATE,
                              &ae_rec, sizeof(ae_rec)) == (int)sizeof(ae_rec) &&
@@ -295,13 +315,13 @@ static int qs_prepare_camera_and_jpeg(const qs_snapshot_config_t *cfg, const nn_
                          (unsigned long)ae_rec.gain_mdb);
             }
         }
-    }
 #else
-    (void)camera_ae_set_last(QS_AE_SEED_FIXED_E, QS_AE_SEED_FIXED_G);
-    QT_TRACE("[QS] ", "ae resume (fixed) e=%lu g=%lu",
-             (unsigned long)QS_AE_SEED_FIXED_E,
-             (unsigned long)QS_AE_SEED_FIXED_G);
+        (void)camera_ae_set_last(QS_AE_SEED_FIXED_E, QS_AE_SEED_FIXED_G);
+        QT_TRACE("[QS] ", "ae resume (fixed) e=%lu g=%lu",
+                 (unsigned long)QS_AE_SEED_FIXED_E,
+                 (unsigned long)QS_AE_SEED_FIXED_G);
 #endif
+    }
 #endif
 
     /* start camera (device layer handles sensor/pipes bring-up) */
@@ -348,6 +368,8 @@ static int qs_wait_ae_verified(uint32_t budget_ms,
     int32_t d_prev = 0x7FFFFFFF;
     uint32_t stall = 0;
     uint32_t extended_from = 0;
+    uint32_t g_prev = 0;
+    uint8_t g_stable = 0;   /* consecutive frames with |dG| <= QS_VERIFY_CLAMP_DG */
     /* ring of last E/G writes indexed by stats frame id, for attribution */
     struct { uint32_t fid; uint32_t e, g; } ring[8] = {0};
 
@@ -414,14 +436,41 @@ static int qs_wait_ae_verified(uint32_t budget_ms,
                      (unsigned long)(HAL_GetTick() - t0));
             return 1;
         }
-        /* clamped-accept: BOTH exposure and gain at their ceilings and luma
-         * settled -> this is the best the scene allows. Exposure alone is
-         * NOT sufficient: in dim scenes exposure sits at its ceiling while
-         * gain is still ramping. */
+        /* clamped-accept: exposure at its ceiling, gain STABLE for N frames,
+         * and luma settled -> the AE has converged to the best the scene
+         * allows. Using gain STABILITY (|dG| <= 500mdb for 3 consecutive
+         * stat frames) instead of a fixed gain threshold: field data
+         * (11-10 overnight) showed the AE middleware converges to G~32400
+         * in dark scenes — below the sensor's 72000 ceiling — so a fixed
+         * threshold either fired too early or never fired at all. */
         dl = (uint8_t)(L_prev > L ? (L_prev - L) : (L - L_prev));
+        {
+            uint32_t dg = (uint32_t)(g > g_prev ? (g - g_prev) : (g_prev - g));
+            if (dg <= QS_VERIFY_CLAMP_DG) {
+                if (g_stable < 255) g_stable++;
+            } else {
+                g_stable = 0;
+            }
+            g_prev = g;
+        }
         if (have_prev &&
-            e >= EXPOSURE_MAX && g >= ((GAIN_MAX / 100U) * 95U) &&
+            e >= EXPOSURE_MAX &&
+            g_stable >= QS_VERIFY_CLAMP_G_STABLE &&
             dl <= QS_VERIFY_CLAMP_DL) {
+            /* Populate the seed outputs: the AE has converged to a stable
+             * ceiling — these values are the best starting point for the
+             * next wake. Without this, exit=2 saves (0,0) and the next
+             * wake clamps to minimum, recreating the cold start. */
+            if (seed_e && seed_g) {
+                uint32_t want = (fid + 1U > QS_SENSOR_DELAY) ? (fid + 1U - QS_SENSOR_DELAY) : 0;
+                if (ring[want & 7U].fid == want) {
+                    *seed_e = ring[want & 7U].e;
+                    *seed_g = ring[want & 7U].g;
+                } else {
+                    *seed_e = e;
+                    *seed_g = g;
+                }
+            }
             QT_TRACE("[QS] ", "verify exit=2 clamp L=%u e=%lu g=%lu +%lums",
                      (unsigned)L, (unsigned long)e, (unsigned long)g,
                      (unsigned long)(HAL_GetTick() - t0));
@@ -589,12 +638,18 @@ static void qs_snapshot_thread(void *argument)
         qt_prof_step(&prof, "[QS] snap:pipe1 ");
 #if QS_AE_VERIFY_ENABLE
 #if QS_AE_SEED_LEARN
-        /* Persist the AE seed ONLY when the convergence gate actually
-         * passed (exit=1): a timeout/clamp grab is NOT a converged frame,
-         * and persisting its AE state re-seeds the next wake from a
-         * limit-cycle phase — the wake-to-wake bright/dark alternation
-         * seen in low light. On bad exits the previous good seed stays. */
-        if (verify_exit == 1) {
+        /* Persist the AE seed when the convergence gate passed (exit=1,
+         * in-band) OR when the scene hit its physical ceiling (exit=2,
+         * clamped-accept) — DAY only: NIGHT converged values sit at the IR
+         * ceiling and would poison the next DAY wake with a 10+ frame
+         * dark→bright climb (cross-mode seed pollution).
+         * In permanently dark scenes the gate always exits=2 (sensor at
+         * ceiling, gain stable) — without seed saving there, every wake
+         * cold-started from the profile's static minimum in a dead loop.
+         * exit=3 (timeout) still does NOT save: the AE was still moving,
+         * the state is not representative. */
+        if ((verify_exit == 1 || verify_exit == 2) &&
+            eff_mode != QS_IMAGE_ISP_MODE_NIGHT) {
             camera_ae_state_record_t rec = {0};
             rec.magic = CAMERA_AE_STATE_MAGIC;
             rec.exposure_us = seed_e;
