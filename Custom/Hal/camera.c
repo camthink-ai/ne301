@@ -96,12 +96,14 @@ int camera_ae_get_target(uint8_t *target)
  * is INVERTED vs the old one — HIGH = day, LOW = night.
  *
  * The filter driver is edge-driven and the lens position is unknown after
- * power-up. The board strap holds the pin HIGH during early boot, so the
- * camera_init claim writes LOW: that single guaranteed falling edge homes
- * the filter into the NIGHT position. No further homing edge is needed —
- * NIGHT wakes then need zero mechanical moves (same-level switch commands
- * are no-ops), DAY wakes get one edge from the day/night logic.
- * CAM_CMD_IRCUT_SET only writes on an actual level change. */
+ * power-up. Homing keeps the previously shipped two-stage timing, mirrored:
+ * camera_init claims the pin at the strap level (HIGH = day, no edge — the
+ * sensor rail has just been enabled and an edge this early could precede
+ * driver power-up), then cameraProcess issues the one deterministic falling
+ * edge (LOW = night) before CAM_Init, after a short rail-stabilization
+ * delay. NIGHT wakes then need zero further mechanical moves (same-level
+ * switch commands are no-ops), DAY wakes get one edge from the day/night
+ * logic. CAM_CMD_IRCUT_SET only writes on an actual level change. */
 static uint8_t s_ircut_state = 0xFF;          /* commanded state (0/1) or 0xFF */
 
 /* Level write for a commanded state (NEW filter: HIGH = day, LOW = night). */
@@ -1062,11 +1064,22 @@ static void cameraProcess(void *argument)
 #if CAMERA_TASK_DELAY_MS > 0
     osDelay(CAMERA_TASK_DELAY_MS);
 #endif
-    /* IR-CUT homing: NOT needed with the new (inverted-polarity) filter.
-     * The camera_init claim already produced one guaranteed falling edge
-     * (strap HIGH -> claim LOW), which homed the filter into the NIGHT
-     * position. A homing write here would just add a wasteful edge and the
-     * day/night logic would have to switch back on NIGHT wakes. */
+    /* IR-CUT homing edge (IR boards): the filter driver is edge-driven and
+     * its lens position is unknown after power-up. The pin was claimed at
+     * the strap level (HIGH = day, no edge) in camera_init; pulling it LOW
+     * here is the one deterministic edge — it homes the new (inverted)
+     * filter into the NIGHT position, the boot default. The sensor rail was
+     * enabled in camera_init a moment ago: give it a short stabilization
+     * delay first so the edge cannot precede driver power-up (review
+     * feedback). The LOW level then persists through the whole CAM_Init
+     * sensor bring-up (settle window), and the system boots in NIGHT mode
+     * by default. */
+    const aicam_bool_t ircut_home =
+        (board_is_ir() == AICAM_TRUE) && (s_ircut_state != 0xFFU);
+    if (ircut_home) {
+        osDelay(10); /* sensor-rail stabilization before the homing edge */
+        camera_ircut_write(1U); /* LOW = night: the homing edge */
+    }
     ret = CAM_Init(camera);
     // printf("camera init end, %lu ms\r\n", HAL_GetTick());
     if(ret != CMW_ERROR_NONE){
@@ -1075,6 +1088,7 @@ static void cameraProcess(void *argument)
         osThreadExit();
         return;
     }
+    if (ircut_home) s_ircut_state = 1U; /* homed to NIGHT — LOW stays as the boot default */
     camera->is_init = true;
     osSemaphoreRelease(camera->sem_init);
     while (camera->is_init) {
@@ -1588,7 +1602,8 @@ static int camera_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsig
                component holds since camera_init; this ioctl waits for the
                camera init semaphore, so the boot homing edge in
                cameraProcess has already established a deterministic
-               position (DAY by default). The driver acts on level CHANGES only — write on
+               position (NIGHT by default with the new filter). The driver
+               acts on level CHANGES only — write on
                an actual change, skip same-level commands. */
             if (ubuf == NULL) {
                 ret = AICAM_ERROR_INVALID_PARAM;
@@ -1689,10 +1704,11 @@ static int camera_init(void *priv)
      * day/night switching, sleep-wake captures and the CLI all go through
      * the camera ioctl. Standard boards never register the pin.
      *
-     * Claim at LOW: the board strap holds the pin HIGH during early boot, so
-     * claiming as OUTPUT-LOW creates the single guaranteed falling edge that
-     * homes the new (inverted) filter into the NIGHT position — the boot
-     * default. The day/night logic switches from there (NIGHT = no-op). */
+     * Claim at HIGH (the board strap holds the pin HIGH anyway, so claiming
+     * at that level creates no edge while the sensor rail is still ramping):
+     * with the new (inverted) filter HIGH = day. cameraProcess then issues
+     * the one deterministic falling edge (LOW = night) as the boot default
+     * once the rail has stabilized. */
     if (board_is_ir() == AICAM_TRUE) {
         GPIO_InitTypeDef gpio = {0};
         __HAL_RCC_GPIOE_CLK_ENABLE();
@@ -1701,8 +1717,8 @@ static int camera_init(void *priv)
         gpio.Pull = GPIO_NOPULL;
         gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
         HAL_GPIO_Init(IR_CUT_A_GPIO_Port, &gpio);
-        HAL_GPIO_WritePin(IR_CUT_A_GPIO_Port, IR_CUT_A_Pin, GPIO_PIN_RESET);
-        s_ircut_state = 1U; /* night — matches the level written above (new polarity) */
+        HAL_GPIO_WritePin(IR_CUT_A_GPIO_Port, IR_CUT_A_Pin, GPIO_PIN_SET);
+        s_ircut_state = 0U; /* day — matches the HIGH level (new polarity) */
     } else {
         s_ircut_state = 0xFFU; /* not available on this board */
     }
