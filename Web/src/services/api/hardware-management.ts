@@ -76,6 +76,9 @@ export interface SetHardwareInfoReq {
     fast_capture_jpeg_quality?: number;
     capture_disable_comm?: boolean;
     capture_storage_ai?: boolean;
+    /* Motion-blur suppression: AE exposure ceiling in us. 0 = sensor default
+       (off), 10000 = anti-blur. Applies live on the running AE. */
+    exposure_cap_us?: number;
 }
 export interface SetLightConfigReq {
     mode: 'auto' | 'custom' | 'off';

@@ -37,6 +37,7 @@
 #define QS_AE_SEED_FIXED_G          6185U   /* mdb */
 #define QS_AE_SEED_NIGHT_E          33000U  /* us - NIGHT converges with E at the ceiling */
 #define QS_AE_SEED_NIGHT_G          30000U  /* mdb - 30dB, biased into the dark cluster (field truths 30000~34000); still learned-free fixed start */
+#define QS_AE_SEED_NIGHT_G_CAPPED   35000U  /* mdb - anti-blur profile: +5.2dB compensates a 10ms exposure cap */
 /* ---- adaptive verification budget ----
  * Downward AE convergence is slower than the base skip budget. Past the
  * base budget, keep waiting ONLY while |L-target| keeps shrinking; give up
@@ -299,10 +300,21 @@ static int qs_prepare_camera_and_jpeg(const qs_snapshot_config_t *cfg, const nn_
      * on every in-band DAY capture. QS_AE_SEED_LEARN=0: fixed factory seed —
      * same deterministic start on every wake, no NVS involved. */
     if (effective_mode == QS_IMAGE_ISP_MODE_NIGHT) {
-        (void)camera_ae_set_last(QS_AE_SEED_NIGHT_E, QS_AE_SEED_NIGHT_G);
+        /* Seed follows the configured exposure cap (motion-blur suppression):
+         * default = (33000, 30000); when the AE is capped below the seed's
+         * exposure, shift to the capped profile — E sits at the ceiling and
+         * gain takes over the lost light (+5.2dB per 3.3x exposure cut). */
+        uint32_t seed_e = QS_AE_SEED_NIGHT_E;
+        uint32_t seed_g = QS_AE_SEED_NIGHT_G;
+        uint32_t cap = camera_exposure_cap_get();
+        if (cap < QS_AE_SEED_NIGHT_E) {
+            seed_e = cap;
+            seed_g = QS_AE_SEED_NIGHT_G_CAPPED;
+        }
+        (void)camera_ae_set_last(seed_e, seed_g);
         QT_TRACE("[QS] ", "ae seed (night) e=%lu g=%lu",
-                 (unsigned long)QS_AE_SEED_NIGHT_E,
-                 (unsigned long)QS_AE_SEED_NIGHT_G);
+                 (unsigned long)seed_e,
+                 (unsigned long)seed_g);
     } else {
 #if QS_AE_SEED_LEARN
         camera_ae_state_record_t ae_rec = {0};
@@ -454,7 +466,7 @@ static int qs_wait_ae_verified(uint32_t budget_ms,
             g_prev = g;
         }
         if (have_prev &&
-            e >= EXPOSURE_MAX &&
+            e >= camera_exposure_cap_get() &&
             g_stable >= QS_VERIFY_CLAMP_G_STABLE &&
             dl <= QS_VERIFY_CLAMP_DL) {
             /* Populate the seed outputs: the AE has converged to a stable

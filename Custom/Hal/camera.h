@@ -33,8 +33,8 @@ typedef enum {
 #define SENSOR_OS04C10_FLIP CMW_MIRRORFLIP_NONE
 
 
-#define EXPOSURE_MIN 23000   
-#define EXPOSURE_MAX 33000  
+#define EXPOSURE_MIN 23000
+#define EXPOSURE_MAX 33000
 #define GAIN_MIN     0      
 #define GAIN_MAX     15872   
 
@@ -241,5 +241,10 @@ int camera_ae_set_last(uint32_t exposure_us, uint32_t gain_mdb);
 aicam_bool_t camera_ae_last_valid(void);
 int camera_stats_get_luma(uint8_t *luma, uint32_t *frame_id);
 int camera_ae_get_target(uint8_t *target);
+
+/* Runtime exposure-cap override (motion-blur test): cap_us=0 restores the
+ * driver default. Returns effective cap (default when override is 0). */
+int camera_exposure_cap_set(uint32_t cap_us);
+uint32_t camera_exposure_cap_get(void);
 
 #endif

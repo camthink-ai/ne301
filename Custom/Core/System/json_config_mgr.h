@@ -457,6 +457,7 @@ typedef struct {
     uint32_t fast_capture_jpeg_quality;     // fast capture JPEG encoding quality (0-100)
     aicam_bool_t capture_disable_comm;      // after capture: local storage only (no comm upload)
     aicam_bool_t capture_storage_ai;        // capture extra save draw AI result picture to storage switch
+    uint32_t exposure_cap_us;               // motion-blur suppression: AE exposure ceiling in us (0 = sensor default; 10000 = anti-blur). Applied at camera_init and on config PUT
 } image_config_t;
 
 /**

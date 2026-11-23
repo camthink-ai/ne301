@@ -130,6 +130,22 @@ static int32_t CMW_OS04C10_SetMirrorFlip(void *io_ctx, uint32_t config)
   return OS04C10_MirrorFlipConfig(&((CMW_OS04C10_t *)io_ctx)->ctx_driver, mirrorFlip);
 }
 
+/* Runtime exposure-cap override (motion-blur test feature): 0 = driver
+ * default. Applied at GetSensorInfo time so camera re-init keeps it, and
+ * the app layer also mirrors it into the live ISP handle for instant
+ * effect (the AE dereferences hIsp->sensorInfo.exposure_max each pass). */
+static uint32_t s_os04c10_exp_cap_override = 0U;
+
+void CMW_OS04C10_SetExposureCapOverride(uint32_t cap_us)
+{
+  s_os04c10_exp_cap_override = cap_us;
+}
+
+uint32_t CMW_OS04C10_GetExposureCapOverride(void)
+{
+  return s_os04c10_exp_cap_override;
+}
+
 static int32_t CMW_OS04C10_GetSensorInfo(void *io_ctx, ISP_SensorInfoTypeDef *info)
 {
   if ((io_ctx ==  NULL) || (info == NULL))
@@ -153,7 +169,10 @@ static int32_t CMW_OS04C10_GetSensorInfo(void *io_ctx, ISP_SensorInfoTypeDef *in
   info->gain_min = OS04C10_GAIN_MIN;
   info->gain_max = OS04C10_GAIN_MAX;
   info->exposure_min = OS04C10_EXPOSURE_MIN;
-  info->exposure_max = OS04C10_EXPOSURE_MAX;
+  info->exposure_max =
+      (s_os04c10_exp_cap_override != 0U && s_os04c10_exp_cap_override < OS04C10_EXPOSURE_MAX)
+          ? s_os04c10_exp_cap_override
+          : OS04C10_EXPOSURE_MAX;
 
   return CMW_ERROR_NONE;
 }

@@ -140,7 +140,8 @@
              .fast_capture_resolution = 0,   // 0: 1280x720
              .fast_capture_jpeg_quality = 60,
              .capture_disable_comm = AICAM_FALSE,
-             .capture_storage_ai = AICAM_FALSE
+             .capture_storage_ai = AICAM_FALSE,
+             .exposure_cap_us = 0,   // 0 = sensor default (anti-blur off)
          },
          .light_config = {
              .connected = AICAM_FALSE,
