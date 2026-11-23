@@ -1,5 +1,6 @@
 #include "quick_snapshot.h"
 #include "quick_storage.h"
+#include <math.h>
 #include "storage.h"
 #include "json_config_internal.h"
 
@@ -37,7 +38,6 @@
 #define QS_AE_SEED_FIXED_G          6185U   /* mdb */
 #define QS_AE_SEED_NIGHT_E          33000U  /* us - NIGHT converges with E at the ceiling */
 #define QS_AE_SEED_NIGHT_G          30000U  /* mdb - 30dB, biased into the dark cluster (field truths 30000~34000); still learned-free fixed start */
-#define QS_AE_SEED_NIGHT_G_CAPPED   35000U  /* mdb - anti-blur profile: +5.2dB compensates a 10ms exposure cap */
 /* ---- adaptive verification budget ----
  * Downward AE convergence is slower than the base skip budget. Past the
  * base budget, keep waiting ONLY while |L-target| keeps shrinking; give up
@@ -308,8 +308,15 @@ static int qs_prepare_camera_and_jpeg(const qs_snapshot_config_t *cfg, const nn_
         uint32_t seed_g = QS_AE_SEED_NIGHT_G;
         uint32_t cap = camera_exposure_cap_get();
         if (cap < QS_AE_SEED_NIGHT_E) {
+            /* Compensate the lost light in proportion to the exposure cut:
+             * +10*log10(E_default / cap) dB of extra gain (the same rule
+             * that yields the field-calibrated +5.2dB for the 10ms cap),
+             * clamped under the sensor ceiling. E sits at the cap. */
             seed_e = cap;
-            seed_g = QS_AE_SEED_NIGHT_G_CAPPED;
+            double db = 10.0 * log10((double)QS_AE_SEED_NIGHT_E / (double)cap);
+            uint32_t comp_mdb = (uint32_t)(db * 1000.0);
+            seed_g = QS_AE_SEED_NIGHT_G + comp_mdb;
+            if (seed_g > 70000U) seed_g = 70000U;
         }
         (void)camera_ae_set_last(seed_e, seed_g);
         QT_TRACE("[QS] ", "ae seed (night) e=%lu g=%lu",

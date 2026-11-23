@@ -1727,11 +1727,12 @@ static int camera_init(void *priv)
     pwr_manager_acquire(camera->pwr_handle);
 
     /* Motion-blur suppression (image config exposure_cap_us, NVS "img_exp_cap"):
-     * boot the sensor under the configured AE exposure ceiling so EVERY path
-     * (video stream AND quick-capture wakes) starts under it — GetSensorInfo
-     * during CAM_Init picks the override up, surviving camera re-init across
-     * wake cycles. 0 = sensor default (suppression off). Config changes apply
-     * immediately via the image config PUT. */
+     * BEST-EFFORT early apply. camera_init runs in boot Step 3 while
+     * json_config initializes in Step 4, so this read usually fails and the
+     * override stays at the default — the AUTHORITATIVE boot-time apply is
+     * in device service init (init_default_camera_config), after the config
+     * system is up and still before any streaming starts. Config changes
+     * apply immediately via the image config PUT. */
     {
         image_config_t img_cfg;
         if (json_config_get_device_service_image_config(&img_cfg) == AICAM_OK) {
