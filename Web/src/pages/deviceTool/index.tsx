@@ -15,13 +15,14 @@ import {
 
 import SvgIcon from '@/components/svg-icon';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import Player from './player';
 import ToolGuide from './tool-guide';
 import TriggerConfig from './trigger-config';
 import { getItem } from '@/utils/storage';
 
 import deviceTool, { type AiParams, type VideoStreamPushReq } from '@/services/api/deviceTool';
-import hardwareManagement from '@/services/api/hardware-management';
+import hardwareManagement, { type SetHardwareInfoReq } from '@/services/api/hardware-management';
 import systemApis from '@/services/api/system';
 
 import DeviceToolSkeleton from './skeleton';
@@ -193,6 +194,31 @@ export default function DeviceTool() {
       setSysClkProfile(4);
     }
   };
+  /* Motion-blur suppression: ON = AE exposure cap 10ms (live + persisted via
+   * image config exposure_cap_us), OFF = sensor default. */
+  const [antiBlur, setAntiBlur] = useState(false);
+  const initAntiBlur = async () => {
+    try {
+      const res = await hardwareManagement.getHardwareInfoReq();
+      const v = (res.data as Record<string, unknown>)?.exposure_cap_us;
+      setAntiBlur(typeof v === 'number' && v > 0);
+    } catch (error) {
+      console.error('initAntiBlur', error);
+    }
+  };
+  const handleAntiBlurChange = async (on: boolean) => {
+    setAntiBlur(on);
+    try {
+      await hardwareManagement.setHardwareInfoReq({
+        exposure_cap_us: on ? 10000 : 0,
+      } as SetHardwareInfoReq);
+      toast.success(i18n._('sys.device_tool.anti_blur_applied'));
+    } catch (error) {
+      console.error('handleAntiBlurChange', error);
+      setAntiBlur(!on);
+      toast.error('Save failed');
+    }
+  };
   const initQueue = async () => {
     try {
       setIsLoading(true);
@@ -206,6 +232,7 @@ export default function DeviceTool() {
         initPowerMode(),
         getAiParams(),
         initSysClk(),
+        initAntiBlur(),
       ])
     } catch (error) {
       console.error('initQueue', error);
@@ -560,6 +587,28 @@ export default function DeviceTool() {
                                   </div>
                                 </div>
                               )}
+                            </div>
+                            {/* Motion-blur suppression (AE exposure cap 10ms) */}
+                            <Separator className="my-2" />
+                            <div className="flex items-center justify-between">
+                              <Label className="inline-flex min-w-0 shrink-0 items-center gap-1 text-sm text-text-primary">
+                                {i18n._('sys.hardware_management.anti_blur')}
+                                <Tooltip mbEnhance>
+                                  <TooltipTrigger asChild>
+                                    <button
+                                      type="button"
+                                      className="inline-flex size-4 shrink-0 items-center justify-center text-gray-500"
+                                      aria-label={i18n._('common.tip')}
+                                    >
+                                      <SvgIcon className="size-4 text-gray-500" icon="info" />
+                                    </button>
+                                  </TooltipTrigger>
+                                  <TooltipContent className="max-w-80 text-pretty">
+                                    <p>{i18n._('sys.hardware_management.anti_blur_tip')}</p>
+                                  </TooltipContent>
+                                </Tooltip>
+                              </Label>
+                              <Switch checked={antiBlur} onCheckedChange={handleAntiBlurChange} />
                             </div>
                             <Separator className="my-2" />
                             <RtmpConfig />

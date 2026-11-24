@@ -51,6 +51,10 @@ typedef struct
 int CMW_OS04C10_Probe(CMW_OS04C10_t *io_ctx, CMW_Sensor_if_t *vd55g1_if);
 void CMW_OS04C10_SetDefaultSensorValues(CMW_OS04C10_config_t *os04c10_config);
 
+/* Runtime exposure-cap override (motion-blur test): 0 = driver default max */
+void CMW_OS04C10_SetExposureCapOverride(uint32_t cap_us);
+uint32_t CMW_OS04C10_GetExposureCapOverride(void);
+
 #ifdef __cplusplus
 }
 #endif

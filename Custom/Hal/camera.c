@@ -13,6 +13,8 @@
 #include "isp_services.h"
 #include "json_config_mgr.h"    /* IMAGE_ISP_MODE_* for camera_fill_isp_iq_for_mode */
 #include "board_hw.h"           /* board_is_ir() for the IR-CUT filter */
+#include "cmw_os04c10.h"        /* CMW_OS04C10 exposure-cap override (motion-blur) */
+#include "os04c10_reg.h"        /* OS04C10_EXPOSURE_MAX */
 #include "main.h"               /* IR_CUT_A_* pin defines */
 
 /* AE restart state handed to the ISP middleware (QS fast wake): the AE loop
@@ -48,6 +50,32 @@ int camera_ae_set_last(uint32_t exposure_us, uint32_t gain_mdb)
 aicam_bool_t camera_ae_last_valid(void)
 {
     return s_ae_restart_state.sensorConfigured ? AICAM_TRUE : AICAM_FALSE;
+}
+
+int camera_exposure_cap_set(uint32_t cap_us)
+{
+    /* Motion-blur knob: cap_us=0 restores the driver default (33266).
+     * Range guard: 1000us floor rejects garbage, ceiling = driver max.
+     * Applied twice on purpose: the driver-side override survives camera
+     * re-init (GetSensorInfo), and the live ISP-handle mirror takes effect
+     * on the very next AE pass (the algo dereferences sensorInfo each
+     * iteration) — no stream restart needed. */
+    if (cap_us != 0U && (cap_us < 1000U || cap_us > OS04C10_EXPOSURE_MAX)) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    CMW_OS04C10_SetExposureCapOverride(cap_us);
+    ISP_HandleTypeDef *hIsp = CMW_CAMERA_GetISPHandle();
+    if (hIsp != NULL) {
+        hIsp->sensorInfo.exposure_max =
+            (cap_us != 0U) ? cap_us : OS04C10_EXPOSURE_MAX;
+    }
+    return AICAM_OK;
+}
+
+uint32_t camera_exposure_cap_get(void)
+{
+    uint32_t cap = CMW_OS04C10_GetExposureCapOverride();
+    return (cap != 0U) ? cap : OS04C10_EXPOSURE_MAX;
 }
 
 int camera_stats_get_luma(uint8_t *luma, uint32_t *frame_id)
@@ -1697,6 +1725,22 @@ static int camera_init(void *priv)
     camera_t *camera = (camera_t *)priv;
     camera->pwr_handle = pwr_manager_get_handle(PWR_SENSOR_NAME);
     pwr_manager_acquire(camera->pwr_handle);
+
+    /* Motion-blur suppression (image config exposure_cap_us, NVS "img_exp_cap"):
+     * BEST-EFFORT early apply. camera_init runs in boot Step 3 while
+     * json_config initializes in Step 4, so this read usually fails and the
+     * override stays at the default — the AUTHORITATIVE boot-time apply is
+     * in device service init (init_default_camera_config), after the config
+     * system is up and still before any streaming starts. Config changes
+     * apply immediately via the image config PUT. */
+    {
+        image_config_t img_cfg;
+        if (json_config_get_device_service_image_config(&img_cfg) == AICAM_OK) {
+            CMW_OS04C10_SetExposureCapOverride(img_cfg.exposure_cap_us);
+        } else {
+            CMW_OS04C10_SetExposureCapOverride(0U); /* config unavailable: default */
+        }
+    }
 
     /* IR-CUT filter (IR boards, PE9) belongs to this component: its driver
      * chip is powered from the sensor rail acquired just above, so claiming

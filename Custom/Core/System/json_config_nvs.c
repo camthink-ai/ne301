@@ -687,6 +687,10 @@ aicam_result_t json_config_save_device_service_image_config_to_nvs(const image_c
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save image fast capture skip frames to NVS");
 
+    result = json_config_nvs_write_uint32(NVS_KEY_IMAGE_EXPOSURE_CAP, config->exposure_cap_us);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to save image exposure cap to NVS");
+
     result = json_config_nvs_write_uint32(NVS_KEY_IMAGE_FAST_RESOLUTION, config->fast_capture_resolution);
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save image fast capture resolution to NVS");
@@ -2071,6 +2075,12 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
         config->device_service.image_config.fast_capture_skip_frames = temp_uint32;
     else
         json_config_nvs_write_uint32(NVS_KEY_IMAGE_FAST_SKIP_FRAMES, config->device_service.image_config.fast_capture_skip_frames);
+
+    result = json_config_nvs_read_uint32(NVS_KEY_IMAGE_EXPOSURE_CAP, &temp_uint32);
+    if (result == AICAM_OK)
+        config->device_service.image_config.exposure_cap_us = temp_uint32;
+    else
+        json_config_nvs_write_uint32(NVS_KEY_IMAGE_EXPOSURE_CAP, config->device_service.image_config.exposure_cap_us);
 
     result = json_config_nvs_read_uint32(NVS_KEY_IMAGE_FAST_RESOLUTION, &temp_uint32);
     if (result == AICAM_OK)

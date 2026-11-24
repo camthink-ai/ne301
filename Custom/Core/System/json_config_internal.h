@@ -100,6 +100,7 @@
  #define NVS_KEY_IMAGE_ISP_MODE          "img_isp_mode"
  #define NVS_KEY_IMAGE_SKIP_FRAMES       "img_skip"
  #define NVS_KEY_IMAGE_FAST_SKIP_FRAMES  "img_fast_skip"
+ #define NVS_KEY_IMAGE_EXPOSURE_CAP      "img_exp_cap"  /* motion-blur: AE exposure ceiling us (0=default) */
 /* QS AE fast convergence: last verified exposure/gain seed (AE77 magic) */
 #define NVS_KEY_AE_LAST_STATE           "ae_state"
  #define NVS_KEY_IMAGE_FAST_RESOLUTION   "img_fast_res"

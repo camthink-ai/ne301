@@ -7,6 +7,7 @@
 #include "api_device_module.h"
 #include "web_api.h"
 #include "device_service.h"
+#include "camera.h"             /* camera_exposure_cap_set (motion-blur cap live apply) */
 #include "debug.h"
 #include "board_hw.h"
 #include "cJSON.h"
@@ -398,11 +399,12 @@ aicam_result_t device_image_config_handler(http_handler_context_t *ctx) {
         cJSON_AddNumberToObject(response_json, "aec", camera_config.image_config.aec);
         cJSON_AddNumberToObject(response_json, "isp_mode", camera_config.image_config.isp_mode);
         cJSON_AddNumberToObject(response_json, "fast_capture_skip_frames", camera_config.image_config.fast_capture_skip_frames);
+        cJSON_AddNumberToObject(response_json, "exposure_cap_us", camera_config.image_config.exposure_cap_us);
         cJSON_AddNumberToObject(response_json, "fast_capture_resolution", camera_config.image_config.fast_capture_resolution);
         cJSON_AddNumberToObject(response_json, "fast_capture_jpeg_quality", camera_config.image_config.fast_capture_jpeg_quality);
         cJSON_AddBoolToObject(response_json, "capture_disable_comm", camera_config.image_config.capture_disable_comm);
         cJSON_AddBoolToObject(response_json, "capture_storage_ai", camera_config.image_config.capture_storage_ai);
-        
+
         // Send response
         char* json_string = cJSON_Print(response_json);
         if (!json_string) {
@@ -520,6 +522,18 @@ aicam_result_t device_image_config_handler(http_handler_context_t *ctx) {
             }
         }
 
+        // Update motion-blur exposure cap if provided (0 = sensor default, else 1000..33266us)
+        cJSON* exp_cap_item = cJSON_GetObjectItem(request_json, "exposure_cap_us");
+        if (exp_cap_item && cJSON_IsNumber(exp_cap_item)) {
+            double cap_value = cJSON_GetNumberValue(exp_cap_item);
+            if (cap_value == 0.0 || (cap_value >= 1000.0 && cap_value <= 33266.0)) {
+                image_config.exposure_cap_us = (uint32_t)cap_value;
+            } else {
+                cJSON_Delete(request_json);
+                return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "exposure_cap_us must be 0 or between 1000 and 33266");
+            }
+        }
+
         // Update fast capture resolution if provided (0:1280x720, 1:1920x1080, 2:2688x1520)
         cJSON* fast_res_item = cJSON_GetObjectItem(request_json, "fast_capture_resolution");
         if (fast_res_item && cJSON_IsNumber(fast_res_item)) {
@@ -568,6 +582,13 @@ aicam_result_t device_image_config_handler(http_handler_context_t *ctx) {
         // Apply the updated configuration (always updates config + persistence)
         result = device_service_image_set_config(&image_config);
 
+        /* Motion-blur exposure cap: takes effect on the running AE immediately
+         * (no pipeline restart needed — camera_exposure_cap_set mirrors into
+         * the live ISP handle; next camera_init re-applies from config). */
+        if (result == AICAM_OK) {
+            (void)camera_exposure_cap_set(image_config.exposure_cap_us);
+        }
+
         if (need_restart_pipeline) {
             // Restart pipeline only when necessary
             ai_pipeline_start();
@@ -587,6 +608,7 @@ aicam_result_t device_image_config_handler(http_handler_context_t *ctx) {
         cJSON_AddNumberToObject(response_json, "aec", image_config.aec);
         cJSON_AddNumberToObject(response_json, "isp_mode", image_config.isp_mode);
         cJSON_AddNumberToObject(response_json, "fast_capture_skip_frames", image_config.fast_capture_skip_frames);
+        cJSON_AddNumberToObject(response_json, "exposure_cap_us", image_config.exposure_cap_us);
         cJSON_AddNumberToObject(response_json, "fast_capture_resolution", image_config.fast_capture_resolution);
         cJSON_AddNumberToObject(response_json, "fast_capture_jpeg_quality", image_config.fast_capture_jpeg_quality);
         cJSON_AddBoolToObject(response_json, "capture_disable_comm", image_config.capture_disable_comm);
@@ -934,6 +956,7 @@ aicam_result_t device_camera_config_handler(http_handler_context_t *ctx) {
             cJSON_AddNumberToObject(image_config_json, "aec", camera_config.image_config.aec);
             cJSON_AddNumberToObject(image_config_json, "isp_mode", camera_config.image_config.isp_mode);
             cJSON_AddNumberToObject(image_config_json, "fast_capture_skip_frames", camera_config.image_config.fast_capture_skip_frames);
+            cJSON_AddNumberToObject(image_config_json, "exposure_cap_us", camera_config.image_config.exposure_cap_us);
             cJSON_AddNumberToObject(image_config_json, "fast_capture_resolution", camera_config.image_config.fast_capture_resolution);
             cJSON_AddNumberToObject(image_config_json, "fast_capture_jpeg_quality", camera_config.image_config.fast_capture_jpeg_quality);
             cJSON_AddBoolToObject(image_config_json, "capture_disable_comm", camera_config.image_config.capture_disable_comm);

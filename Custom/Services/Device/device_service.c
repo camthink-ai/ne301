@@ -349,6 +349,15 @@ static void init_default_camera_config(camera_config_t *config)
     config->image_config.capture_disable_comm = image_config.capture_disable_comm;
     config->image_config.capture_storage_ai = image_config.capture_storage_ai;
     config->image_config.isp_mode = image_config.isp_mode;
+    config->image_config.exposure_cap_us = image_config.exposure_cap_us;
+
+    /* Re-apply the persisted motion-blur exposure cap. camera_init runs in
+     * driver_core_init (boot Step 3), BEFORE json_config_mgr_init (Step 4),
+     * so its early read of the config fails and leaves the override at the
+     * default — this spot (device service init, after the config system is
+     * up) is the authoritative boot-time apply. No consumer races it: the
+     * camera only reads sensorInfo when streaming starts, later in boot. */
+    (void)camera_exposure_cap_set(config->image_config.exposure_cap_us);
 
     LOG_SVC_DEBUG("Image configuration updated: brightness=%u, contrast=%u, h_flip=%d, v_flip=%d, aec=%d, isp_mode=%u, startup_skip=%u, fast_skip=%u, fast_res=%u, fast_jpeg_q=%u, cap_dis_comm=%d, cap_stor_ai=%d",
                 config->image_config.brightness,
