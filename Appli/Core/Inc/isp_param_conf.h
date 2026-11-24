@@ -259,10 +259,10 @@ static const ISP_IQParamTypeDef ISP_IQParamCacheInit_IMX335 = {
 /* DCMIPP ISP configuration for OS04C10 sensor (outdoor) */
 static const ISP_IQParamTypeDef ISP_IQParamCacheInit_OS04C10 = {
     .sensorGainStatic = {
-        .gain = 0,
+        .gain = 1,
     },
     .sensorExposureStatic = {
-        .exposure = 9492,
+        .exposure = 20000,
     },
     .AECAlgo = {
         .enable = 1,
@@ -284,9 +284,9 @@ static const ISP_IQParamTypeDef ISP_IQParamCacheInit_OS04C10 = {
     },
     .blackLevelStatic = {
         .enable = 1,
-        .BLCR = 15,
-        .BLCG = 15,
-        .BLCB = 15,
+        .BLCR = 16,
+        .BLCG = 16,
+        .BLCB = 16,
     },
     .demosaicing = {
         .enable = 1,
@@ -298,34 +298,30 @@ static const ISP_IQParamTypeDef ISP_IQParamCacheInit_OS04C10 = {
     },
     .ispGainStatic = {
         .enable = 1,
-        .ispGainR = 217187500,
-        .ispGainG = 95312500,
-        .ispGainB = 150781250,
+        .ispGainR = 204687500,
+        .ispGainG = 100000000,
+        .ispGainB = 172656250,
     },
     .colorConvStatic = {
         .enable = 1,
-        .coeff = { { 184765625, -38671875, -46093750, }, { -67578125, 299218750, -131640625, }, { -50000000, -32812500, 183203125, }, }
+        .coeff = { { 229687500, -74218750, -55468750, }, { -101171875, 262109375, -60546875, }, { -25000000, -92578125, 217968750, }, }
     },
     .AWBAlgo = {
         .enable = 1,
-        .label = { "A", "TL84", "D65", "Free Slot", "Free Slot", },
-        .referenceColorTemp = { 2856, 4000, 6500, 0, 0, },
-        .ispGainR = { 131000000, 191000000, 220000000, 0, 0, },
-        .ispGainG = { 100000000, 100000000, 95000000, 0, 0, },
-        .ispGainB = { 258000000, 218000000, 145000000, 0, 0, },
+        .label = { "A", "TL84", "D65", },
+        .referenceColorTemp = { 2856, 4000, 6500, },
+        .ispGainR = { 131000000, 191000000, 204999999, },
+        .ispGainG = { 100000000, 100000000, 100000000, },
+        .ispGainB = { 258000000, 218000000, 173000000, },
         .coeff = {
             { { 134330000, 63410000, -97740000, }, { -79720000, 217090000, -37370000, }, { -42280000, -91300000, 233580000, }, },
             { { 143810000, 5360000, -49170000, }, { -51210000, 177150000, -25940000, }, { -19520000, -61510000, 181040000, }, },
-            { { 188720000, -42860000, -45860000, }, { -69110000, 310130000, -141020000, }, { -52880000, -30590000, 183470000, }, },
-            { { 0, 0, 0, }, { 0, 0, 0, }, { 0, 0, 0, }, },
-            { { 0, 0, 0, }, { 0, 0, 0, }, { 0, 0, 0, }, },
+            { { 230030000, -74490000, -55550000, }, { -101410000, 262180000, -60770000, }, { -25240000, -92860000, 218100000, }, },
         },
         .referenceRGB = {
             { 60, 71, 36},
             { 46, 75, 42},
-            { 41, 74, 55},
-            { 0, 0, 0},
-            { 0, 0, 0},
+            { 46, 73, 47},
         },
     },
     .contrast = {
@@ -341,10 +337,10 @@ static const ISP_IQParamTypeDef ISP_IQParamCacheInit_OS04C10 = {
         .coeff.LUM_256 = 282,
     },
     .statAreaStatic = {
-        .X0 = 105,
-        .Y0 = 785,
-        .XSize = 2471,
-        .YSize = 658,
+        .X0 = 54,
+        .Y0 = 358,
+        .XSize = 2595,
+        .YSize = 869,
     },
     .gamma = {
         .enable = 1,

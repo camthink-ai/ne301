@@ -333,14 +333,14 @@ void camera_fill_isp_iq_scene(cam_iq_scene_t scene, ISP_IQParamTypeDef *out_iq)
             memcpy(out_iq, &ISP_IQParamCacheInit_OS04C10_NIGHT, sizeof(ISP_IQParamTypeDef));
         }
     } else {
-        /* outdoor: middle horizontal band tuned in the 10-28 IQTune session
-         * (user-requested region, ~full width x 44% height slightly below
-         * center); runtime override, profile statArea stays untouched. */
+        /* outdoor: middle band re-tuned in the 11-24 IQTune session (the
+         * D65 AWB recalibration export); kept in sync with the profile's
+         * statAreaStatic so the effective region matches the tuning. */
         if (sensor == CMW_OS04C10_Sensor) {
-            out_iq->statAreaStatic.X0 = 58U;
-            out_iq->statAreaStatic.Y0 = 523U;
-            out_iq->statAreaStatic.XSize = 2578U;
-            out_iq->statAreaStatic.YSize = 629U;
+            out_iq->statAreaStatic.X0 = 54U;
+            out_iq->statAreaStatic.Y0 = 358U;
+            out_iq->statAreaStatic.XSize = 2595U;
+            out_iq->statAreaStatic.YSize = 869U;
         }
     }
 }
