@@ -1299,10 +1299,11 @@ static void day_night_init(void)
     g_device_service.lightsensor_device = device_find_pattern(LIGHT_DEVICE_NAME, DEV_TYPE_MISC);
 
     /* Resolve configured mode: AUTO stays auto; DAY/NIGHT applied immediately.
-     * Boot-time effective mode defaults to DAY — the cameraProcess homing
-     * edge pulls PE9 LOW (= day) on every boot — so the first
-     * day_night_apply only actuates the filter when the evaluation says
-     * NIGHT (single switch at most). */
+     * The LOGICAL effective mode defaults to DAY for evaluation, while the
+     * cameraProcess homing edge pulls PE9 LOW (= NIGHT with the new filter)
+     * on every boot — so the first day_night_apply actuates the filter only
+     * when the evaluation says DAY (one edge); a NIGHT result is already
+     * homed (single switch at most). */
     g_device_service.day_night_effective_mode = IMAGE_ISP_MODE_DAY;
     g_device_service.day_night_control = DAY_NIGHT_CONTROL_AUTO;
     g_device_service.day_night_initialized = AICAM_TRUE;
@@ -1766,10 +1767,10 @@ aicam_result_t device_service_start(void)
         } else {
             /* AUTO: control stays AUTO for the day/night task — but do an
              * immediate one-shot evaluation NOW (light sensor / time). The
-             * boot homing edge already leaves the filter in DAY; this only
-             * actuates when the evaluation says NIGHT, and the debounced
-             * task logic takes over from the next tick with full
-             * poll/confirm/min-hold. */
+             * boot homing edge already leaves the filter in NIGHT (new
+             * filter polarity); this only actuates when the evaluation says
+             * DAY, and the debounced task logic takes over from the next
+             * tick with full poll/confirm/min-hold. */
             if (osMutexAcquire(g_device_service.day_night_mtx, osWaitForever) == osOK) {
                 day_night_apply(dn_eval_startup_target());
                 g_device_service.day_night_control = DAY_NIGHT_CONTROL_AUTO;
